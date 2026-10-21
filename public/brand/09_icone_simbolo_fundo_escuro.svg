@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 780" width="100%" height="100%">
+  <style>@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700;800&amp;display=swap");</style>
+  <defs>
+    <filter id="drop3d" x="-15%" y="-15%" width="140%" height="140%">
+      <feDropShadow dx="0.9" dy="1.2" stdDeviation="1.1" flood-color="#000000" flood-opacity="0.03"/>
+    </filter>
+  </defs>
+  <rect width="780" height="780" fill="#14202C"/>
+  <g filter="url(#drop3d)">
+  <path d="M 382.40 204.42 C 348.60 201.41, 318.42 211.97, 303.34 239.13 C 264.11 242.14, 239.97 269.30, 244.50 307.02 C 217.34 326.63, 214.32 374.91, 238.46 403.58 C 235.44 441.30, 264.11 482.03, 313.90 480.52 C 330.49 480.52, 348.60 471.47, 365.20 486.56 L 365.20 492.59 L 382.40 492.59 Z" fill="#F5F1E6" stroke="#F5F1E6" stroke-width="14.30" stroke-linejoin="round"/>
+  <line x1="375.15" y1="205.93" x2="389.34" y2="202.31" stroke="#F5F1E6" stroke-width="13.99" stroke-linecap="round"/>
+  <line x1="374.25" y1="205.93" x2="374.25" y2="488.07" stroke="#F5F1E6" stroke-width="14.45" stroke-linecap="round"/>
+  <path d="M 339.55 486.56 C 327.48 459.40, 309.37 453.37, 286.74 451.86 C 262.60 448.84, 256.57 420.18, 262.60 397.54 C 244.50 377.93, 244.50 341.72, 270.14 325.12 C 259.58 299.48, 273.16 270.81, 304.85 273.83" fill="none" stroke="#14202C" stroke-width="13.38" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 362.18 237.62 C 324.46 233.09, 307.86 257.23, 316.92 290.42 C 324.46 314.56, 356.14 314.56, 356.14 347.75 C 356.14 368.88, 345.58 377.93, 338.04 391.51" fill="none" stroke="#14202C" stroke-width="13.38" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 304.85 358.32 C 283.72 370.39, 283.72 409.61, 307.86 421.68" fill="none" stroke="#14202C" stroke-width="13.38" stroke-linecap="round" stroke-linejoin="round"/>
+  <polygon points="405.75,346.25 532.49,276.84 532.49,420.18 405.75,489.58" fill="#FCB414"/>
+  <line x1="405.75" y1="207.44" x2="532.49" y2="276.84" stroke="#F5F1E6" stroke-width="14.60" stroke-linecap="round"/>
+  <line x1="532.49" y1="276.84" x2="405.75" y2="346.25" stroke="#F5F1E6" stroke-width="14.60" stroke-linecap="round"/>
+  <line x1="405.75" y1="346.25" x2="405.75" y2="489.58" stroke="#F5F1E6" stroke-width="14.60" stroke-linecap="round"/>
+  <line x1="532.49" y1="276.84" x2="532.49" y2="420.18" stroke="#F5F1E6" stroke-width="14.60" stroke-linecap="round"/>
+  <line x1="405.75" y1="489.58" x2="454.03" y2="463.02" stroke="#F5F1E6" stroke-width="14.60" stroke-linecap="round"/>
+  <line x1="490.24" y1="443.41" x2="532.49" y2="420.18" stroke="#F5F1E6" stroke-width="14.60" stroke-linecap="round"/>
+  <line x1="337.19" y1="525.79" x2="439.79" y2="525.79" stroke="#F5F1E6" stroke-width="14.60" stroke-linecap="round"/>
+  <line x1="349.26" y1="562.00" x2="427.72" y2="562.00" stroke="#F5F1E6" stroke-width="14.60" stroke-linecap="round"/>
+  <line x1="367.37" y1="596.70" x2="409.61" y2="596.70" stroke="#F5F1E6" stroke-width="14.60" stroke-linecap="round"/>
+  </g>
+</svg>

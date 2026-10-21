@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1320 740" width="100%" height="100%">
+  <style>@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700;800&amp;display=swap");</style>
+  <defs>
+    <filter id="drop3d" x="-15%" y="-15%" width="140%" height="140%">
+      <feDropShadow dx="0.9" dy="1.2" stdDeviation="1.1" flood-color="#000000" flood-opacity="0.03"/>
+    </filter>
+  </defs>
+  <rect width="1320" height="740" fill="#14202C"/>
+  <g filter="url(#drop3d)">
+  <path d="M 348.90 216.02 C 321.76 213.59, 297.54 222.07, 285.43 243.88 C 253.93 246.30, 234.55 268.10, 238.19 298.38 C 216.38 314.13, 213.96 352.89, 233.34 375.90 C 230.92 406.18, 253.93 438.89, 293.90 437.68 C 307.23 437.68, 321.76 430.41, 335.09 442.52 L 335.09 447.37 L 348.90 447.37 Z" fill="#F5F1E6" stroke="#F5F1E6" stroke-width="11.48" stroke-linejoin="round"/>
+  <line x1="343.08" y1="217.23" x2="354.47" y2="214.32" stroke="#F5F1E6" stroke-width="11.23" stroke-linecap="round"/>
+  <line x1="342.35" y1="217.23" x2="342.35" y2="443.73" stroke="#F5F1E6" stroke-width="11.60" stroke-linecap="round"/>
+  <path d="M 314.50 442.52 C 304.81 420.72, 290.27 415.87, 272.10 414.66 C 252.72 412.24, 247.88 389.23, 252.72 371.06 C 238.19 355.31, 238.19 326.24, 258.78 312.92 C 250.30 292.32, 261.20 269.31, 286.64 271.73" fill="none" stroke="#14202C" stroke-width="10.74" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 332.66 242.66 C 302.38 239.03, 289.06 258.41, 296.33 285.06 C 302.38 304.44, 327.82 304.44, 327.82 331.08 C 327.82 348.04, 319.34 355.31, 313.28 366.21" fill="none" stroke="#14202C" stroke-width="10.74" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 286.64 339.56 C 269.68 349.25, 269.68 380.75, 289.06 390.44" fill="none" stroke="#14202C" stroke-width="10.74" stroke-linecap="round" stroke-linejoin="round"/>
+  <polygon points="367.65,329.87 469.39,274.16 469.39,389.23 367.65,444.94" fill="#FCB414"/>
+  <line x1="367.65" y1="218.44" x2="469.39" y2="274.16" stroke="#F5F1E6" stroke-width="11.72" stroke-linecap="round"/>
+  <line x1="469.39" y1="274.16" x2="367.65" y2="329.87" stroke="#F5F1E6" stroke-width="11.72" stroke-linecap="round"/>
+  <line x1="367.65" y1="329.87" x2="367.65" y2="444.94" stroke="#F5F1E6" stroke-width="11.72" stroke-linecap="round"/>
+  <line x1="469.39" y1="274.16" x2="469.39" y2="389.23" stroke="#F5F1E6" stroke-width="11.72" stroke-linecap="round"/>
+  <line x1="367.65" y1="444.94" x2="406.41" y2="423.62" stroke="#F5F1E6" stroke-width="11.72" stroke-linecap="round"/>
+  <line x1="435.48" y1="407.88" x2="469.39" y2="389.23" stroke="#F5F1E6" stroke-width="11.72" stroke-linecap="round"/>
+  <line x1="312.61" y1="474.01" x2="394.97" y2="474.01" stroke="#F5F1E6" stroke-width="11.72" stroke-linecap="round"/>
+  <line x1="322.30" y1="503.08" x2="385.28" y2="503.08" stroke="#F5F1E6" stroke-width="11.72" stroke-linecap="round"/>
+  <line x1="336.83" y1="530.94" x2="370.75" y2="530.94" stroke="#F5F1E6" stroke-width="11.72" stroke-linecap="round"/>
+  </g>
+  <text x="545.7" y="326.1" fill="#F5F1E6" font-family="'Outfit', sans-serif" font-size="108" font-weight="600" letter-spacing="-1.5px">ideia</text>
+  <text x="545.7" y="429.8" fill="#F5F1E6" font-family="'Outfit', sans-serif" font-size="108" font-weight="600" letter-spacing="-1.5px">cúbica</text>
+  <text x="550.7" y="486.0" fill="#FCB414" font-family="'Outfit', sans-serif" font-size="21" font-weight="700" letter-spacing="15px">IMPRESSÃO 3D</text>
+  <text x="550.7" y="534.3" fill="#CBD5E1" font-family="'Outfit', sans-serif" font-size="19" font-weight="600" letter-spacing="0.5px">Do pensamento à realidade, em 3 dimensões.</text>
+  <rect x="550.7" y="546.3" width="68" height="4.5" rx="2.2" fill="#FCB414"/>
+</svg>

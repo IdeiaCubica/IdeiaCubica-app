@@ -1,0 +1,8 @@
+# Normaliza finais de linha no repositório (LF) e mantém CRLF onde o Windows exige.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.ttf binary
+*.png binary
+*.jpg binary
+*.3mf binary
+*.stl binary

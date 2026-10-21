@@ -1,0 +1,449 @@
+import { useMemo, useState, type ReactNode } from 'react';
+import { useStore } from '../store';
+import { navigate } from '../App';
+import type { DB, Quote, QuoteExtraLine, QuoteInput, QuoteStatus, RoundingRule } from '../../domain/types';
+import { emptyQuoteInput, evaluateQuote, latestVersion, materialCostPolicy, perHour, resolveParams, saveQuote, setQuoteStatus, type QuoteEvaluation } from '../../domain/quotes';
+import { isLockedComponent, laborTotals, type CompStatus, type CostComponent } from '../../domain/costing';
+import { ROUNDING_LABEL } from '../../domain/pricing';
+import { createOrderFromQuote } from '../../domain/production';
+import { saveParty } from '../../domain/catalog';
+import { fmtDate, fmtDateTime, fmtPhone, newId } from '../../domain/core';
+import { D, Decimal, fmtBRL, fmtNum, fmtPct } from '../../domain/money';
+import { parse3MF } from '../../io/threeMF';
+import { parseStl } from '../../io/stl';
+import { compressImage } from '../image';
+import { Alert, Badge, Combobox, DecField, Empty, Field, InlineDec, PageHead, SelectField, TextField, useConfirm, type Tone } from '../components/ui';
+import { PartyForm, priceLabel } from './Cadastros';
+
+export const QUOTE_STATUS: Record<QuoteStatus, { label: string; tone: Tone }> = {
+  rascunho: { label: 'Rascunho', tone: 'neutral' }, enviado: { label: 'Enviado ao cliente', tone: 'info' }, aprovado: { label: 'Aprovado', tone: 'success' },
+  recusado: { label: 'Recusado', tone: 'error' }, convertido: { label: 'Em produção', tone: 'primary' },
+};
+const STATUS_BADGE: Record<CompStatus, { label: string; tone: Tone }> = {
+  ok: { label: 'calculado', tone: 'success' }, estimado: { label: 'estimado', tone: 'warning' }, pendente: { label: 'pendente', tone: 'error' },
+  ajustado: { label: 'ajustado por você', tone: 'info' }, nao_aplicavel: { label: 'n/a', tone: 'neutral' },
+};
+
+export function Orcamentos({ param }: { param?: string }) {
+  if (param) return <QuoteEditor key={param} quoteId={param === 'novo' ? undefined : param} />;
+  return <QuoteList />;
+}
+
+/* ================================================================== */
+/* Lista em balões                                                     */
+/* ================================================================== */
+function QuoteList() {
+  const { db } = useStore();
+  const [status, setStatus] = useState('');
+  const [q, setQ] = useState('');
+  const customer = (id?: string) => db.parties.find((p) => p.id === id)?.name;
+  const rows = [...db.quotes].reverse()
+    .filter((x) => !status || x.status === status)
+    .filter((x) => !q.trim() || `${x.number} ${x.name} ${customer(x.customerId) ?? ''}`.toLowerCase().includes(q.trim().toLowerCase()));
+  return (
+    <>
+      <PageHead eyebrow="Orçamentos" title="Orçamentos" text="Cada balão é um orçamento. Clique para ver os detalhes, ajustar valores ou gerar a produção."
+        actions={<button className="btn primary" onClick={() => navigate('orcamentos/novo')}>Novo orçamento</button>} />
+      {db.quotes.length === 0 ? (
+        <div className="card"><Empty title="Nenhum orçamento ainda" text="Informe cliente, peça, filamento, peso e tempo: o sistema calcula custo, R$/h e o valor para o cliente." action={<button className="btn primary" onClick={() => navigate('orcamentos/novo')}>Criar o primeiro orçamento</button>} /></div>
+      ) : (
+        <>
+          <div className="row" style={{ marginBottom: 20 }}>
+            <input type="search" className="search-lg" placeholder="Buscar por cliente, peça ou número…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Buscar orçamentos" />
+            <div style={{ width: 260, maxWidth: '100%' }}>
+              <Combobox ariaLabel="Filtrar por situação" value={status} onChange={setStatus} placeholder="Todas as situações" options={Object.entries(QUOTE_STATUS).map(([value, v]) => ({ value, label: v.label }))} />
+            </div>
+            <span className="muted" style={{ marginLeft: 'auto' }}>{rows.length} orçamento(s)</span>
+          </div>
+          {rows.length === 0 ? <p className="muted">Nenhum orçamento encontrado.</p> : (
+            <div className="quote-grid">{rows.map((x) => <QuoteCard key={x.id} quote={x} customer={customer(x.customerId)} />)}</div>
+          )}
+        </>
+      )}
+    </>
+  );
+}
+
+function QuoteCard({ quote, customer }: { quote: Quote; customer?: string }) {
+  const v = latestVersion(quote);
+  const s = v.summary;
+  const qty = v.input.quantity;
+  const price = s.orderPrice ?? (s.unitPrice ? D(s.unitPrice).times(qty).toString() : null);
+  const perH = price && s.hours && D(s.hours).gt(0) ? D(price).div(s.hours) : null;
+  return (
+    <button className="quote-card" onClick={() => navigate(`orcamentos/${quote.id}`)} aria-label={`Abrir orçamento ${quote.number}: ${quote.name}`}>
+      <div className="qc-img">{quote.image ? <img src={quote.image} alt="" /> : <img className="ph" src="/brand/10_icone_simbolo_transparente.svg" alt="" />}</div>
+      <div className="qc-body">
+        <div className="row" style={{ justifyContent: 'space-between', gap: 8 }}>
+          <span className="mono muted">{quote.number}</span>
+          <Badge tone={QUOTE_STATUS[quote.status].tone}>{QUOTE_STATUS[quote.status].label}</Badge>
+        </div>
+        <h3 className="qc-title">{quote.name}</h3>
+        <p className="muted qc-client">{customer ?? 'Cliente não informado'}{qty > 1 ? ` · ${qty} peças` : ''}</p>
+        <div className="qc-price">{price ? fmtBRL(price) : '—'}<span>valor para o cliente</span></div>
+        <div className="qc-meta">
+          <span>Custo <b>{s.totalCost ? fmtBRL(s.totalCost) : '—'}</b></span>
+          <span>R$/h <b>{perH ? fmtBRL(perH) : '—'}</b></span>
+        </div>
+        <div className="row" style={{ justifyContent: 'space-between', gap: 8 }}>
+          <span className="small muted">{fmtDate(v.createdAt)} · v{quote.versions.length}</span>
+          {!s.complete && <Badge tone="warning">incompleto</Badge>}
+        </div>
+      </div>
+    </button>
+  );
+}
+
+/* ================================================================== */
+/* Orçamento (novo ou detalhe)                                         */
+/* ================================================================== */
+function Section({ title, subtitle, children, right }: { title: string; subtitle?: string; children: ReactNode; right?: ReactNode }) {
+  return (
+    <div className="card">
+      <div className="card-head"><div><h2>{title}</h2>{subtitle && <p className="muted small">{subtitle}</p>}</div>{right}</div>
+      <div className="card-body stack">{children}</div>
+    </div>
+  );
+}
+
+const filamentMaterials = (db: DB) => db.materials.filter((m) => m.active && m.filament);
+
+function QuoteEditor({ quoteId }: { quoteId?: string }) {
+  const { db, run, toast } = useStore();
+  const [confirm, confirmEl] = useConfirm();
+  const quote = quoteId ? db.quotes.find((q) => q.id === quoteId) : undefined;
+  const [input, setInput] = useState<QuoteInput>(() => {
+    if (quote) return { overrides: {}, ...structuredClone(latestVersion(quote).input) };
+    const base = emptyQuoteInput(db.settings);
+    const first = filamentMaterials(db)[0];
+    return first ? { ...base, materials: [{ materialId: first.id, qtyPerUnit: 0 }] } : base;
+  });
+  const [meta, setMeta] = useState({ name: quote?.name ?? '', customerId: quote?.customerId ?? '', image: quote?.image ?? null as string | null, note: '' });
+  const [newClient, setNewClient] = useState(false);
+  const patch = (p: Partial<QuoteInput>) => setInput((s) => ({ ...s, ...p }));
+
+  const params = useMemo(() => resolveParams(db, input), [db, input]);
+  const evaluation = useMemo<{ ev?: QuoteEvaluation; error?: string }>(() => {
+    try { return { ev: evaluateQuote(input, params) }; } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+  }, [input, params]);
+
+  if (quoteId && !quote) return <Empty title="Orçamento não encontrado" action={<button className="btn secondary" onClick={() => navigate('orcamentos')}>Voltar</button>} />;
+  const locked = quote?.status === 'convertido';
+
+  const save = () => run((d) => saveQuote(d, { quoteId: quote?.id, name: meta.name, customerId: meta.customerId || undefined, image: meta.image, note: meta.note || undefined, projectId: quote?.projectId }, input),
+    quote ? 'Orçamento atualizado (nova versão salva; as anteriores ficam no histórico).' : 'Orçamento criado.')
+    .then((r) => { if (r.ok) { setMeta((m) => ({ ...m, note: '' })); if (!quote) navigate(`orcamentos/${r.value.id}`); } });
+
+  const toOrder = async () => {
+    if (!quote) return;
+    const ok = await confirm({ title: 'Gerar ordem de produção?', confirmLabel: 'Gerar OP',
+      text: <>A produção usará a <b>versão {quote.versions.length}</b> salva. Alterações não salvas nesta tela não entram. Depois disso o orçamento fica bloqueado para edição.</> });
+    if (ok === null) return;
+    const r = await run((d) => createOrderFromQuote(d, quote.id), 'Ordem de produção criada.');
+    if (r.ok) navigate('producao/ordens');
+  };
+
+  const onImage = async (file: File) => {
+    try { setMeta((m) => ({ ...m, image: null })); const img = await compressImage(file); setMeta((m) => ({ ...m, image: img })); }
+    catch (e) { toast('error', e instanceof Error ? e.message : 'Falha ao ler a imagem.'); }
+  };
+
+  const onSliceFile = async (file: File) => {
+    try {
+      const buf = await file.arrayBuffer();
+      if (/\.stl$/i.test(file.name)) {
+        const s = parseStl(buf);
+        toast('info', `STL lido: ${fmtNum(s.sizeMm.x, 1)} × ${fmtNum(s.sizeMm.y, 1)} × ${fmtNum(s.sizeMm.z, 1)} mm, ${fmtNum(s.volumeCm3)} cm³. Um STL não traz peso nem tempo: fatie e informe os valores.`);
+        return;
+      }
+      const info = await parse3MF(buf);
+      if (!info.sliced || info.totals.weightG === null || info.totals.hours === null) {
+        toast('warning', 'Este 3MF não contém resultado de fatiamento. No Bambu Studio/Orca, fatie e exporte como "placa fatiada" — ou digite peso e tempo.');
+        return;
+      }
+      const mats = input.materials.length ? input.materials.map((m, i) => (i === 0 ? { ...m, qtyPerUnit: Number(info.totals.weightG!.toFixed(2)) } : m)) : input.materials;
+      patch({ printHoursPerUnit: Number(info.totals.hours.toFixed(4)), plates: info.plates.length, materials: mats, consumptionBasis: 'total' });
+      toast('success', `Do fatiador: ${fmtNum(info.totals.weightG)} g e ${fmtNum(info.totals.hours, 2)} h (arquivo inteiro). Confira se corresponde a 1 peça.`);
+    } catch (e) { toast('error', e instanceof Error ? e.message : 'Arquivo inválido.'); }
+  };
+
+  const ev = evaluation.ev;
+  return (
+    <>
+      <PageHead eyebrow={quote ? `Orçamento ${quote.number} · versão ${quote.versions.length}` : 'Novo orçamento'} title={meta.name || 'Novo orçamento'}
+        actions={<>
+          <button className="btn ghost" onClick={() => navigate('orcamentos')}>Voltar</button>
+          {quote && !locked && <div style={{ width: 230 }}><Combobox ariaLabel="Situação do orçamento" value={quote.status}
+            onChange={(v) => v && v !== quote.status && run((d) => setQuoteStatus(d, quote.id, v as QuoteStatus), 'Situação atualizada.')}
+            options={(['rascunho', 'enviado', 'aprovado', 'recusado'] as QuoteStatus[]).map((s) => ({ value: s, label: QUOTE_STATUS[s].label }))} /></div>}
+          {quote && !locked && <button className="btn navy" onClick={toOrder} disabled={quote.status === 'recusado'}>Gerar produção</button>}
+          {!locked && <button className="btn primary" onClick={save}>{quote ? 'Salvar alterações' : 'Salvar orçamento'}</button>}
+        </>} />
+      {locked && <div style={{ marginBottom: 20 }}><Alert tone="info" title="Orçamento em produção">Somente leitura. Para mudar valores, crie um novo orçamento.</Alert></div>}
+
+      <div className="split">
+        <fieldset disabled={locked} className="stack">
+          {/* 1. Pedido */}
+          <Section title="1. Pedido">
+            <div className="grid g2">
+              <Field label="Cliente">
+                <div className="row" style={{ flexWrap: 'nowrap', gap: 8 }}>
+                  <Combobox className="grow" ariaLabel="Cliente" value={meta.customerId} onChange={(v) => setMeta((m) => ({ ...m, customerId: v }))} placeholder="— digite o nome do cliente —"
+                    options={db.parties.filter((p) => p.kind === 'cliente').map((p) => ({ value: p.id, label: p.phone ? `${p.name} · ${fmtPhone(p.phone)}` : p.name }))} />
+                  <button type="button" className="btn secondary" onClick={() => setNewClient(true)}>+ Novo</button>
+                </div>
+              </Field>
+              <TextField label="Descrição da peça" required value={meta.name} onChange={(v) => setMeta((m) => ({ ...m, name: v }))} placeholder="Ex.: Chaveiro personalizado com logo" />
+              <DecField label="Quantidade de peças" required value={input.quantity} onChange={(v) => patch({ quantity: v === null ? 0 : Math.max(0, Math.round(Number(v))) })} suffix="un" />
+              <Field label="Link do MakerWorld">
+                <div className="row" style={{ flexWrap: 'nowrap', gap: 8 }}>
+                  <input value={input.source.url ?? ''} placeholder="https://makerworld.com/..." aria-label="Link do MakerWorld" style={{ flex: 1 }}
+                    onChange={(e) => patch({ source: { ...input.source, url: e.target.value, kind: e.target.value ? 'makerworld' : 'manual' } })} />
+                  {input.source.url && /^https?:\/\//.test(input.source.url) && <a className="btn secondary" href={input.source.url} target="_blank" rel="noreferrer noopener">Abrir ↗</a>}
+                </div>
+              </Field>
+            </div>
+            <Field label="Imagem do item solicitado" hint="Opcional. A imagem é reduzida automaticamente antes de salvar.">
+              <div className="image-drop">
+                {meta.image ? <img src={meta.image} alt="Imagem do item" /> : <span className="muted">Nenhuma imagem</span>}
+                <div className="row">
+                  <label className="btn secondary">{meta.image ? 'Trocar imagem' : 'Escolher imagem'}<input type="file" accept="image/*" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) onImage(f); e.target.value = ''; }} /></label>
+                  {meta.image && <button type="button" className="btn ghost" onClick={() => setMeta((m) => ({ ...m, image: null }))}>Remover</button>}
+                </div>
+              </div>
+            </Field>
+          </Section>
+
+          {/* 2. Filamentos */}
+          <FilamentSection db={db} input={input} patch={patch} />
+
+          {/* 3. Tempo */}
+          <Section title="3. Tempo de produção" subtitle="Tempo de impressão de 1 peça (do fatiador).">
+            <HoursField value={input.printHoursPerUnit} onChange={(v) => patch({ printHoursPerUnit: v })} />
+            <div className="grid g2">
+              <SelectField label="Impressora" value={input.printerId ?? ''} onChange={(v) => patch({ printerId: v || undefined })} placeholder="— selecione —"
+                options={db.printers.filter((p) => p.active || p.id === input.printerId).map((p) => ({ value: p.id, label: p.name }))}
+                hint={db.printers.length === 0 ? <a href="#/parametros/impressoras">Cadastre a impressora em Parâmetros de Custos</a> : undefined} />
+              <Field label="Preencher a partir do arquivo (opcional)" hint="3MF fatiado (Bambu Studio/Orca) preenche peso e tempo.">
+                <input type="file" accept=".3mf,.stl,.zip" onChange={(e) => { const f = e.target.files?.[0]; if (f) onSliceFile(f); e.target.value = ''; }} />
+              </Field>
+            </div>
+          </Section>
+
+          {/* 4. Parâmetros deste orçamento */}
+          <ParamsSection db={db} input={input} patch={patch} />
+
+          {!locked && quote && <Section title="Observação desta versão"><TextField label="O que mudou (opcional)" value={meta.note} onChange={(v) => setMeta((m) => ({ ...m, note: v }))} /></Section>}
+          {quote && <VersionHistory quote={quote} onLoad={(i) => setInput({ overrides: {}, ...structuredClone(i) })} />}
+        </fieldset>
+
+        <div className="sticky stack">
+          {evaluation.error ? <Alert tone="error" title="Não foi possível calcular">{evaluation.error}</Alert>
+            : ev && <ResultPanel ev={ev} input={input} patch={patch} locked={locked} />}
+        </div>
+      </div>
+      {newClient && <PartyForm kind="cliente" onClose={() => setNewClient(false)}
+        onSave={(v) => run((d) => saveParty(d, v), 'Cliente cadastrado.').then((r) => { if (r.ok) { setMeta((m) => ({ ...m, customerId: r.value.id })); setNewClient(false); } })} />}
+      {confirmEl}
+    </>
+  );
+}
+
+/* ---------------- Filamentos ---------------- */
+function FilamentSection({ db, input, patch }: { db: DB; input: QuoteInput; patch: (p: Partial<QuoteInput>) => void }) {
+  const mats = filamentMaterials(db);
+  const lines = input.materials;
+  const setLine = (i: number, p: Partial<QuoteInput['materials'][number]>) => patch({ materials: lines.map((l, k) => (k === i ? { ...l, ...p } : l)) });
+  const add = () => patch({ materials: [...lines, { materialId: mats.find((m) => !lines.some((l) => l.materialId === m.id))?.id ?? mats[0]?.id ?? '', qtyPerUnit: 0 }] });
+  if (mats.length === 0 && lines.length === 0) {
+    return (
+      <Section title="2. Filamentos utilizados">
+        <Empty title="Nenhum filamento cadastrado" text="Cadastre o filamento com o preço de referência (R$/kg) para poder orçar." action={<a className="btn primary" href="#/cadastros/materiais">Cadastrar filamento</a>} />
+      </Section>
+    );
+  }
+  return (
+    <Section title="2. Filamentos utilizados" subtitle="Um filamento por cor/material. O preço é o cadastrado no sistema (última compra ou preço do cadastro).">
+      {lines.map((l, i) => {
+        const mat = db.materials.find((m) => m.id === (l.materialId || db.lots.find((x) => x.id === l.lotId)?.materialId));
+        const pol = mat ? materialCostPolicy(db, mat.id) : null;
+        const options = mats.map((m) => {
+          const brand = db.brands.find((b) => b.id === m.brandId)?.name;
+          return { value: m.id, label: `${m.name} — ${m.filament!.materialType} ${m.filament!.color}${brand ? ` · ${brand}` : ''}` };
+        });
+        if (mat && !options.some((o) => o.value === mat.id)) options.push({ value: mat.id, label: `${mat.name} (inativo)` });
+        return (
+          <div key={i} className="filament-line">
+            <SelectField label={`Filamento ${lines.length > 1 ? i + 1 : ''}`.trim()} value={mat?.id ?? ''} onChange={(v) => setLine(i, { materialId: v, lotId: undefined })} placeholder="— digite para buscar o filamento —" options={options} />
+            <DecField label="Peso da peça" suffix="g" value={l.qtyPerUnit || null} onChange={(v) => setLine(i, { qtyPerUnit: v === null ? 0 : Number(v) })} />
+            <Field label="Preço do filamento" hint={pol?.unitCost ? pol.source : <a href="#/cadastros/materiais">Cadastre o preço deste filamento</a>}>
+              <div className={`readonly-value ${pol?.unitCost ? '' : 'missing'}`} aria-live="polite">{pol?.unitCost && mat ? priceLabel(mat, pol.unitCost) : 'sem preço cadastrado'}</div>
+            </Field>
+            {lines.length > 1 && <button type="button" className="btn ghost sm remove" onClick={() => patch({ materials: lines.filter((_, k) => k !== i) })} aria-label={`Remover filamento ${i + 1}`}>✕</button>}
+          </div>
+        );
+      })}
+      <div><button type="button" className="btn secondary sm" onClick={add} disabled={mats.length === 0}>+ Adicionar outro filamento</button></div>
+    </Section>
+  );
+}
+
+/* ---------------- Tempo ---------------- */
+function HoursField({ value, onChange }: { value: number | null; onChange: (v: number | null) => void }) {
+  const h = value === null ? null : Math.floor(value);
+  const m = value === null ? null : Math.round((value - Math.floor(value)) * 60 * 100) / 100;
+  return (
+    <div className="grid g2">
+      <DecField label="Horas" suffix="h" value={h} onChange={(v) => onChange(v === null && m === null ? null : Number(v ?? 0) + (m ?? 0) / 60)} />
+      <DecField label="Minutos" suffix="min" value={m} onChange={(v) => onChange(v === null && h === null ? null : (h ?? 0) + Number(v ?? 0) / 60)} />
+    </div>
+  );
+}
+
+/* ---------------- Parâmetros deste orçamento ---------------- */
+function ParamsSection({ db, input, patch }: { db: DB; input: QuoteInput; patch: (p: Partial<QuoteInput>) => void }) {
+  const lab = laborTotals(input.labor);
+  const setX = (id: string, p: Partial<QuoteExtraLine>) => patch({ extras: input.extras.map((e) => (e.id === id ? { ...e, ...p } : e)) });
+  return (
+    <div className="card">
+      <details className="params-details">
+        <summary>
+          <div><h2>4. Parâmetros deste orçamento</h2><p className="muted small">Vêm de Parâmetros de Custos. Abra para alterar só neste orçamento.</p></div>
+        </summary>
+        <div className="card-body stack" style={{ paddingTop: 0 }}>
+          <div className="grid g3">
+            <DecField label="Markup" suffix="%" value={input.markupPct} onChange={(v) => patch({ markupPct: v })} hint="Lucro desejado sobre o custo" />
+            <SelectField label="Canal de venda" value={input.channelId ?? ''} onChange={(v) => patch({ channelId: v || undefined })} placeholder="— selecione —"
+              options={db.channels.filter((c) => c.active || c.id === input.channelId).map((c) => ({ value: c.id, label: c.name }))}
+              hint={db.channels.length === 0 ? <a href="#/parametros/canais">Cadastre um canal</a> : 'Tributos e taxas'} />
+            <DecField label="Taxa de falha" suffix="%" value={input.failureRatePct} onChange={(v) => patch({ failureRatePct: v, failureSource: 'manual' })} />
+            <DecField label="Mão de obra por orçamento" suffix="min" value={lab.perOrder || null} onChange={(v) => patch({ labor: { perOrder: Number(v ?? 0), perUnit: lab.perUnit } })} hint="Arquivo, fatiamento, atendimento" />
+            <DecField label="Mão de obra por peça" suffix="min" value={lab.perUnit || null} onChange={(v) => patch({ labor: { perOrder: lab.perOrder, perUnit: Number(v ?? 0) } })} hint="Retirada, acabamento, embalagem" />
+            <SelectField label="Arredondamento" value={input.rounding} onChange={(v) => patch({ rounding: v as RoundingRule })} options={Object.entries(ROUNDING_LABEL).map(([value, label]) => ({ value, label }))} />
+            <DecField label="Desconto" suffix="%" value={input.discountPct} onChange={(v) => patch({ discountPct: v })} />
+            <DecField label="Frete pago pela empresa" suffix="R$" value={input.freightSubsidyPerOrder} onChange={(v) => patch({ freightSubsidyPerOrder: v })} hint="Vazio se o cliente paga" />
+          </div>
+          <p className="section-title">Outros custos por peça (embalagem, ímãs, parafusos…)</p>
+          {input.extras.map((e) => (
+            <div key={e.id} className="filament-line">
+              <TextField label="Descrição" value={e.description} onChange={(v) => setX(e.id, { description: v })} placeholder="Ex.: caixa + saquinho" />
+              <DecField label="Quantidade por peça" value={e.qtyPerUnit || null} onChange={(v) => setX(e.id, { qtyPerUnit: Number(v ?? 0) })} />
+              <DecField label="Custo unitário" suffix="R$" value={e.manualUnitCost ?? null} onChange={(v) => setX(e.id, { manualUnitCost: v })} />
+              <button type="button" className="btn ghost sm remove" onClick={() => patch({ extras: input.extras.filter((x) => x.id !== e.id) })} aria-label="Remover custo">✕</button>
+            </div>
+          ))}
+          <div><button type="button" className="btn secondary sm" onClick={() => patch({ extras: [...input.extras, { id: newId(), kind: 'embalagem', description: '', qtyPerUnit: 1, manualUnitCost: null }] })}>+ Adicionar custo</button></div>
+        </div>
+      </details>
+    </div>
+  );
+}
+
+/* ---------------- Histórico ---------------- */
+function VersionHistory({ quote, onLoad }: { quote: Quote; onLoad: (i: QuoteInput) => void }) {
+  if (quote.versions.length < 2) return null;
+  return (
+    <div className="card">
+      <details className="params-details">
+        <summary><div><h2>Histórico de versões ({quote.versions.length})</h2><p className="muted small">Versões anteriores nunca são alteradas.</p></div></summary>
+        <table className="tbl"><thead><tr><th>Versão</th><th>Data</th><th className="num">Custo</th><th className="num">Preço unit.</th><th>Nota</th><th /></tr></thead><tbody>
+          {[...quote.versions].reverse().map((v) => (
+            <tr key={v.version}><td><b>v{v.version}</b></td><td>{fmtDateTime(v.createdAt)}</td><td className="num">{fmtBRL(v.summary.totalCost)}</td><td className="num">{fmtBRL(v.summary.unitPrice)}</td>
+              <td className="small">{v.note ?? ''}</td><td><button type="button" className="btn ghost sm" onClick={() => onLoad(v.input)}>Carregar</button></td></tr>
+          ))}
+        </tbody></table>
+      </details>
+    </div>
+  );
+}
+
+/* ================================================================== */
+/* Resultado: rubricas editáveis e valores finais                      */
+/* ================================================================== */
+function ResultPanel({ ev, input, patch, locked }: { ev: QuoteEvaluation; input: QuoteInput; patch: (p: Partial<QuoteInput>) => void; locked: boolean }) {
+  const { costs, pricing } = ev;
+  const q = input.quantity;
+  const a = pricing.analysis;
+  const { costPerHour, pricePerHour } = perHour(ev);
+  const overrides = input.overrides ?? {};
+  const setOverride = (key: string, v: string | null) => {
+    const next = { ...overrides };
+    if (v === null) delete next[key]; else next[key] = v;
+    patch({ overrides: next });
+  };
+  const neg = (d: Decimal | null | undefined) => (d && d.isNegative() ? { color: 'var(--error)' } : undefined);
+  const missing = [...costs.pending, ...pricing.errors];
+  return (
+    <>
+      {missing.length > 0 && (
+        <Alert tone="warning" title="Faltam informações — valores parciais">
+          <ul>{missing.map((p) => <li key={p}>{p}</li>)}</ul>
+        </Alert>
+      )}
+
+      <div className="card result-total">
+        <div className="card-body stack" style={{ gap: 16 }}>
+          <div className="big-figures">
+            <div><span>Custo total {q > 1 ? `(${q} peças)` : 'da peça'}</span><b>{fmtBRL(costs.total)}</b>{q > 1 && <small>{fmtBRL(costs.unitTotal)} por peça</small>}</div>
+            <div><span>Custo por hora</span><b>{costPerHour ? fmtBRL(costPerHour) : '—'}</b><small>{costs.machineHours ? `${fmtNum(costs.machineHours, 2)} h de impressão` : 'informe o tempo'}</small></div>
+          </div>
+          <div className="client-price">
+            <span>Valor para o cliente {q > 1 ? '(por peça)' : ''}</span>
+            <div className="row" style={{ gap: 10, flexWrap: 'nowrap' }}>
+              <InlineDec prefix="R$" ariaLabel="Valor para o cliente por peça" value={input.manualPriceUnit} onChange={(v) => patch({ manualPriceUnit: v })}
+                placeholder={pricing.recommendedRoundedUnit ? pricing.recommendedRoundedUnit.toFixed(2).replace('.', ',') : '—'} disabled={locked} />
+              {input.manualPriceUnit && <button type="button" className="btn ghost sm" onClick={() => patch({ manualPriceUnit: null })} disabled={locked}>Usar sugerido</button>}
+            </div>
+            <small>Sugerido: <b>{fmtBRL(pricing.recommendedRoundedUnit)}</b> (markup {input.markupPct ? fmtNum(input.markupPct) + '%' : '—'} sobre o custo{pricing.channel ? ` + encargos de ${pricing.channel.name}` : ''}) · Mínimo: {fmtBRL(pricing.minimumUnit)}</small>
+          </div>
+          {a && (
+            <>
+              <div className="big-figures">
+                <div><span>Total do pedido</span><b>{fmtBRL(a.revenue)}</b>{a.discountPct.gt(0) && <small>com {fmtNum(a.discountPct)}% de desconto</small>}</div>
+                <div><span>R$/h (valor ÷ horas)</span><b>{pricePerHour ? fmtBRL(pricePerHour) : '—'}</b><small>quanto cada hora de máquina fatura</small></div>
+                <div><span>Lucro estimado</span><b style={neg(a.result)}>{fmtBRL(a.result)}</b><small>após custos e taxas ({fmtBRL(a.fees)})</small></div>
+              </div>
+              <div className="ratio-pair">
+                <div><span>Markup</span><b style={neg(a.markupPct)}>{fmtPct(a.markupPct)}</b><small>lucro ÷ custo</small></div>
+                <div><span>Margem de lucro sobre a venda</span><b style={neg(a.marginPct)}>{fmtPct(a.marginPct)}</b><small>lucro ÷ valor de venda</small></div>
+              </div>
+            </>
+          )}
+          {a && a.contributionMargin.isNegative() && <Alert tone="error">Este valor não cobre os custos: cada venda gera prejuízo.</Alert>}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-head"><div><h2>Composição do custo</h2><p className="muted small">Você pode alterar as rubricas (menos o filamento, que vem do cadastro); apague o campo para voltar ao calculado.{q > 1 ? ` Valores do pedido (${q} peças).` : ''}</p></div></div>
+        <table className="tbl rubricas">
+          <thead><tr><th>Rubrica</th><th className="num">Calculado</th><th className="num">Valor usado</th></tr></thead>
+          <tbody>
+            {costs.components.map((c) => <RubricaRow key={c.key} c={c} override={overrides[c.key]} onChange={(v) => setOverride(c.key, v)} disabled={locked} />)}
+          </tbody>
+          <tfoot><tr><td>Custo total</td><td /><td className="num">{fmtBRL(costs.total)}</td></tr></tfoot>
+        </table>
+        <div className="card-body" style={{ paddingTop: 8 }}>
+          <details className="disclosure"><summary>Como cada valor foi calculado</summary>
+            <ul className="small" style={{ paddingLeft: 20, margin: 0 }}>
+              {costs.materialLines.map((l, i) => <li key={i}><b>{l.label}:</b> {fmtNum(l.qtyOrder)} {l.unit} × {l.unitCost ? `${fmtBRL(l.unitCost.times(1000))}/kg` : '—'} ({l.source || 'sem preço'}) = {l.cost ? fmtBRL(l.cost) : '—'}</li>)}
+              {costs.components.map((c) => <li key={c.key}><b>{c.label}:</b> {c.formula}</li>)}
+            </ul>
+          </details>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function RubricaRow({ c, override, onChange, disabled }: { c: CostComponent; override?: string; onChange: (v: string | null) => void; disabled: boolean }) {
+  return (
+    <tr title={c.formula}>
+      <td><div>{c.label}</div><Badge tone={STATUS_BADGE[c.status].tone}>{STATUS_BADGE[c.status].label}</Badge></td>
+      <td className="num muted">{c.calculated ? fmtBRL(c.calculated) : 'pendente'}</td>
+      <td className="num">{isLockedComponent(c.key)
+        ? <span title="O preço do filamento vem do cadastro e não pode ser alterado no orçamento"><b>{c.value ? fmtBRL(c.value) : '—'}</b><div className="small muted">do cadastro</div></span>
+        : <InlineDec prefix="R$" ariaLabel={`Valor usado para ${c.label}`} value={override ?? null} onChange={onChange}
+          placeholder={c.calculated ? c.calculated.toFixed(2).replace('.', ',') : 'informe'} disabled={disabled} />}</td>
+    </tr>
+  );
+}

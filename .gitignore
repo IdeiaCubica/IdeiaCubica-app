@@ -1,0 +1,21 @@
+# Dependências e build
+node_modules
+dist
+
+# Variáveis de ambiente (contêm configurações da instalação)
+.env
+.env.local
+.env.*.local
+
+# Vercel / Supabase CLI
+.vercel
+supabase/.temp
+supabase/.branches
+
+# Sistema e editores
+*.log
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea

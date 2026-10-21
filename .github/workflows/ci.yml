@@ -1,0 +1,26 @@
+# Verificação automática a cada envio (push) e pull request:
+# tipagem, testes dos cálculos e build de produção.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+jobs:
+  verificar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Tipagem
+        run: npm run typecheck
+      - name: Testes
+        run: npm test
+      - name: Build
+        run: npx vite build

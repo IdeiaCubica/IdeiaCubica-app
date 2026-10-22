@@ -53,7 +53,6 @@ export function createEmptyDB(): DB {
     quotes: [],
     orders: [],
     finishedGoods: [],
-    trends: [],
     accounts: [],
     finCategories: [
       fin(SYS_FIN.vendaProdutos, 'in', 'receita_venda', true),
@@ -90,6 +89,8 @@ export function migrate(raw: unknown): DB {
     if (Array.isArray(base[key]) && !Array.isArray(db[key])) throw new BusinessError(`Coleção "${key}" corrompida no arquivo de dados.`);
   }
   migrateBrandTexts(db);
+  // v1.1.0 tinha o módulo de tendências (removido na v1.1.1).
+  delete (db as { trends?: unknown }).trends;
   return db;
 }
 

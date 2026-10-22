@@ -1,10 +1,8 @@
 /**
  * Chamadas às funções do servidor (/api/*, Vercel). Enviam o token da sessão do
- * Supabase; os tokens de terceiros ficam só no servidor.
+ * Supabase; o token da SuperFrete fica só no servidor.
  */
 import { getSupabase, usesSupabase } from '../data/supabase';
-import type { TrendReport } from '../domain/types';
-
 export class ApiError extends Error {}
 
 export async function callApi<T>(path: string, body: unknown): Promise<T> {
@@ -39,10 +37,6 @@ export interface FreightOption {
   deliveryMin: number | null;
   deliveryMax: number | null;
   error?: string;
-}
-
-export function fetchTrends(input: { today: string; avoid: string[] }) {
-  return callApi<Omit<TrendReport, 'id' | 'generatedAt'>>('tendencias', input);
 }
 
 export function quoteFreight(input: {

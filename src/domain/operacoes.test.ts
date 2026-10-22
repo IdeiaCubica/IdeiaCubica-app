@@ -9,8 +9,6 @@ import { emptyQuoteInput, materialCostPolicy, saveQuote } from './quotes';
 import { cancelOrder, compareOrder, completeOrder, createManualOrder, createOrderFromQuote, daysInStock, finishedGoodBalance, moveInQueue, orderDelivery, productionQueue, queueShortages, reserveOrderMaterials, startOrder, writeOffFinishedGood } from './production';
 import { managementResult, registerSale } from './sales';
 import type { DB } from './types';
-import { estimateIdea, saveTrendReport } from './trends';
-import { D } from './money';
 
 let db: DB;
 let accountId: string;
@@ -295,25 +293,6 @@ describe('Produção e vendas', () => {
     registerSale(db, { date: '2026-02-10', description: 'Chaveiro', orderId: op.id, qty: 4, unitPrice: '25', discount: '0', freightCharged: '0', freightCost: '0',
       channelId: ch.id, feesWithheld: true, payment: { mode: 'avista', accountId, installments: 1, firstDue: '2026-02-10', intervalDays: 30 } });
     expect(orderDelivery(db, op)).toBe('entregue');
-  });
-
-  it('tendência: estima custo com o mesmo motor do orçamento e o lucro ao preço de mercado', () => {
-    const { printer, q } = setupQuote();
-    db.settings.defaultPrinterId = printer.id;
-    db.settings.defaultMarkupPct = '40';
-    db.settings.defaultFailureRatePct = '0';
-    const est = estimateIdea(db, { estWeightG: 50, estPrintHours: 1, priceMin: 30, priceMax: 50 }, filamentId);
-    // Mesmo custo unitário do orçamento equivalente (50 g, 1 h, mesmos parâmetros)
-    expect(est.unitCost!.toDecimalPlaces(2).toString()).toBe(D(q.versions[0].summary.unitCost!).toDecimalPlaces(2).toString());
-    expect(est.marketUnit!.toString()).toBe('40');
-    expect(est.market!.revenue.toString()).toBe('40');
-    expect(est.profitPerHour!.toString()).toBe(est.market!.result.toString());
-    expect(estimateIdea(db, { estWeightG: null, estPrintHours: 1, priceMin: null, priceMax: null }, filamentId).pending).toContain('peso estimado');
-    const r1 = saveTrendReport(db, { date: '2026-10-21', model: 'm', summary: 'a', ideas: [] });
-    saveTrendReport(db, { date: '2026-10-21', model: 'm', summary: 'b', ideas: [] });
-    expect(db.trends).toHaveLength(1);
-    expect(db.trends[0].summary).toBe('b');
-    expect(r1.id).not.toBe(db.trends[0].id);
   });
 
   it('venda a prazo gera conta a receber; recebimento liquida', () => {

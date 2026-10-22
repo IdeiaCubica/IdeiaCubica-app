@@ -62,21 +62,18 @@ A consulta final deve mostrar 1 linha com o seu e-mail e o papel `owner` (acesso
 4. **Deploy**. Ao final, abra o endereço gerado, entre com o e-mail e a senha do passo 3.
 5. Variáveis alteradas depois exigem **Redeploy** (Deployments → ⋯ → Redeploy).
 
-### Integrações do servidor (v1.1) — frete e tendências
+### Frete pela SuperFrete (v1.1)
 
-Estas chaves são **secretas**: ficam só nas variáveis de ambiente da Vercel, **sem** o prefixo `VITE_`
-(o prefixo `VITE_` publicaria a chave no navegador). Nunca coloque no repositório nem envie por chat.
+O token é **secreto**: fica só nas variáveis de ambiente da Vercel, **sem** o prefixo `VITE_`
+(o prefixo `VITE_` publicaria o token no navegador). Nunca coloque no repositório nem envie por chat.
 
 | Nome | Para quê | Onde gerar |
 | --- | --- | --- |
 | `SUPERFRETE_TOKEN` | Calcular frete no orçamento (seção 5) | web.superfrete.com → Integrações → Desenvolvedores → gerar token |
-| `ANTHROPIC_API_KEY` | Pesquisa diária em **Tendências de produção** | console.anthropic.com → API Keys (exige créditos na conta) |
 | `SUPERFRETE_BASE_URL` (opcional) | Usar o sandbox: `https://sandbox.superfrete.com` | — padrão: `https://api.superfrete.com` |
 
-Marque **Production** (e Preview, se quiser testar em previews) e faça **Redeploy**. As funções `/api/frete` e
-`/api/tendencias` só atendem usuários logados e liberados em `app_members`; sem a variável, a tela mostra o aviso
-“não configurada”. Custos: cada pesquisa de tendências usa tokens do modelo e até 8 buscas na web, cobrados na conta
-da Anthropic (uma pesquisa automática por dia, ao abrir a tela; o botão “Pesquisar novamente” faz outra).
+Marque **Production** (e Preview, se quiser testar em previews) e faça **Redeploy**. A função `/api/frete` só atende
+usuários logados e liberados em `app_members`; sem a variável, a tela mostra o aviso “não configurada”.
 
 ## Passo 6 — Trazer os dados que estavam no navegador (opcional)
 

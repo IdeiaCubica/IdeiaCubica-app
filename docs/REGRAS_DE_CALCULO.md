@@ -129,12 +129,6 @@ Exemplo (sem taxas): custo R$ 50, markup 100% → preço R$ 100, lucro R$ 50, ma
   com as medidas da caixa padrão. É estimativa (suportes removidos pesam menos). “Empresa paga” lança o valor cotado como
   frete pago pela empresa no custo do pedido.
 
-## 6b. Tendências — `trends.ts`
-
-- Cada ideia é avaliada com o mesmo motor do orçamento: 1 peça, peso e tempo estimados pela pesquisa, filamento escolhido,
-  impressora padrão, primeiro canal ativo, markup e taxa de falha padrão. Preço de mercado = média da faixa encontrada;
-  lucro = resultado da análise a esse preço; lucro por hora = lucro ÷ horas de máquina (com falhas).
-
 ## 7. Financeiro — `finance.ts` e `sales.ts`
 
 - Cada compra/venda/lançamento gera **títulos** reconhecidos uma única vez na competência; pagamentos e recebimentos são

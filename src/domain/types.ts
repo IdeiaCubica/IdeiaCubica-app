@@ -489,37 +489,6 @@ export interface FinishedGood {
 }
 
 /* ------------------------------------------------------------------ */
-/* Tendências de produção                                              */
-/* ------------------------------------------------------------------ */
-export interface TrendIdea {
-  title: string;
-  category: string;
-  why: string;
-  audience?: string;
-  /** Faixa de preço praticada no Brasil, em R$. */
-  priceMin?: number | null;
-  priceMax?: number | null;
-  /** Estimativas para impressão em PLA numa Bambu Lab A1. */
-  estWeightG?: number | null;
-  estPrintHours?: number | null;
-  material?: string;
-  difficulty?: 'baixa' | 'media' | 'alta';
-  licenseNote?: string;
-  sources: { title: string; url: string }[];
-}
-
-export interface TrendReport {
-  id: ID;
-  date: ISODate;
-  generatedAt: ISODateTime;
-  model: string;
-  summary: string;
-  ideas: TrendIdea[];
-  /** Avisos do servidor (ex.: modelo alternativo usado). */
-  notice?: string;
-}
-
-/* ------------------------------------------------------------------ */
 /* Financeiro                                                          */
 /* ------------------------------------------------------------------ */
 export interface Account {
@@ -638,7 +607,6 @@ export interface DB {
   quotes: Quote[];
   orders: ProductionOrder[];
   finishedGoods: FinishedGood[];
-  trends: TrendReport[];
   accounts: Account[];
   finCategories: FinCategory[];
   titles: FinTitle[];

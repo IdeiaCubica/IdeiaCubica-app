@@ -393,9 +393,3 @@ details.params-details[open] > summary { border-bottom: 1px solid var(--border);
 .kb-arrows { display: flex; flex-direction: column; justify-content: center; gap: 2px; padding: 6px 4px; border-left: 1px solid rgb(13 25 37 / 0.08); }
 .kb-arrows .btn { padding: 4px 8px; min-height: 0; }
 @media (max-width: 1100px) { .kanban { grid-template-columns: repeat(4, minmax(250px, 80vw)); } }
-
-/* ---------------- Tendências ---------------- */
-.trend-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
-.trend-card h3 { font-size: 18px; line-height: 1.25; }
-.trend-card .dl { margin: 0; }
-@media (max-width: 480px) { .trend-grid { grid-template-columns: 1fr; } }

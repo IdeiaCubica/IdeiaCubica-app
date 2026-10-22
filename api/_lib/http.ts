@@ -3,8 +3,8 @@
  *
  * Toda função exige o token de sessão do Supabase do usuário logado e confere
  * se ele está liberado em `app_members` (RPC is_member, protegida por RLS).
- * Assim os tokens de terceiros (SuperFrete, Anthropic) ficam só no servidor e
- * só usuários do sistema conseguem gastar a cota deles.
+ * Assim o token da SuperFrete fica só no servidor e só usuários do sistema
+ * conseguem usar a cota dele.
  */
 
 export class HttpError extends Error {

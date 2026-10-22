@@ -18,6 +18,7 @@ import { quotePackage, quoteShipping, shippingDefaults } from '../../domain/ship
 import { lookupCep } from '../../io/cep';
 import { fmtCep, isValidCep } from '../../domain/address';
 import { quoteFreight, type FreightOption } from '../../io/api';
+import { ClientQuoteExport } from '../components/ClientQuoteExport';
 import { PartyForm, priceLabel } from './Cadastros';
 
 export const QUOTE_STATUS: Record<QuoteStatus, { label: string; tone: Tone }> = {
@@ -125,7 +126,10 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
   });
   const [meta, setMeta] = useState({ name: quote?.name ?? '', customerId: quote?.customerId ?? '', image: quote?.image ?? null as string | null, note: '' });
   const [newClient, setNewClient] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const patch = (p: Partial<QuoteInput>) => setInput((s) => ({ ...s, ...p }));
+  const unsaved = !!quote && (JSON.stringify(input) !== JSON.stringify({ overrides: {}, ...latestVersion(quote).input })
+    || meta.name !== quote.name || (meta.customerId || undefined) !== quote.customerId || (meta.image ?? null) !== (quote.image ?? null));
 
   const params = useMemo(() => resolveParams(db, input), [db, input]);
   const evaluation = useMemo<{ ev?: QuoteEvaluation; error?: string }>(() => {
@@ -182,6 +186,7 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
           {quote && !locked && <div style={{ width: 230 }}><Combobox ariaLabel="Situação do orçamento" value={quote.status}
             onChange={(v) => v && v !== quote.status && run((d) => setQuoteStatus(d, quote.id, v as QuoteStatus), 'Situação atualizada.')}
             options={(['rascunho', 'enviado', 'aprovado', 'recusado'] as QuoteStatus[]).map((s) => ({ value: s, label: QUOTE_STATUS[s].label }))} /></div>}
+          {quote && <button className="btn secondary" onClick={() => setExporting(true)}>Orçamento para o cliente</button>}
           {quote && !locked && <button className="btn navy" onClick={toOrder} disabled={quote.status === 'recusado'}>Gerar produção</button>}
           {!locked && <button className="btn primary" onClick={save}>{quote ? 'Salvar alterações' : 'Salvar orçamento'}</button>}
         </>} />
@@ -253,6 +258,7 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
       </div>
       {newClient && <PartyForm kind="cliente" onClose={() => setNewClient(false)}
         onSave={(v) => run((d) => saveParty(d, v), 'Cliente cadastrado.').then((r) => { if (r.ok) { setMeta((m) => ({ ...m, customerId: r.value.id })); setNewClient(false); } })} />}
+      {exporting && quote && <ClientQuoteExport quote={quote} onClose={() => setExporting(false)} unsaved={unsaved} />}
       {confirmEl}
     </>
   );
@@ -374,9 +380,14 @@ function FreightSection({ db, input, patch, customerId }: { db: DB; input: Quote
     finally { setLoading(false); }
   };
   const companyPays = (o: FreightOption) => {
-    patch({ freightSubsidyPerOrder: o.price });
-    toast('success', `Frete ${o.name} (${fmtBRL(o.price)}) incluído no custo como “Frete pago pela empresa”.`);
+    patch({ freightSubsidyPerOrder: o.price, shipping: { ...ship, clientFreight: null } });
+    toast('success', `Frete ${o.name} (${fmtBRL(o.price)}) incluído no custo como “Frete pago pela empresa”. No orçamento do cliente aparece “Frete grátis”.`);
   };
+  const clientPays = (o: FreightOption) => {
+    patch({ freightSubsidyPerOrder: null, shipping: { ...ship, clientFreight: { service: o.name, price: o.price!, deliveryMin: o.deliveryMin, deliveryMax: o.deliveryMax } } });
+    toast('success', `Frete ${o.name} (${fmtBRL(o.price)}) será somado ao total no orçamento do cliente. Salve o orçamento.`);
+  };
+  const cf = ship.clientFreight;
   return (
     <Section title="5. Frete (SuperFrete)" subtitle="Caixa desta peça, CEP de saída e de destino. Tudo vem do padrão e pode ser alterado só neste orçamento. Opcional.">
       <div className="grid g2">
@@ -412,12 +423,20 @@ function FreightSection({ db, input, patch, customerId }: { db: DB; input: Quote
               <td><b>{o.name}</b>{o.company && <div className="muted small">{o.company}</div>}</td>
               <td className="num">{o.error ? '—' : <b>{fmtBRL(o.price)}</b>}</td>
               <td>{o.error ? <span className="muted small">{o.error}</span> : o.deliveryMin !== null ? (o.deliveryMin === o.deliveryMax ? `${o.deliveryMin} dia(s) úteis` : `${o.deliveryMin} a ${o.deliveryMax} dias úteis`) : '—'}</td>
-              <td>{!o.error && o.price && <button type="button" className="btn ghost sm" onClick={() => companyPays(o)}>Empresa paga</button>}</td>
+              <td>{!o.error && o.price && <div className="row" style={{ flexWrap: 'nowrap', gap: 6 }}>
+                <button type="button" className="btn secondary sm" onClick={() => clientPays(o)}>Cliente paga</button>
+                <button type="button" className="btn ghost sm" onClick={() => companyPays(o)}>Empresa paga</button></div>}</td>
             </tr>
           ))}
         </tbody></table></div>
       )}
-      <p className="small muted">Se o <b>cliente paga</b> o frete, informe o valor a ele à parte (não entra no custo da peça). Se a <b>empresa paga</b>, o valor entra no custo do pedido. Valores da SuperFrete no momento da consulta.</p>
+      {cf && (
+        <Alert tone="info" title={`Frete cobrado do cliente: ${cf.service} · ${fmtBRL(cf.price)}`}>
+          Aparece no orçamento do cliente e é somado ao total (não entra no custo da peça).{' '}
+          <button type="button" className="link-btn" onClick={() => setShip({ clientFreight: null })}>Remover</button>
+        </Alert>
+      )}
+      <p className="small muted"><b>Cliente paga</b>: o frete vai para o orçamento do cliente, somado ao total. <b>Empresa paga</b>: o valor entra no custo do pedido e o cliente vê “frete grátis”. Valores da SuperFrete no momento da consulta.</p>
     </Section>
   );
 }

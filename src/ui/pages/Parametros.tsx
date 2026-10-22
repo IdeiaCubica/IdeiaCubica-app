@@ -13,6 +13,7 @@ import { wattsToKwhPerHour } from '../../domain/conversions';
 import { generalRecommendations, printerRecommendations, type RecSource, type Recommendation } from '../../domain/recommendations';
 import { isValidCep } from '../../domain/address';
 import { AddressFields } from '../components/AddressFields';
+import { ClientQuoteFields, saveClientQuoteDefaults, useClientQuoteForm } from '../components/ClientQuoteExport';
 import type { AddressParts } from '../../domain/types';
 
 type Tab = 'gerais' | 'impressoras' | 'canais' | 'indiretas' | 'fontes';
@@ -151,8 +152,24 @@ function Gerais() {
         </div>
       </div>
 
+      <ClientQuoteCard />
+
       <Alert tone="info" title="Tributos">Alíquotas não são presumidas: configure-as por canal de venda conforme o regime da empresa e valide com seu contador.</Alert>
       <div className="row"><button className="btn primary" onClick={save}>Salvar parâmetros</button></div>
+    </div>
+  );
+}
+
+function ClientQuoteCard() {
+  const { run } = useStore();
+  const [form, setForm] = useClientQuoteForm();
+  return (
+    <div className="card">
+      <div className="card-head"><div><h2>Orçamento para o cliente</h2><p className="muted small">Textos e contatos do documento enviado ao cliente (botão “Orçamento para o cliente” em cada orçamento). Custos nunca aparecem.</p></div></div>
+      <div className="card-body stack">
+        <ClientQuoteFields value={form} onChange={setForm} />
+        <div><button className="btn secondary" onClick={() => run(saveClientQuoteDefaults(form), 'Textos do orçamento para o cliente salvos.')}>Salvar textos do orçamento</button></div>
+      </div>
     </div>
   );
 }

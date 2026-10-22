@@ -291,6 +291,20 @@ export interface Settings {
   companyAddress?: AddressParts;
   /** Embalagem padrão para cotação de frete. */
   shippingBox?: ShippingBox;
+  /** Textos e contatos do orçamento enviado ao cliente. */
+  clientQuote?: ClientQuoteSettings;
+}
+
+export interface ClientQuoteSettings {
+  validityDays: number | null;
+  /** Prazo de produção em dias úteis após a aprovação. */
+  productionDays: number | null;
+  paymentTerms: string;
+  notes: string;
+  whatsapp: string;
+  instagram: string;
+  email: string;
+  site: string;
 }
 
 /* ------------------------------------------------------------------ */
@@ -429,6 +443,8 @@ export interface QuoteShipping extends ShippingBox {
   originCep: string | null;
   /** CEP de destino; vazio = CEP do cadastro do cliente. */
   destCep: string | null;
+  /** Frete cotado que será cobrado do cliente (aparece no orçamento enviado). */
+  clientFreight?: { service: string; price: DecStr; deliveryMin: number | null; deliveryMax: number | null } | null;
 }
 
 export interface Quote {

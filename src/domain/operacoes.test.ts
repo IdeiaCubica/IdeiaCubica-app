@@ -1,14 +1,16 @@
 /** Testes integrados: compras, financeiro, estoque, produção e vendas operando sobre o mesmo banco. */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createEmptyDB } from './schema';
-import { saveAccount, saveChannel, saveMaterial, savePrinter } from './catalog';
+import { saveAccount, saveChannel, saveMaterial, saveParty, savePrinter } from './catalog';
 import { cancelPurchase, registerPurchase } from './purchases';
 import { accountBalance, openTotals, reverseSettlement, settleTitle, titleOpen } from './finance';
 import { adjustInventory, lotBalance, purchaseAlerts, reorderAnalysis, reserve, releaseAll, addMovement } from './inventory';
-import { emptyQuoteInput, materialCostPolicy, saveQuote } from './quotes';
+import { emptyQuoteInput, latestVersion, materialCostPolicy, saveQuote } from './quotes';
 import { cancelOrder, compareOrder, completeOrder, createManualOrder, createOrderFromQuote, daysInStock, finishedGoodBalance, moveInQueue, orderDelivery, productionQueue, queueShortages, reserveOrderMaterials, startOrder, writeOffFinishedGood } from './production';
 import { managementResult, registerSale } from './sales';
 import type { DB } from './types';
+import { buildClientQuote } from './clientQuote';
+import { D } from './money';
 
 let db: DB;
 let accountId: string;
@@ -347,6 +349,36 @@ describe('Produção e vendas', () => {
     registerSale(db, { date: '2026-02-10', description: 'Chaveiro', orderId: op.id, qty: 4, unitPrice: '25', discount: '0', freightCharged: '0', freightCost: '0',
       channelId: ch.id, feesWithheld: true, payment: { mode: 'avista', accountId, installments: 1, firstDue: '2026-02-10', intervalDays: 30 } });
     expect(orderDelivery(db, op)).toBe('entregue');
+  });
+
+  it('orçamento para o cliente: valores da versão salva, frete do cliente e nenhum dado de custo', () => {
+    const { q, lotId, printer, ch } = setupQuote();
+    const cli = saveParty(db, { kind: 'cliente', name: 'Maria', phone: '11987654321' });
+    const q2 = saveQuote(db, { name: 'Vaso', customerId: cli.id, image: 'data:image/jpeg;base64,AAA' }, {
+      ...latestVersion(q).input, quantity: 3, manualPriceUnit: '25', discountPct: '10',
+      shipping: { originCep: '01001000', destCep: null, lengthCm: 20, widthCm: 15, heightCm: 10, packagingWeightG: 80,
+        clientFreight: { service: 'PAC', price: '22.5', deliveryMin: 3, deliveryMax: 5 } },
+    });
+    void lotId; void printer; void ch;
+    const doc = buildClientQuote(db, q2, { validityDays: 7 }, '2026-10-21');
+    expect(doc.unitPrice.toString()).toBe('25');
+    expect(doc.subtotal.toString()).toBe('75');
+    expect(doc.discount.toString()).toBe('7.5');     // 25 × 10% × 3
+    expect(doc.freight).toEqual({ label: 'Frete (PAC)', price: D('22.5'), delivery: '3 a 5 dias úteis', free: false });
+    expect(doc.total.toString()).toBe('90');         // 67,50 + 22,50
+    expect(doc.validUntil).toBe('2026-10-28');
+    expect(doc.item.image).toBe('data:image/jpeg;base64,AAA');
+    expect(doc.item.materials).toEqual(['PLA Preto']);
+    expect(doc.customer?.name).toBe('Maria');
+    // Nenhum campo interno vai para o documento
+    const json = JSON.stringify(doc);
+    for (const k of ['cost', 'Cost', 'margin', 'markup', 'hours', 'weight', 'qtyPerUnit', 'source']) expect(json).not.toContain(k);
+    // Sem imagem: não aparece. Frete pago pela empresa: "grátis".
+    const q3 = saveQuote(db, { name: 'Sem foto' }, { ...latestVersion(q).input, freightSubsidyPerOrder: '15' });
+    const d3 = buildClientQuote(db, q3, {}, '2026-10-21');
+    expect(d3.item.image).toBeNull();
+    expect(d3.freight?.free).toBe(true);
+    expect(d3.total.toString()).toBe(D(latestVersion(q3).summary.orderPrice!).toString());
   });
 
   it('venda a prazo gera conta a receber; recebimento liquida', () => {

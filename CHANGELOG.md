@@ -2,6 +2,18 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.4.0 — 21/10/2026
+
+### Orçamento para o cliente
+- Botão **“Orçamento para o cliente”** em cada orçamento salvo: documento A4 com a identidade da marca, pronto para
+  **Baixar PDF** (pela janela de impressão → “Salvar como PDF”) e **Copiar mensagem** para o WhatsApp.
+- Conteúdo pensado para o cliente: saudação e agradecimento, foto da peça (só quando o orçamento tem foto), material,
+  quantidade, valor por peça, desconto, frete, total em destaque, prazo de produção, pagamento, validade e contatos.
+  **Nenhum custo, margem, markup, peso ou tempo de máquina** aparece (coberto por teste).
+- Frete no orçamento: novo botão **“Cliente paga”** (o frete escolhido aparece e é somado no documento); “Empresa paga”
+  mostra “Frete grátis” ao cliente.
+- Textos e contatos padrão em Parâmetros de Custos → Gerais → Orçamento para o cliente (podem ser ajustados a cada envio).
+
 ## v1.3.0 — 21/10/2026
 
 ### Compras da empresa

@@ -55,7 +55,25 @@ export function fmtDateTime(iso?: string | null): string {
 export function nextCode(db: DB, counter: string, prefix: string): string {
   const n = (db.counters[counter] ?? 0) + 1;
   db.counters[counter] = n;
-  return `${prefix}-${String(n).padStart(4, '0')}`;
+  const digits = db.settings.codeDigits?.[counter] ?? 4;
+  return `${prefix}-${String(n).padStart(digits, '0')}`;
+}
+
+/** Próximo número que será usado por um contador (sem consumir). */
+export function peekCode(db: DB, counter: string, prefix: string): string {
+  const digits = db.settings.codeDigits?.[counter] ?? 4;
+  return `${prefix}-${String((db.counters[counter] ?? 0) + 1).padStart(digits, '0')}`;
+}
+
+/** Define o próximo número de um contador. Não permite voltar abaixo de números já usados. */
+export function setNextNumber(db: DB, counter: string, next: number, digits?: number, minNext = 1) {
+  assert(Number.isInteger(next) && next >= 1, 'O próximo número deve ser um inteiro maior que zero.');
+  assert(next >= minNext, `O próximo número não pode ser menor que ${minNext} (já existem documentos com esse número).`);
+  db.counters[counter] = next - 1;
+  if (digits !== undefined) {
+    assert(Number.isInteger(digits) && digits >= 3 && digits <= 10, 'A quantidade de dígitos deve ficar entre 3 e 10.');
+    db.settings.codeDigits = { ...db.settings.codeDigits, [counter]: digits };
+  }
 }
 
 export function audit(db: DB, action: string, detail?: string) {

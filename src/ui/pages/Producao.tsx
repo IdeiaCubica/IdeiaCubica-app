@@ -1,23 +1,25 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { useStore } from '../store';
 import { navigate } from '../App';
-import type { FinishedGood, OrderStatus, ProductionOrder, Project } from '../../domain/types';
+import type { OrderStatus, ProductionOrder, Project } from '../../domain/types';
 import {
-  ORDER_STATUS_LABEL, QUEUE_STATUSES, addProjectFileVersion, cancelOrder, checkAvailability, compareOrder, completeOrder, createManualOrder, daysInStock,
-  finishedGoodBalance, moveInQueue, moveOrderStatus, orderDelivery, orderReservations, productionQueue, queueShortages, registerFinishedGood, reserveOrderMaterials,
-  saveProject, startOrder, updateOrderPlanning, writeOffFinishedGood,
+  ORDER_STATUS_LABEL, QUEUE_STATUSES, addProjectFileVersion, byDelivery, cancelOrder, checkAvailability, compareOrder, completeOrder, createManualOrder,
+  moveOrderStatus, orderDelivery, orderReservations, productionQueue, queueShortages, reserveOrderMaterials, returnOrderToQuote,
+  saveProject, startOrder, stockEstimate, updateOrderPlanning,
 } from '../../domain/production';
 import { lotBalance, lotLabel, reorderAnalysis } from '../../domain/inventory';
 import { saleEconomics } from '../../domain/sales';
-import { latestVersion } from '../../domain/quotes';
+import { quoteItemAt, quoteItems } from '../../domain/quotes';
+import { clientQuoteSettings } from '../../domain/clientQuote';
 import { fmtDuration } from '../../domain/conversions';
-import { addDays as addDaysISO, fmtDate, fmtDateTime, todayISO } from '../../domain/core';
-import { D, Decimal, ZERO, fmtBRL, fmtNum, fmtPct, sum } from '../../domain/money';
-import { Alert, Badge, Check, Combobox, DataTable, DateField, Empty, Kpi, Modal, NumField, PageHead, SelectField, Tabs, TextArea, TextField, TimeField, dec, num, useConfirm, useForm, type Tone } from '../components/ui';
+import { BusinessError, addDays as addDaysISO, fmtDate, fmtDateTime, todayISO } from '../../domain/core';
+import { Decimal, ZERO, fmtBRL, fmtNum, fmtPct, sum } from '../../domain/money';
+import { Alert, Badge, Check, Combobox, DataTable, DateField, Empty, Kpi, Modal, NumField, PageHead, SelectField, Tabs, TextArea, TextField, TimeField, num, useConfirm, useForm, type Tone } from '../components/ui';
 import { QUOTE_STATUS } from './Orcamentos';
 import { SaleForm } from './Financeiro';
 
-type Tab = 'quadro' | 'pedidos' | 'pronta-entrega' | 'ordens' | 'projetos';
+type Tab = 'quadro' | 'pedidos' | 'estoque' | 'ordens' | 'projetos';
 const STATUS_TONE: Record<OrderStatus, Tone> = {
   planejada: 'neutral', aguardando_material: 'error', pronta: 'info', em_producao: 'primary', aguardando_acabamento: 'warning', em_inspecao: 'warning', concluida: 'success', cancelada: 'neutral',
 };
@@ -26,29 +28,32 @@ const purposeOf = (o: ProductionOrder) => o.purpose ?? 'pedido';
 
 export function Producao({ param }: { param?: string }) {
   const { db } = useStore();
-  const tab: Tab = param === 'ordens' || param === 'projetos' || param === 'pedidos' || param === 'pronta-entrega' ? param : 'quadro';
+  // Peças prontas foram para o módulo Estoque.
+  useEffect(() => { if (param === 'pronta-entrega') navigate('estoque/pecas'); }, [param]);
+  const tab: Tab = param === 'ordens' || param === 'projetos' || param === 'pedidos' || param === 'estoque' ? param : 'quadro';
   const active = db.orders.filter((o) => !['concluida', 'cancelada'].includes(o.status)).length;
-  const openOrders = db.orders.filter((o) => purposeOf(o) === 'pedido' && ['fila', 'producao', 'pronto'].includes(orderDelivery(db, o))).length;
-  const fgCount = db.finishedGoods.filter((g) => finishedGoodBalance(db, g.id).available > 0).length;
+  const openOrders = db.orders.filter((o) => purposeOf(o) === 'pedido' && ['fila', 'producao', 'pronto'].includes(orderDelivery(db, o))).length
+    + db.finishedGoods.reduce((s, g) => s + (g.allocations?.length ?? 0), 0);
+  const openStock = db.orders.filter((o) => purposeOf(o) === 'estoque' && !['concluida', 'cancelada'].includes(o.status)).length;
   const [creating, setCreating] = useState(false);
   return (
     <>
-      <PageHead eyebrow="Módulo 5" title="Produção" text="Fila de produção, pedidos de clientes e peças prontas para venda. Reserva e baixa de material sem duplicidade."
-        actions={<><button className="btn secondary" onClick={() => setCreating(true)} disabled={!db.materials.length}>Nova OP manual</button>
-          <button className="btn primary" onClick={() => navigate('orcamentos')}>OP a partir de orçamento</button></>} />
+      <PageHead eyebrow="Módulo 5" title="Produção" text="Pedidos a partir de orçamento e produções para estoque, organizados pela data de entrega. Reserva e baixa de material sem duplicidade."
+        actions={<><button className="btn secondary" onClick={() => setCreating(true)} disabled={!db.materials.length}>Nova produção para estoque</button>
+          <button className="btn primary" onClick={() => navigate('orcamentos/aprovados')}>Pedido a partir de orçamento</button></>} />
       <Tabs<Tab> value={tab} onChange={(t) => navigate(`producao/${t}`)} tabs={[
         { id: 'quadro', label: 'Quadro (Kanban)', count: active || undefined },
-        { id: 'pedidos', label: 'Pedidos de clientes', count: openOrders || undefined },
-        { id: 'pronta-entrega', label: 'Peças prontas (estoque)', count: fgCount || undefined },
-        { id: 'ordens', label: 'Todas as ordens' },
+        { id: 'pedidos', label: 'Pedidos a partir de orçamento', count: openOrders || undefined },
+        { id: 'estoque', label: 'Produções para estoque', count: openStock || undefined },
+        { id: 'ordens', label: 'Histórico' },
         { id: 'projetos', label: 'Projetos / produtos', count: db.projects.length },
       ]} />
       {tab === 'quadro' && <Quadro />}
       {tab === 'pedidos' && <Pedidos />}
-      {tab === 'pronta-entrega' && <ProntaEntrega />}
+      {tab === 'estoque' && <ProducoesEstoque onNew={() => setCreating(true)} />}
       {tab === 'ordens' && <Ordens />}
       {tab === 'projetos' && <Projetos />}
-      {creating && <ManualOrderForm onClose={() => setCreating(false)} />}
+      {creating && <StockProductionForm onClose={() => setCreating(false)} />}
     </>
   );
 }
@@ -58,7 +63,7 @@ export function Producao({ param }: { param?: string }) {
 /* ================================================================== */
 type Column = 'fila' | 'producao' | 'acabamento' | 'concluidas';
 const COLUMNS: { id: Column; title: string; hint: string }[] = [
-  { id: 'fila', title: 'Sequência (fila)', hint: 'Arraste para mudar a ordem. A primeira é a próxima a imprimir.' },
+  { id: 'fila', title: 'A produzir', hint: 'Pela data de entrega: as próximas entregas ficam no topo.' },
   { id: 'producao', title: 'Em produção', hint: 'Imprimindo agora.' },
   { id: 'acabamento', title: 'Acabamento / inspeção', hint: 'Pós-processo e conferência.' },
   { id: 'concluidas', title: 'Produzidas', hint: 'Concluídas nos últimos 30 dias.' },
@@ -76,25 +81,20 @@ function Quadro() {
   const since = addDaysISO(todayISO(), -30);
   const cards: Record<Column, ProductionOrder[]> = {
     fila: productionQueue(db),
-    producao: db.orders.filter((o) => columnOf(o) === 'producao'),
-    acabamento: db.orders.filter((o) => columnOf(o) === 'acabamento'),
+    producao: db.orders.filter((o) => columnOf(o) === 'producao').sort(byDelivery),
+    acabamento: db.orders.filter((o) => columnOf(o) === 'acabamento').sort(byDelivery),
     concluidas: db.orders.filter((o) => o.status === 'concluida' && (o.finishedAt ?? '') >= since).sort((a, b) => (b.finishedAt ?? '').localeCompare(a.finishedAt ?? '')),
   };
   const queueHours = cards.fila.reduce((s, o) => s + (o.plannedHours ?? 0), 0);
 
-  /** Soltar um card numa coluna (e, na fila, antes de outro card). */
-  const drop = (col: Column, beforeId?: string) => {
+  /** Soltar um cartão numa coluna. A ordem dentro da coluna é sempre a data de entrega. */
+  const drop = (col: Column) => {
     const o = db.orders.find((x) => x.id === dragId);
     setDragId(null); setOver(null);
     if (!o) return;
     const from = columnOf(o);
-    if (col === 'fila') {
-      if (from !== 'fila') return void toast('warning', 'Uma ordem já iniciada não volta para a fila.');
-      const queue = cards.fila.filter((x) => x.id !== o.id);
-      const idx = beforeId ? queue.findIndex((x) => x.id === beforeId) : queue.length;
-      return void run((d) => moveInQueue(d, o.id, idx < 0 ? queue.length : idx));
-    }
     if (col === from) return;
+    if (col === 'fila') return void toast('warning', 'Um pedido já iniciado não volta para “A produzir”.');
     if (col === 'producao') {
       if (from === 'fila') return void run((d) => startOrder(d, o.id), `${o.number}: produção iniciada (material reservado).`);
       return void run((d) => moveOrderStatus(d, o.id, 'em_producao'));
@@ -108,11 +108,6 @@ function Quadro() {
       setCompleting(o);
     }
   };
-  const move = (o: ProductionOrder, delta: number) => {
-    const idx = cards.fila.findIndex((x) => x.id === o.id);
-    run((d) => moveInQueue(d, o.id, idx + delta));
-  };
-
   return (
     <>
       <div className="kpis" style={{ marginBottom: 18 }}>
@@ -130,23 +125,19 @@ function Quadro() {
             <header><h3>{c.title}</h3><span className="kb-count">{cards[c.id].length}</span></header>
             <p className="small muted">{c.hint}</p>
             <div className="kb-list">
-              {cards[c.id].length === 0 && <div className="kb-empty">Nenhuma ordem</div>}
-              {cards[c.id].map((o, i) => (
-                <KanbanCard key={o.id} order={o} position={c.id === 'fila' ? i + 1 : undefined}
-                  dragging={dragId === o.id}
+              {cards[c.id].length === 0 && <div className="kb-empty">Nada aqui</div>}
+              {cards[c.id].map((o) => (
+                <KanbanCard key={o.id} order={o} dragging={dragId === o.id}
                   onDragStart={() => setDragId(o.id)} onDragEnd={() => { setDragId(null); setOver(null); }}
-                  onDropBefore={c.id === 'fila' ? () => drop('fila', o.id) : undefined}
-                  onOpen={() => setSel(o)}
-                  onUp={c.id === 'fila' && i > 0 ? () => move(o, -1) : undefined}
-                  onDown={c.id === 'fila' && i < cards.fila.length - 1 ? () => move(o, 1) : undefined} />
+                  onOpen={() => setSel(o)} />
               ))}
             </div>
           </section>
         ))}
       </div>
       <p className="small muted" style={{ marginTop: 12 }}>
-        Arraste os cartões entre as colunas: soltar em <b>Em produção</b> reserva o material e inicia a OP; soltar em <b>Produzidas</b> abre a conclusão com o consumo real.
-        No celular, use as setas ▲▼ para mudar a sequência e abra o cartão para mudar o status.
+        Cada coluna é ordenada pela data de entrega (próximas no topo; sem data por último). Arraste os cartões entre as colunas:
+        soltar em <b>Em produção</b> reserva o material e inicia; soltar em <b>Produzidas</b> abre a conclusão com o consumo real. No celular, abra o cartão para mudar o status.
       </p>
       {sel && <OrderModal order={sel} onClose={() => setSel(null)} />}
       {completing && <CompleteForm order={completing} onClose={() => setCompleting(null)} />}
@@ -154,24 +145,24 @@ function Quadro() {
   );
 }
 
-function KanbanCard({ order: o, position, dragging, onDragStart, onDragEnd, onDropBefore, onOpen, onUp, onDown }: {
-  order: ProductionOrder; position?: number; dragging: boolean; onDragStart: () => void; onDragEnd: () => void;
-  onDropBefore?: () => void; onOpen: () => void; onUp?: () => void; onDown?: () => void;
+function KanbanCard({ order: o, dragging, onDragStart, onDragEnd, onOpen }: {
+  order: ProductionOrder; dragging: boolean; onDragStart: () => void; onDragEnd: () => void; onOpen: () => void;
 }) {
   const { db } = useStore();
   const customer = db.parties.find((p) => p.id === o.customerId);
   const printer = db.printers.find((p) => p.id === o.printerId);
   const shortage = QUEUE_STATUSES.includes(o.status) && (queueShortages(db).has(o.id) || checkAvailability(db, o).some((a) => a.shortage.gt(0)));
-  const late = o.dueDate && o.status !== 'concluida' && o.dueDate < todayISO();
-  const image = o.quoteId ? db.quotes.find((q) => q.id === o.quoteId)?.image : undefined;
+  const today = todayISO();
+  const late = o.dueDate && o.status !== 'concluida' && o.dueDate < today;
+  const soon = o.dueDate && !late && o.status !== 'concluida' && o.dueDate <= addDaysISO(today, 3);
+  const q = o.quoteId ? db.quotes.find((x) => x.id === o.quoteId) : undefined;
+  const image = q ? quoteItemAt(q, o.quoteVersion, o.quoteItemId)?.image : undefined;
   return (
     <article className={`kb-card${dragging ? ' dragging' : ''}`} draggable onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', o.id); onDragStart(); }}
-      onDragEnd={onDragEnd}
-      onDragOver={onDropBefore ? (e) => e.preventDefault() : undefined}
-      onDrop={onDropBefore ? (e) => { e.preventDefault(); e.stopPropagation(); onDropBefore(); } : undefined}>
+      onDragEnd={onDragEnd}>
       <button className="kb-open" onClick={onOpen} aria-label={`Abrir ${o.number}`}>
+        <div className={`kb-due${late ? ' late' : soon ? ' soon' : ''}`}>{o.dueDate ? `Entrega ${fmtDate(o.dueDate)}` : 'Sem data de entrega'}</div>
         <div className="kb-top">
-          {position !== undefined && <span className="kb-pos">{position}º</span>}
           <span className="mono small">{o.number}</span>
           <Badge tone={purposeOf(o) === 'pedido' ? 'info' : 'neutral'}>{PURPOSE_LABEL[purposeOf(o)]}</Badge>
         </div>
@@ -186,20 +177,13 @@ function KanbanCard({ order: o, position, dragging, onDragStart, onDragEnd, onDr
           <span>{o.actual ? `${o.actual.qtyApproved}/${o.qtyPlanned} pç` : `${o.qtyPlanned} pç`}</span>
           {o.plannedHours !== null && <span>{fmtDuration(o.plannedHours)}</span>}
           {printer && <span>{printer.name}</span>}
-          {o.dueDate && <span className={late ? 'err-text' : ''}>entrega {fmtDate(o.dueDate)}</span>}
         </div>
         <div className="kb-tags">
           {o.status !== 'em_producao' && o.status !== 'concluida' && <Badge tone={STATUS_TONE[o.status]}>{ORDER_STATUS_LABEL[o.status]}</Badge>}
           {shortage && <Badge tone="error">falta material</Badge>}
-          {late && <Badge tone="error">atrasada</Badge>}
+          {late && <Badge tone="error">atrasado</Badge>}
         </div>
       </button>
-      {(onUp || onDown || position !== undefined) && (
-        <div className="kb-arrows">
-          <button className="btn ghost sm" onClick={onUp} disabled={!onUp} aria-label="Subir na fila">▲</button>
-          <button className="btn ghost sm" onClick={onDown} disabled={!onDown} aria-label="Descer na fila">▼</button>
-        </div>
-      )}
     </article>
   );
 }
@@ -207,120 +191,98 @@ function KanbanCard({ order: o, position, dragging, onDragStart, onDragEnd, onDr
 /* ================================================================== */
 /* Pedidos de clientes                                                 */
 /* ================================================================== */
-const DELIVERY: Record<ReturnType<typeof orderDelivery>, { label: string; tone: Tone }> = {
-  fila: { label: 'Na fila', tone: 'neutral' }, producao: { label: 'Em produção', tone: 'primary' },
-  pronto: { label: 'Pronto para entregar', tone: 'warning' }, entregue: { label: 'Entregue / vendido', tone: 'success' }, cancelado: { label: 'Cancelado', tone: 'neutral' },
+const DELIVERY: Record<ReturnType<typeof orderDelivery> | 'separado', { label: string; tone: Tone }> = {
+  fila: { label: 'A produzir', tone: 'neutral' }, producao: { label: 'Em produção', tone: 'primary' },
+  pronto: { label: 'Pronto para entregar', tone: 'warning' }, separado: { label: 'Pedido aprovado (estoque)', tone: 'warning' },
+  entregue: { label: 'Entregue / vendido', tone: 'success' }, cancelado: { label: 'Cancelado / retornado', tone: 'neutral' },
+};
+
+type PedidoRow = {
+  key: string; number: string; description: string; qty: number; customerId?: string; quoteId?: string; itemId?: string; dueDate?: string;
+  value: string | null; image?: string | null; d: ReturnType<typeof orderDelivery> | 'separado'; order?: ProductionOrder; fgCode?: string;
 };
 
 function Pedidos() {
   const { db } = useStore();
   const [sel, setSel] = useState<ProductionOrder | null>(null);
-  const [selling, setSelling] = useState<ProductionOrder | null>(null);
+  const [selling, setSelling] = useState<PedidoRow | null>(null);
+  const [card, setCard] = useState<PedidoRow | null>(null);
   const [filter, setFilter] = useState('abertos');
-  const rows = db.orders.filter((o) => purposeOf(o) === 'pedido')
-    .map((o) => ({ o, d: orderDelivery(db, o) }))
-    .filter((r) => filter === 'todos' || (filter === 'abertos' ? ['fila', 'producao', 'pronto'].includes(r.d) : r.d === filter))
-    .sort((a, b) => (a.o.dueDate ?? '9999').localeCompare(b.o.dueDate ?? '9999') || a.o.createdAt.localeCompare(b.o.createdAt));
+  const fromOrders: PedidoRow[] = db.orders.filter((o) => purposeOf(o) === 'pedido').map((o) => {
+    const q = db.quotes.find((x) => x.id === o.quoteId);
+    const it = q ? quoteItemAt(q, o.quoteVersion, o.quoteItemId) : undefined;
+    return { key: o.id, number: o.number, description: o.description, qty: o.qtyPlanned, customerId: o.customerId, quoteId: o.quoteId, itemId: o.quoteItemId, dueDate: o.dueDate,
+      value: it?.summary.orderPrice ?? null, image: it?.image, d: orderDelivery(db, o), order: o };
+  });
+  // Pedidos aprovados de peças do estoque: não precisam produzir, já estão separadas.
+  const fromStock: PedidoRow[] = db.finishedGoods.flatMap((g) => (g.allocations ?? []).map((a) => {
+    const q = db.quotes.find((x) => x.id === a.quoteId);
+    const it = q ? quoteItems(q).find((x) => x.itemId === a.itemId) : undefined;
+    return { key: a.id, number: q?.number ?? '—', description: it?.name ?? g.description, qty: a.qty, customerId: a.customerId, quoteId: a.quoteId, itemId: a.itemId, dueDate: a.dueDate,
+      value: it?.summary.orderPrice ?? null, image: g.image, d: 'separado' as const, fgCode: g.code };
+  }));
+  const open = (d: PedidoRow['d']) => ['fila', 'producao', 'pronto', 'separado'].includes(d);
+  const rows = [...fromOrders, ...fromStock]
+    .filter((r) => filter === 'todos' || (filter === 'abertos' ? open(r.d) : r.d === filter))
+    .sort((a, b) => (a.dueDate ?? '9999').localeCompare(b.dueDate ?? '9999') || a.number.localeCompare(b.number));
+  const customerName = (id?: string) => db.parties.find((p) => p.id === id)?.name;
   return (
     <div className="card">
-      <div className="card-head"><div><h2>Pedidos de clientes</h2><p className="muted small">O que cada cliente encomendou, prazo e situação. Ao entregar, registre a venda para baixar o pedido.</p></div></div>
-      <DataTable rows={rows} rowKey={(r) => r.o.id} onRowClick={(r) => setSel(r.o)}
-        search={(r) => `${r.o.number} ${r.o.description} ${db.parties.find((p) => p.id === r.o.customerId)?.name ?? ''}`}
+      <div className="card-head"><div><h2>Pedidos a partir de orçamento</h2><p className="muted small">Cada peça aprovada vira um pedido, com a data de entrega. Ao entregar, registre a venda e imprima o cartão de agradecimento.</p></div>
+        <button className="btn secondary" onClick={() => navigate('orcamentos/aprovados')}>Peças aprovadas sem pedido</button></div>
+      <DataTable rows={rows} rowKey={(r) => r.key} onRowClick={(r) => r.order ? setSel(r.order) : r.quoteId && navigate(`orcamentos/${r.quoteId}`)}
+        search={(r) => `${r.number} ${r.description} ${customerName(r.customerId) ?? ''}`}
         toolbar={<Combobox compact ariaLabel="Filtrar pedidos" value={filter} onChange={(v) => setFilter(v || 'abertos')}
           options={[{ value: 'abertos', label: 'Em aberto' }, { value: 'todos', label: 'Todos' }, ...Object.entries(DELIVERY).map(([value, v]) => ({ value, label: v.label }))]} />}
-        empty={<Empty title="Nenhum pedido neste filtro" text="Gere a OP a partir de um orçamento com cliente, ou crie uma OP manual do tipo “Pedido de cliente”." />}
+        empty={<Empty title="Nenhum pedido neste filtro" text="Abra um orçamento, marque as peças que o cliente aprovou e clique em “Enviar para produção” informando a data de entrega." />}
         columns={[
-          { key: 'n', header: 'OP', render: (r) => <span className="mono">{r.o.number}</span>, sort: (r) => r.o.number },
-          { key: 'c', header: 'Cliente', render: (r) => db.parties.find((p) => p.id === r.o.customerId)?.name ?? <span className="muted">não informado</span> },
-          { key: 'd', header: 'Pedido', render: (r) => <><b>{r.o.description}</b><div className="muted small">{r.o.qtyPlanned} peça(s){r.o.quoteId ? ` · orçamento ${db.quotes.find((q) => q.id === r.o.quoteId)?.number}` : ''}</div></> },
-          { key: 'v', header: 'Valor', num: true, render: (r) => { const q = db.quotes.find((x) => x.id === r.o.quoteId); const p = q ? latestVersion(q).summary.orderPrice : null; return p ? fmtBRL(p) : '—'; } },
-          { key: 'e', header: 'Entrega', render: (r) => r.o.dueDate ? <span className={r.o.dueDate < todayISO() && r.d !== 'entregue' ? 'err-text' : ''}>{fmtDate(r.o.dueDate)}</span> : '—', sort: (r) => r.o.dueDate ?? '9999' },
+          { key: 'e', header: 'Entrega', render: (r) => r.dueDate ? <b className={r.dueDate < todayISO() && open(r.d) ? 'err-text' : ''}>{fmtDate(r.dueDate)}</b> : '—', sort: (r) => r.dueDate ?? '9999' },
+          { key: 'n', header: 'Pedido', render: (r) => <span className="mono">{r.number}</span>, sort: (r) => r.number },
+          { key: 'c', header: 'Cliente', render: (r) => customerName(r.customerId) ?? <span className="muted">não informado</span> },
+          { key: 'd', header: 'Peça', render: (r) => <div className="row" style={{ gap: 10, flexWrap: 'nowrap' }}>{r.image ? <img src={r.image} alt="" className="kb-thumb" /> : null}<div><b>{r.description}</b>
+            <div className="muted small">{r.qty} peça(s){r.order?.quoteId ? ` · orçamento ${db.quotes.find((q) => q.id === r.order!.quoteId)?.number ?? ''}` : ''}{r.fgCode ? ` · do estoque ${r.fgCode}` : ''}</div></div></div> },
+          { key: 'v', header: 'Valor', num: true, render: (r) => (r.value ? fmtBRL(r.value) : '—') },
           { key: 's', header: 'Situação', render: (r) => <Badge tone={DELIVERY[r.d].tone}>{DELIVERY[r.d].label}</Badge> },
-          { key: 'a', header: '', render: (r) => r.d === 'pronto' ? <button className="btn primary sm" onClick={(e) => { e.stopPropagation(); setSelling(r.o); }}>Registrar venda</button> : null },
+          { key: 'a', header: '', render: (r) => <div className="row" style={{ flexWrap: 'nowrap' }} onClick={(e) => e.stopPropagation()}>
+            {(r.d === 'pronto' || r.d === 'separado') && <button className="btn primary sm" onClick={() => setSelling(r)}>Registrar venda</button>}
+            {r.d !== 'cancelado' && <button className="btn ghost sm" onClick={() => setCard(r)}>Cartão de agradecimento</button>}
+          </div> },
         ]} />
       {sel && <OrderModal order={sel} onClose={() => setSel(null)} />}
-      {selling && <SaleForm preset={{ orderId: selling.id }} onClose={() => setSelling(null)} />}
+      {selling && <SaleForm preset={selling.order ? { orderId: selling.order.id } : { quoteId: selling.quoteId, itemId: selling.itemId }} onClose={() => setSelling(null)} />}
+      {card && <ThankYouCardDialog customerName={customerName(card.customerId)} orderNumber={card.number} onClose={() => setCard(null)} />}
     </div>
   );
 }
 
 /* ================================================================== */
-/* Peças prontas (pronta-entrega)                                      */
+/* Produções para estoque                                              */
 /* ================================================================== */
-function ProntaEntrega() {
-  const { db, run } = useStore();
-  const [confirm, confirmEl] = useConfirm();
-  const [onlyBalance, setOnlyBalance] = useState(true);
-  const [selling, setSelling] = useState<FinishedGood | null>(null);
-  const [adding, setAdding] = useState(false);
-  const today = todayISO();
-  const rows = db.finishedGoods.map((g) => ({ g, b: finishedGoodBalance(db, g.id), days: daysInStock(g, today) }))
-    .filter((r) => !onlyBalance || r.b.available > 0);
-  const withBalance = db.finishedGoods.map((g) => ({ g, b: finishedGoodBalance(db, g.id), days: daysInStock(g, today) })).filter((r) => r.b.available > 0);
-  const pieces = withBalance.reduce((s, r) => s + r.b.available, 0);
-  const value = withBalance.reduce((s, r) => s.plus(r.g.unitCost ? D(r.g.unitCost).times(r.b.available) : ZERO), ZERO);
-  const stale = withBalance.filter((r) => r.days > 60).length;
-  const writeOff = async (g: FinishedGood) => {
-    const reason = await confirm({ title: `Dar baixa em 1 peça de ${g.code}?`, danger: true, confirmLabel: 'Dar baixa', reasonLabel: 'Motivo (avaria, brinde, uso próprio…)', text: 'Use para peças que saíram sem venda. Para várias peças, repita.' });
-    if (reason) run((d) => writeOffFinishedGood(d, g.id, 1, reason), 'Baixa registrada.');
-  };
-  const ageTone = (d: number): Tone => (d > 90 ? 'error' : d > 60 ? 'warning' : d > 30 ? 'info' : 'success');
+function ProducoesEstoque({ onNew }: { onNew: () => void }) {
+  const { db } = useStore();
+  const [sel, setSel] = useState<ProductionOrder | null>(null);
+  const [filter, setFilter] = useState('abertas');
+  const rows = db.orders.filter((o) => purposeOf(o) === 'estoque')
+    .filter((o) => filter === 'todas' || (filter === 'abertas' ? !['concluida', 'cancelada'].includes(o.status) : o.status === filter))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   return (
-    <>
-      <div className="kpis" style={{ marginBottom: 18 }}>
-        <Kpi label="Peças disponíveis" value={pieces} hint={`${withBalance.length} item(ns)`} accent />
-        <Kpi label="Valor em estoque (custo)" value={fmtBRL(value)} hint="Custo de fabricação das peças paradas" />
-        <Kpi label="Paradas há mais de 60 dias" value={stale} hint={stale ? 'Considere promoção ou outro canal' : 'Nenhuma'} />
-      </div>
-      <div className="card">
-        <div className="card-head"><div><h2>Peças prontas para venda</h2><p className="muted small">Entram aqui automaticamente ao concluir uma OP do tipo “Estoque”. A idade conta a partir da data de produção.</p></div>
-          <button className="btn secondary" onClick={() => setAdding(true)}>Cadastrar peças já existentes</button></div>
-        <DataTable rows={rows} rowKey={(r) => r.g.id} search={(r) => `${r.g.code} ${r.g.description} ${r.g.location ?? ''}`}
-          toolbar={<Check label="Somente com saldo" checked={onlyBalance} onChange={setOnlyBalance} />}
-          initialSort={{ key: 'idade', dir: -1 }}
-          empty={<Empty title="Nenhuma peça pronta em estoque" text="Crie uma OP do tipo “Estoque (pronta-entrega)” e conclua: as peças aprovadas aparecem aqui." />}
-          columns={[
-            { key: 'c', header: 'Código', render: (r) => <span className="mono">{r.g.code}</span>, sort: (r) => r.g.code },
-            { key: 'd', header: 'Peça', render: (r) => <div className="row" style={{ gap: 10, flexWrap: 'nowrap' }}>{r.g.image && <img src={r.g.image} alt="" className="kb-thumb" />}<div><b>{r.g.description}</b>
-              <div className="muted small">{r.g.orderId ? `OP ${db.orders.find((o) => o.id === r.g.orderId)?.number ?? ''}` : 'cadastro manual'}{r.g.location ? ` · ${r.g.location}` : ''}</div></div></div> },
-            { key: 'p', header: 'Produzida em', render: (r) => fmtDate(r.g.producedAt), sort: (r) => r.g.producedAt },
-            { key: 'idade', header: 'Parada há', num: true, sort: (r) => r.days, render: (r) => <Badge tone={ageTone(r.days)}>{r.days} dia{r.days === 1 ? '' : 's'}</Badge> },
-            { key: 'q', header: 'Disponível', num: true, sort: (r) => r.b.available, render: (r) => <><b>{r.b.available}</b><div className="muted small">de {r.b.produced} · {r.b.sold} vendida(s){r.b.adjusted ? ` · ${r.b.adjusted} baixa(s)` : ''}</div></> },
-            { key: 'u', header: 'Custo unit.', num: true, render: (r) => r.g.unitCost ? <>{fmtBRL(r.g.unitCost)}<div className="muted small">{r.g.costStatus}</div></> : <Badge tone="warning">pendente</Badge> },
-            { key: 's', header: 'Preço sugerido', num: true, render: (r) => r.g.suggestedPrice ? fmtBRL(r.g.suggestedPrice) : '—' },
-            { key: 'a', header: '', render: (r) => r.b.available > 0 ? <div className="row" style={{ flexWrap: 'nowrap' }}>
-              <button className="btn primary sm" onClick={() => setSelling(r.g)}>Vender</button>
-              <button className="btn ghost sm" onClick={() => writeOff(r.g)}>Baixa</button></div> : null },
-          ]} />
-      </div>
-      {selling && <SaleForm preset={{ finishedGoodId: selling.id }} onClose={() => setSelling(null)} />}
-      {adding && <FinishedGoodForm onClose={() => setAdding(false)} />}
-      {confirmEl}
-    </>
-  );
-}
-
-function FinishedGoodForm({ onClose }: { onClose: () => void }) {
-  const { db, run } = useStore();
-  const [f, set] = useForm({ description: '', projectId: '', qty: '1', unitCost: '', suggestedPrice: '', producedAt: todayISO(), location: '', notes: '' });
-  const submit = () => run((d) => registerFinishedGood(d, {
-    description: f.description, projectId: f.projectId || undefined, qty: num(f.qty) ?? 0, unitCost: dec(f.unitCost), suggestedPrice: dec(f.suggestedPrice),
-    producedAt: f.producedAt, location: f.location, notes: f.notes,
-  }), 'Peças cadastradas no estoque de pronta-entrega.').then((r) => r.ok && onClose());
-  return (
-    <Modal title="Cadastrar peças prontas já existentes" subtitle="Para peças produzidas antes de usar o sistema. Não movimenta o estoque de materiais." onClose={onClose}
-      footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={submit}>Cadastrar</button></>}>
-      <div className="grid g2">
-        <TextField label="Peça / descrição" required value={f.description} onChange={set('description')} />
-        <SelectField label="Projeto" value={f.projectId} onChange={set('projectId')} placeholder="— nenhum —" options={db.projects.map((p) => ({ value: p.id, label: p.name }))} />
-        <NumField label="Quantidade" required value={f.qty} onChange={set('qty')} />
-        <DateField label="Data de produção" required value={f.producedAt} onChange={set('producedAt')} />
-        <NumField label="Custo unitário de fabricação" suffix="R$" value={f.unitCost} onChange={set('unitCost')} hint="Estimado. Vazio = margem pendente na venda." />
-        <NumField label="Preço sugerido" suffix="R$" value={f.suggestedPrice} onChange={set('suggestedPrice')} />
-        <TextField label="Local de armazenamento" value={f.location} onChange={set('location')} placeholder="Ex.: prateleira A" />
-      </div>
-      <div style={{ marginTop: 12 }}><TextArea label="Observações" value={f.notes} onChange={set('notes')} /></div>
-    </Modal>
+    <div className="card">
+      <div className="card-head"><div><h2>Produções para estoque</h2><p className="muted small">Sem orçamento prévio: o sistema calcula o custo da peça e o valor sugerido de venda. Ao concluir, as peças vão para Estoque → Peças produzidas, prontas para orçar a quem pedir.</p></div>
+        <button className="btn primary" onClick={onNew} disabled={!db.materials.length}>Nova produção para estoque</button></div>
+      <DataTable rows={rows} rowKey={(o) => o.id} onRowClick={setSel} search={(o) => `${o.number} ${o.description}`}
+        toolbar={<Combobox compact ariaLabel="Filtrar produções" value={filter} onChange={(v) => setFilter(v || 'abertas')}
+          options={[{ value: 'abertas', label: 'Em aberto' }, { value: 'todas', label: 'Todas' }, ...Object.entries(ORDER_STATUS_LABEL).map(([value, label]) => ({ value, label }))]} />}
+        empty={<Empty title="Nenhuma produção para estoque" text="Use “Nova produção para estoque” para produzir peças de pronta-entrega." action={<button className="btn primary" onClick={onNew}>Nova produção para estoque</button>} />}
+        columns={[
+          { key: 'n', header: 'Produção', render: (o) => <span className="mono">{o.number}</span>, sort: (o) => o.number },
+          { key: 'd', header: 'Peça', render: (o) => <><b>{o.description}</b><div className="muted small">{o.actual ? `${o.actual.qtyApproved}/${o.qtyPlanned}` : o.qtyPlanned} peça(s){o.plannedHours !== null ? ` · ${fmtDuration(o.plannedHours)}` : ''}</div></> },
+          { key: 'c', header: 'Custo por peça', num: true, render: (o) => { const fg = db.finishedGoods.find((g) => g.id === o.finishedGoodId); return fg?.unitCost ? <>{fmtBRL(fg.unitCost)}<div className="muted small">real</div></> : o.estimate?.summary.unitCost ? <>{fmtBRL(o.estimate.summary.unitCost)}<div className="muted small">estimado</div></> : '—'; } },
+          { key: 'p', header: 'Valor sugerido', num: true, render: (o) => o.estimate?.summary.unitPrice ? <b>{fmtBRL(o.estimate.summary.unitPrice)}</b> : <span className="muted">—</span> },
+          { key: 's', header: 'Situação', render: (o) => <Badge tone={STATUS_TONE[o.status]}>{ORDER_STATUS_LABEL[o.status]}</Badge>, sort: (o) => o.status },
+          { key: 'f', header: 'Estoque', render: (o) => o.finishedGoodId ? <a href="#/estoque/pecas" onClick={(e) => e.stopPropagation()}>{db.finishedGoods.find((g) => g.id === o.finishedGoodId)?.code}</a> : '—' },
+        ]} />
+      {sel && <OrderModal order={sel} onClose={() => setSel(null)} />}
+    </div>
   );
 }
 
@@ -334,14 +296,14 @@ function Ordens() {
   const rows = [...db.orders].reverse().filter((o) => filter === 'todas' || (filter === 'abertas' ? !['concluida', 'cancelada'].includes(o.status) : o.status === filter));
   return (
     <div className="card">
-      <div className="card-head"><div><h2>Todas as ordens de produção</h2><p className="muted small">Histórico completo, com filtros por situação.</p></div></div>
+      <div className="card-head"><div><h2>Histórico de pedidos e produções</h2><p className="muted small">Tudo o que já passou pela produção, com filtros por situação.</p></div></div>
       <DataTable rows={rows} rowKey={(o) => o.id} onRowClick={setSel} search={(o) => `${o.number} ${o.description} ${db.parties.find((p) => p.id === o.customerId)?.name ?? ''}`}
         toolbar={<Combobox compact ariaLabel="Filtrar ordens" value={filter} onChange={(v) => setFilter(v || 'todas')}
           options={[{ value: 'todas', label: 'Todas' }, { value: 'abertas', label: 'Em aberto' }, ...Object.entries(ORDER_STATUS_LABEL).map(([value, label]) => ({ value, label }))]} />}
-        empty={<Empty title="Nenhuma ordem neste filtro" text="Abra um orçamento salvo e clique em “Gerar ordem de produção”." />}
+        empty={<Empty title="Nada neste filtro" text="Pedidos nascem das peças aprovadas no orçamento; produções para estoque, do botão “Nova produção para estoque”." />}
         columns={[
-          { key: 'n', header: 'OP', render: (o) => <span className="mono">{o.number}</span>, sort: (o) => o.number },
-          { key: 'd', header: 'Descrição', render: (o) => <><b>{o.description}</b><div className="muted small">{o.quoteId ? `Orçamento ${db.quotes.find((q) => q.id === o.quoteId)?.number} v${o.quoteVersion}` : 'Manual'}</div></> },
+          { key: 'n', header: 'Número', render: (o) => <span className="mono">{o.number}</span>, sort: (o) => o.number },
+          { key: 'd', header: 'Descrição', render: (o) => <><b>{o.description}</b><div className="muted small">{o.quoteId ? `Orçamento ${db.quotes.find((q) => q.id === o.quoteId)?.number ?? '(excluído)'} v${o.quoteVersion}` : purposeOf(o) === 'estoque' ? 'Para estoque' : 'Manual'}{o.dueDate ? ` · entrega ${fmtDate(o.dueDate)}` : ''}</div></> },
           { key: 't', header: 'Tipo', render: (o) => <Badge tone={purposeOf(o) === 'pedido' ? 'info' : 'neutral'}>{PURPOSE_LABEL[purposeOf(o)]}</Badge> },
           { key: 'p', header: 'Impressora', render: (o) => db.printers.find((p) => p.id === o.printerId)?.name ?? '—' },
           { key: 'q', header: 'Qtd.', num: true, render: (o) => o.actual ? `${o.actual.qtyApproved}/${o.qtyPlanned}` : o.qtyPlanned },
@@ -366,21 +328,32 @@ function OrderModal({ order, onClose }: { order: ProductionOrder; onClose: () =>
   const lotName = (id: string) => { const l = db.lots.find((x) => x.id === id); return l ? lotLabel(db, l) : 'Lote removido'; };
   const matOf = (materialId: string, lotId?: string) => db.materials.find((m) => m.id === (materialId || db.lots.find((l) => l.id === lotId)?.materialId));
   const lineName = (materialId: string, lotId?: string) => lotId ? lotName(lotId) : `${matOf(materialId)?.name ?? 'Material removido'} (lotes por ordem de entrada)`;
+  const [card, setCard] = useState(false);
   const cancel = async () => {
-    const reason = await confirm({ title: `Cancelar ${o.number}?`, danger: true, confirmLabel: 'Cancelar ordem', reasonLabel: 'Motivo', text: 'As reservas de material serão liberadas.' });
-    if (reason) run((d) => cancelOrder(d, o.id, reason), 'Ordem cancelada e reservas liberadas.');
+    const reason = await confirm({ title: `Cancelar ${o.number}?`, danger: true, confirmLabel: 'Cancelar', reasonLabel: 'Motivo', text: 'As reservas de material serão liberadas.' });
+    if (reason) run((d) => cancelOrder(d, o.id, reason), 'Cancelado e reservas liberadas.');
+  };
+  const backToQuote = async () => {
+    const reason = await confirm({ title: `Retornar ${o.number} para o orçamento?`, confirmLabel: 'Retornar para o orçamento', reasonLabel: 'Motivo (ex.: cliente mudou a cor)',
+      text: 'O pedido é cancelado, o material reservado é liberado e a peça volta a ficar “Aprovada” e editável no orçamento. Depois é só enviar para produção de novo.' });
+    if (!reason) return;
+    const r = await run((d) => returnOrderToQuote(d, o.id, reason), 'Pedido retornado para o orçamento.');
+    if (r.ok && o.quoteId) { onClose(); navigate(`orcamentos/${o.quoteId}`); }
   };
   const reserveAction = () => run((d) => reserveOrderMaterials(d, o.id)).then((r) => {
     if (!r.ok) return;
-    if (r.value.ok) toast('success', 'Material reservado: OP pronta para produção.');
-    else toast('warning', 'Material insuficiente: a OP ficou "Aguardando material". Nada foi reservado.');
+    if (r.value.ok) toast('success', 'Material reservado: pronto para produção.');
+    else toast('warning', 'Material insuficiente: ficou "Aguardando material". Nada foi reservado.');
   });
   const open = !['concluida', 'cancelada'].includes(o.status);
+  const kind = purposeOf(o) === 'pedido' ? 'Pedido' : 'Produção para estoque';
   return (
-    <Modal wide title={`${o.number} · ${o.description}`} subtitle={`${ORDER_STATUS_LABEL[o.status]} · ${db.printers.find((p) => p.id === o.printerId)?.name ?? 'sem impressora'} · ${o.qtyPlanned} peça(s)`} onClose={onClose}
+    <Modal wide title={`${o.number} · ${o.description}`} subtitle={`${kind} · ${ORDER_STATUS_LABEL[o.status]} · ${db.printers.find((p) => p.id === o.printerId)?.name ?? 'sem impressora'} · ${o.qtyPlanned} peça(s)`} onClose={onClose}
       footer={<>
         <button className="btn ghost" onClick={onClose}>Fechar</button>
-        {open && <button className="btn danger" onClick={cancel}>Cancelar OP</button>}
+        {open && o.quoteId && <button className="btn secondary" onClick={backToQuote}>Retornar para o orçamento</button>}
+        {open && !o.quoteId && <button className="btn danger" onClick={cancel}>Cancelar</button>}
+        {purposeOf(o) === 'pedido' && o.status !== 'cancelada' && <button className="btn ghost" onClick={() => setCard(true)}>Cartão de agradecimento</button>}
         {(o.status === 'planejada' || o.status === 'aguardando_material') && <button className="btn secondary" onClick={reserveAction}>Reservar material</button>}
         {(o.status === 'planejada' || o.status === 'aguardando_material' || o.status === 'pronta') && <button className="btn primary" onClick={() => run((d) => startOrder(d, o.id), 'Produção iniciada.')}>Iniciar produção</button>}
         {o.status === 'em_producao' && <button className="btn secondary" onClick={() => run((d) => moveOrderStatus(d, o.id, 'aguardando_acabamento'))}>Aguardando acabamento</button>}
@@ -393,13 +366,18 @@ function OrderModal({ order, onClose }: { order: ProductionOrder; onClose: () =>
           <span>Criada {fmtDateTime(o.createdAt)}</span>{o.startedAt && <span>· Início {fmtDateTime(o.startedAt)}</span>}{o.finishedAt && <span>· Término {fmtDateTime(o.finishedAt)}</span>}
         </div>
         <div className="row">
-          <Badge tone={purposeOf(o) === 'pedido' ? 'info' : 'neutral'}>{purposeOf(o) === 'pedido' ? 'Pedido de cliente' : 'Estoque (pronta-entrega)'}</Badge>
+          <Badge tone={purposeOf(o) === 'pedido' ? 'info' : 'neutral'}>{purposeOf(o) === 'pedido' ? 'Pedido a partir de orçamento' : 'Produção para estoque'}</Badge>
           {o.customerId && <span>Cliente: <b>{db.parties.find((p) => p.id === o.customerId)?.name ?? '—'}</b></span>}
-          {o.dueDate && <span>Entrega: <b>{fmtDate(o.dueDate)}</b></span>}
+          <span>Entrega: <b>{o.dueDate ? fmtDate(o.dueDate) : 'sem data'}</b></span>
           {o.plannedHours !== null && <span>Tempo previsto: <b>{fmtDuration(o.plannedHours)}</b></span>}
-          {open && <button className="btn ghost sm" onClick={() => setPlanning(true)}>Alterar tipo, cliente e prazo</button>}
+          {o.quoteId && <a href={`#/orcamentos/${o.quoteId}`}>Orçamento {db.quotes.find((q) => q.id === o.quoteId)?.number ?? '(excluído)'}</a>}
+          {open && <button className="btn ghost sm" onClick={() => setPlanning(true)}>Alterar entrega e impressora</button>}
         </div>
-        {o.finishedGoodId && <Alert tone="success">Peças aprovadas enviadas ao estoque de pronta-entrega ({db.finishedGoods.find((g) => g.id === o.finishedGoodId)?.code}). <a href="#/producao/pronta-entrega">Ver peças prontas</a></Alert>}
+        {o.estimate && <div className="row small">
+          <span>Custo estimado por peça: <b>{fmtBRL(o.estimate.summary.unitCost)}</b></span>
+          <span>Valor sugerido de venda: <b>{fmtBRL(o.estimate.summary.unitPrice)}</b></span>
+        </div>}
+        {o.finishedGoodId && <Alert tone="success">Peças aprovadas enviadas ao estoque ({db.finishedGoods.find((g) => g.id === o.finishedGoodId)?.code}). <a href="#/estoque/pecas">Ver peças produzidas</a></Alert>}
         <h3>Material previsto</h3>
         <div className="card"><table className="tbl"><thead><tr><th>Material</th><th className="num">Previsto</th><th className="num">Disponível p/ esta OP</th><th>Situação</th></tr></thead><tbody>
           {avail.map((a, i) => <tr key={i}><td>{lineName(a.materialId, a.lotId)}</td><td className="num">{fmtNum(a.needed)} {matOf(a.materialId, a.lotId)?.unit ?? ''}</td><td className="num">{fmtNum(a.available)}</td>
@@ -411,6 +389,7 @@ function OrderModal({ order, onClose }: { order: ProductionOrder; onClose: () =>
       </div>
       {completing && <CompleteForm order={o} onClose={() => setCompleting(false)} />}
       {planning && <PlanningForm order={o} onClose={() => setPlanning(false)} />}
+      {card && <ThankYouCardDialog customerName={db.parties.find((p) => p.id === o.customerId)?.name} orderNumber={o.number} onClose={() => setCard(false)} />}
       {confirmEl}
     </Modal>
   );
@@ -418,20 +397,19 @@ function OrderModal({ order, onClose }: { order: ProductionOrder; onClose: () =>
 
 function PlanningForm({ order: o, onClose }: { order: ProductionOrder; onClose: () => void }) {
   const { db, run } = useStore();
-  const [f, set] = useForm({ purpose: purposeOf(o) as 'pedido' | 'estoque', customerId: o.customerId ?? '', dueDate: o.dueDate ?? '', printerId: o.printerId ?? '', notes: o.notes ?? '' });
-  const submit = () => run((d) => updateOrderPlanning(d, o.id, { ...f, customerId: f.customerId || undefined, printerId: f.printerId || undefined }), 'Ordem atualizada.').then((r) => r.ok && onClose());
+  const [f, set] = useForm({ dueDate: o.dueDate ?? '', printerId: o.printerId ?? '', notes: o.notes ?? '' });
+  const submit = () => {
+    if (o.quoteId && !f.dueDate) return void run(() => { throw new BusinessError('Pedido a partir de orçamento precisa de data de entrega.'); });
+    run((d) => updateOrderPlanning(d, o.id, { purpose: purposeOf(o), customerId: o.customerId, dueDate: f.dueDate, printerId: f.printerId || undefined, notes: f.notes }), 'Atualizado. O quadro se reorganiza pela nova data.').then((r) => r.ok && onClose());
+  };
   return (
     <Modal title={`Planejamento de ${o.number}`} onClose={onClose}
       footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={submit}>Salvar</button></>}>
       <div className="grid g2">
-        <SelectField label="Tipo" value={f.purpose} onChange={(v) => set('purpose')((v || 'pedido') as 'pedido' | 'estoque')}
-          options={[{ value: 'pedido', label: 'Pedido de cliente' }, { value: 'estoque', label: 'Estoque (pronta-entrega)' }]} />
-        {f.purpose === 'pedido' && <SelectField label="Cliente" value={f.customerId} onChange={set('customerId')} placeholder="— não informado —" options={db.parties.filter((p) => p.kind === 'cliente').map((p) => ({ value: p.id, label: p.name }))} />}
-        <DateField label="Data de entrega" value={f.dueDate} onChange={set('dueDate')} />
+        <DateField label="Data de entrega" required={!!o.quoteId} value={f.dueDate} onChange={set('dueDate')} />
         <SelectField label="Impressora" value={f.printerId} onChange={set('printerId')} placeholder="—" options={db.printers.map((p) => ({ value: p.id, label: p.name }))} />
       </div>
       <div style={{ marginTop: 12 }}><TextArea label="Observações" value={f.notes} onChange={set('notes')} /></div>
-      <p className="small muted">OP do tipo Estoque envia as peças aprovadas para “Peças prontas” ao concluir.</p>
     </Modal>
   );
 }
@@ -518,48 +496,122 @@ function CompleteForm({ order, onClose }: { order: ProductionOrder; onClose: () 
   );
 }
 
-function ManualOrderForm({ onClose }: { onClose: () => void }) {
+/** Produção para estoque: sem orçamento; o sistema calcula custo e valor sugerido de venda na hora. */
+function StockProductionForm({ onClose }: { onClose: () => void }) {
   const { db, run } = useStore();
-  const [f, set] = useForm({ description: '', purpose: 'estoque' as 'pedido' | 'estoque', customerId: '', dueDate: '', projectId: '', printerId: db.settings.defaultPrinterId ?? db.printers[0]?.id ?? '', qty: '1', hours: null as number | null, notes: '' });
-  const [mats, setMats] = useState([{ materialId: '', qty: '' }]);
+  const [f, set] = useForm({ description: '', projectId: '', printerId: db.settings.defaultPrinterId ?? db.printers[0]?.id ?? '', qty: '1', hoursPerUnit: null as number | null, notes: '' });
+  const [mats, setMats] = useState([{ materialId: db.materials.find((m) => m.active && m.filament)?.id ?? '', qtyPerUnit: '' }]);
+  const qty = num(f.qty) ?? 0;
   const matOpts = db.materials.filter((m) => m.active).map((m) => {
     const r = reorderAnalysis(db, m);
     return { value: m.id, label: `${m.name} · disp. ${fmtNum(r.available)} ${m.unit}` };
   });
+  const planned = mats.filter((m) => m.materialId && (num(m.qtyPerUnit) ?? 0) > 0).map((m) => ({ materialId: m.materialId, qty: (num(m.qtyPerUnit) ?? 0) * Math.max(qty, 0) }));
+  const plannedHours = f.hoursPerUnit !== null ? f.hoursPerUnit * Math.max(qty, 0) : null;
+  const estimate = useMemo(() => {
+    if (!(qty > 0) || !planned.length) return null;
+    try { return stockEstimate(db, { qtyPlanned: qty, plannedMaterials: planned, plannedHours, printerId: f.printerId || undefined }); } catch { return null; }
+  }, [db, qty, JSON.stringify(planned), plannedHours, f.printerId]);
   const submit = () => run((d) => createManualOrder(d, {
-    description: f.description, purpose: f.purpose, customerId: f.customerId || undefined, dueDate: f.dueDate || undefined,
-    projectId: f.projectId || undefined, printerId: f.printerId || undefined, qtyPlanned: num(f.qty) ?? 0,
-    plannedMaterials: mats.filter((m) => m.materialId).map((m) => ({ materialId: m.materialId, qty: num(m.qty) ?? 0 })), plannedHours: f.hours, notes: f.notes,
-  }), 'Ordem criada e colocada no fim da fila.').then((r) => r.ok && onClose());
+    description: f.description, purpose: 'estoque', projectId: f.projectId || undefined, printerId: f.printerId || undefined, qtyPlanned: qty,
+    plannedMaterials: planned, plannedHours, notes: f.notes,
+  }), 'Produção para estoque criada: custo e valor sugerido calculados.').then((r) => r.ok && onClose());
+  const s = estimate?.summary;
   return (
-    <Modal wide title="Nova ordem de produção manual" subtitle="Sem orçamento vinculado: a comparação previsto × realizado usará os parâmetros atuais." onClose={onClose}
-      footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={submit}>Criar ordem</button></>}>
+    <Modal wide title="Nova produção para estoque" subtitle="Peças de pronta-entrega, sem orçamento prévio. Os valores usam os seus Parâmetros de Custos (markup, canal, falhas)." onClose={onClose}
+      footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={submit}>Criar produção</button></>}>
       <div className="stack">
         <div className="grid g3">
-          <TextField label="Descrição" required value={f.description} onChange={set('description')} />
-          <SelectField label="Tipo" value={f.purpose} onChange={(v) => set('purpose')((v || 'estoque') as 'pedido' | 'estoque')}
-            options={[{ value: 'estoque', label: 'Estoque (pronta-entrega)' }, { value: 'pedido', label: 'Pedido de cliente' }]} />
-          {f.purpose === 'pedido'
-            ? <SelectField label="Cliente" value={f.customerId} onChange={set('customerId')} placeholder="— não informado —" options={db.parties.filter((p) => p.kind === 'cliente').map((p) => ({ value: p.id, label: p.name }))} />
-            : <SelectField label="Projeto" value={f.projectId} onChange={set('projectId')} placeholder="— nenhum —" options={db.projects.map((p) => ({ value: p.id, label: p.name }))} />}
-          <NumField label="Quantidade planejada" required value={f.qty} onChange={set('qty')} />
-          <TimeField label="Tempo previsto de impressão (total)" value={f.hours} onChange={set('hours')} />
+          <TextField label="Peça" required value={f.description} onChange={set('description')} placeholder="Ex.: Dragão articulado" />
+          <NumField label="Quantidade a produzir" required value={f.qty} onChange={set('qty')} suffix="un" />
           <SelectField label="Impressora" value={f.printerId} onChange={set('printerId')} placeholder="—" options={db.printers.map((p) => ({ value: p.id, label: p.name }))} />
-          {f.purpose === 'pedido' && <DateField label="Data de entrega" value={f.dueDate} onChange={set('dueDate')} />}
+          <TimeField label="Tempo de impressão de 1 peça" value={f.hoursPerUnit} onChange={set('hoursPerUnit')} />
+          <SelectField label="Projeto" value={f.projectId} onChange={set('projectId')} placeholder="— nenhum —" options={db.projects.map((p) => ({ value: p.id, label: p.name }))} />
         </div>
-        <p className="section-title">Material previsto (total da OP)</p>
-        <p className="small muted">A reserva usa os lotes do material por ordem de entrada. Se faltar, a OP fica “Aguardando material” e o Estoque sinaliza a compra.</p>
+        <p className="section-title">Material por peça</p>
         {mats.map((m, i) => (
           <div key={i} className="line-item">
             <SelectField label="Material" value={m.materialId} onChange={(v) => setMats((r) => r.map((x, k) => (k === i ? { ...x, materialId: v } : x)))} placeholder="— selecione —" options={matOpts} />
-            <NumField label={`Quantidade${db.materials.find((x) => x.id === m.materialId) ? ` (${db.materials.find((x) => x.id === m.materialId)!.unit})` : ''}`} value={m.qty} onChange={(v) => setMats((r) => r.map((x, k) => (k === i ? { ...x, qty: v } : x)))} />
+            <NumField label={`Por peça${db.materials.find((x) => x.id === m.materialId) ? ` (${db.materials.find((x) => x.id === m.materialId)!.unit})` : ''}`} value={m.qtyPerUnit} onChange={(v) => setMats((r) => r.map((x, k) => (k === i ? { ...x, qtyPerUnit: v } : x)))} />
             <button className="btn ghost sm" onClick={() => setMats((r) => r.filter((_, k) => k !== i))} aria-label="Remover">✕</button>
           </div>
         ))}
-        <div><button className="btn secondary sm" onClick={() => setMats((r) => [...r, { materialId: '', qty: '' }])}>+ Material</button></div>
+        <div><button className="btn secondary sm" onClick={() => setMats((r) => [...r, { materialId: '', qtyPerUnit: '' }])}>+ Material</button></div>
+        <div className="kpis">
+          <Kpi label="Custo por peça" value={s?.unitCost ? fmtBRL(s.unitCost) : '—'} hint={s ? (s.complete ? 'estimado com seus parâmetros' : 'parcial: faltam parâmetros') : 'informe material, peso e quantidade'} />
+          <Kpi label="Valor sugerido de venda" value={s?.unitPrice ? fmtBRL(s.unitPrice) : '—'} hint={db.settings.defaultMarkupPct ? `markup ${fmtNum(db.settings.defaultMarkupPct)}%` : 'defina o markup em Parâmetros'} accent />
+          <Kpi label="Lote inteiro" value={s?.totalCost ? fmtBRL(s.totalCost) : '—'} hint={plannedHours !== null ? `${fmtDuration(plannedHours)} de impressão` : ''} />
+        </div>
         <TextArea label="Observações" value={f.notes} onChange={set('notes')} />
       </div>
     </Modal>
+  );
+}
+
+/* ================================================================== */
+/* Cartão de agradecimento (modelo da marca)                           */
+/* ================================================================== */
+function ThankYouCardDialog({ customerName, orderNumber, onClose }: { customerName?: string; orderNumber: string; onClose: () => void }) {
+  const { db, toast } = useStore();
+  const ig = (clientQuoteSettings(db).instagram || 'ideiacubica').replace(/^@/, '');
+  const [personal, setPersonal] = useState(false);
+  const first = customerName?.trim().split(/\s+/)[0];
+  useEffect(() => {
+    const original = document.title;
+    const before = () => { document.title = `Cartão de agradecimento ${orderNumber}${customerName ? ` - ${customerName}` : ''}`; };
+    const after = () => { document.title = original; };
+    window.addEventListener('beforeprint', before); window.addEventListener('afterprint', after);
+    return () => { window.removeEventListener('beforeprint', before); window.removeEventListener('afterprint', after); document.title = original; };
+  }, [orderNumber, customerName]);
+  const print = () => { toast('info', 'Na janela que abrir, escolha “Salvar como PDF” ou a sua impressora. Imprima frente e verso.'); setTimeout(() => window.print(), 50); };
+  const card = <ThankYouCard instagram={ig} name={personal ? first : undefined} />;
+  const preview = <ThankYouCard instagram={ig} name={personal ? first : undefined} scaled />;
+  return (
+    <Modal wide title="Cartão de agradecimento" subtitle={`${orderNumber}${customerName ? ` · ${customerName}` : ''} · frente e verso, 12 × 12 cm`} onClose={onClose}
+      footer={<><button className="btn ghost" onClick={onClose}>Fechar</button><button className="btn primary" onClick={print}>Imprimir / salvar PDF</button></>}>
+      <div className="stack">
+        {first && <Check label={`Personalizar com o nome: “Obrigada, ${first}!”`} checked={personal} onChange={setPersonal} />}
+        <div className="ty-preview">{preview}</div>
+        <p className="small muted">Segue o modelo oficial: frente com o padrão da marca e “Seu pedido chegou! · Feito e embalado com carinho!”, verso amarelo com o agradecimento e o Instagram @{ig}.</p>
+      </div>
+      {createPortal(<div className="cq-print-root ty-print">{card}</div>, document.body)}
+    </Modal>
+  );
+}
+
+function ThankYouCard({ instagram, name, scaled }: { instagram: string; name?: string; scaled?: boolean }) {
+  const wrap = (node: ReactNode) => (scaled ? <div className="ty-scale">{node}</div> : node);
+  // ids únicos: a pré-visualização e a cópia de impressão ficam na página ao mesmo tempo
+  const uid = scaled ? 'p' : 'i';
+  return (
+    <>
+      {wrap(<div className="ty-page ty-front">
+        <svg viewBox="0 0 400 400" width="100%" height="100%" aria-label="Seu pedido chegou! Feito e embalado com carinho!">
+          <defs>
+            <pattern id={`ty-pat-${uid}`} width="57.14" height="57.14" patternUnits="userSpaceOnUse">
+              <image href="/brand/10_icone_simbolo_transparente.svg" x="1" y="1" width="55" height="55" />
+            </pattern>
+            <path id={`ty-top-${uid}`} d="M 84 200 A 116 116 0 0 1 316 200" />
+            <path id={`ty-bot-${uid}`} d="M 62 200 A 138 138 0 0 0 338 200" />
+          </defs>
+          <rect width="400" height="400" fill="#f5f1e6" />
+          <rect width="400" height="400" fill={`url(#ty-pat-${uid})`} />
+          <circle cx="200" cy="200" r="152" fill="#fff" />
+          <text className="ty-arc"><textPath href={`#ty-top-${uid}`} startOffset="50%" textAnchor="middle">Seu pedido chegou!</textPath></text>
+          <text className="ty-arc"><textPath href={`#ty-bot-${uid}`} startOffset="50%" textAnchor="middle">Feito e embalado com carinho!</textPath></text>
+          <image href="/brand/10_icone_simbolo_transparente.svg" x="74" y="132" width="132" height="132" />
+          <text x="204" y="194" className="ty-word">ideia</text>
+          <text x="204" y="228" className="ty-word">cúbica</text>
+          <text x="205" y="245" className="ty-tag">IMPRESSÃO 3D</text>
+        </svg>
+      </div>)}
+      {wrap(<div className="ty-page ty-back">
+        <h2>{name ? `Obrigada, ${name}!` : 'Obrigada!'}</h2>
+        <p>Ficamos muito felizes com seu pedido que foi preparado com todo o cuidado para chegar até você.</p>
+        <p>Esperamos que goste!<br /><b>Compartilhe sua experiência com a gente. Vamos adorar saber o que achou!</b></p>
+        <p><b>Não se esqueça de nos marcar nas redes sociais:<br />@{instagram}</b></p>
+      </div>)}
+    </>
   );
 }
 

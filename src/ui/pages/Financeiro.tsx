@@ -6,7 +6,7 @@ import { accountBalance, cancelTitle, cashBalance, cashFlowByMonth, cashNeed, cr
 import { finishedGoodBalance } from '../../domain/production';
 import { breakEven, cancelSale, managementResult, registerSale, resolveSaleCost, resultByProject, saleEconomics, saleGross } from '../../domain/sales';
 import { channelRates } from '../../domain/pricing';
-import { latestVersion } from '../../domain/quotes';
+import { itemState, quoteItem, quoteItemAt, quoteItems } from '../../domain/quotes';
 import { addDays, fmtDate, todayISO } from '../../domain/core';
 import { D, ZERO, cents, fmtBRL, fmtPct, parseBR } from '../../domain/money';
 import { Alert, Badge, Check, Combobox, DataTable, DateField, Empty, Kpi, Modal, NumField, PageHead, SelectField, Tabs, TextArea, TextField, dec, num, useConfirm, useForm, type Tone } from '../components/ui';
@@ -287,19 +287,27 @@ function Vendas({ onNew }: { onNew: () => void }) {
   );
 }
 
-export function SaleForm({ onClose, preset }: { onClose: () => void; preset?: { finishedGoodId?: string; orderId?: string } }) {
+export function SaleForm({ onClose, preset }: { onClose: () => void; preset?: { finishedGoodId?: string; orderId?: string; quoteId?: string; itemId?: string } }) {
   const { db, run } = useStore();
   const [f, set, setF] = useForm(() => {
-    const base = { date: todayISO(), description: '', projectId: '', customerId: '', quoteId: '', orderId: '', finishedGoodId: '', qty: '1', unitPrice: '', discount: '', freightCharged: '', freightCost: '',
+    const base = { date: todayISO(), description: '', projectId: '', customerId: '', quoteId: '', quoteItemId: '', orderId: '', finishedGoodId: '', qty: '1', unitPrice: '', discount: '', freightCharged: '', freightCost: '',
       channelId: db.channels.find((c) => c.active)?.id ?? '', feesWithheld: true, manualUnitCost: '', notes: '' };
+    // Peça do estoque separada para um pedido aprovado
+    const pq = db.quotes.find((x) => x.id === preset?.quoteId);
+    if (pq) {
+      const it = quoteItem(pq, preset?.itemId);
+      return { ...base, quoteId: pq.id, quoteItemId: it.itemId, finishedGoodId: it.finishedGoodId ?? '', description: it.name, projectId: pq.projectId ?? '', customerId: pq.customerId ?? '',
+        qty: String(it.input.quantity), unitPrice: it.summary.unitPrice ? it.summary.unitPrice.replace('.', ',') : '', channelId: it.input.channelId ?? base.channelId };
+    }
     const fg = db.finishedGoods.find((x) => x.id === preset?.finishedGoodId);
     if (fg) return { ...base, finishedGoodId: fg.id, description: fg.description, projectId: fg.projectId ?? '', unitPrice: fg.suggestedPrice ? fg.suggestedPrice.replace('.', ',') : '' };
     const o = db.orders.find((x) => x.id === preset?.orderId);
     if (o) {
       const q = db.quotes.find((x) => x.id === o.quoteId);
-      const price = q ? latestVersion(q).summary.unitPrice : null;
-      return { ...base, orderId: o.id, quoteId: q?.id ?? '', description: o.description, projectId: o.projectId ?? '', customerId: o.customerId ?? q?.customerId ?? '',
-        qty: String(o.actual?.qtyApproved ?? o.qtyPlanned), unitPrice: price ? price.replace('.', ',') : '', channelId: q ? latestVersion(q).input.channelId ?? base.channelId : base.channelId };
+      const it = q ? quoteItemAt(q, o.quoteVersion, o.quoteItemId) : undefined;
+      const price = it?.summary.unitPrice ?? null;
+      return { ...base, orderId: o.id, quoteId: q?.id ?? '', quoteItemId: it?.itemId ?? '', description: o.description, projectId: o.projectId ?? '', customerId: o.customerId ?? q?.customerId ?? '',
+        qty: String(o.actual?.qtyApproved ?? o.qtyPlanned), unitPrice: price ? price.replace('.', ',') : '', channelId: it?.input.channelId ?? base.channelId };
     }
     return base;
   });
@@ -312,14 +320,18 @@ export function SaleForm({ onClose, preset }: { onClose: () => void; preset?: { 
     setF((s) => g ? { ...s, finishedGoodId: id, orderId: '', quoteId: '', description: g.description, projectId: g.projectId ?? s.projectId,
       unitPrice: g.suggestedPrice ? g.suggestedPrice.replace('.', ',') : s.unitPrice } : { ...s, finishedGoodId: '' });
   };
-  const pickQuote = (id: string) => {
-    const q = db.quotes.find((x) => x.id === id);
-    if (!q) { setF((s) => ({ ...s, quoteId: '' })); return; }
-    const v = latestVersion(q);
-    const order = db.orders.find((o) => o.quoteId === q.id && o.status === 'concluida');
-    setF((s) => ({ ...s, quoteId: id, description: q.name, projectId: q.projectId ?? s.projectId, customerId: q.customerId ?? s.customerId, qty: String(order?.actual?.qtyApproved ?? v.input.quantity),
-      unitPrice: v.summary.unitPrice ? v.summary.unitPrice.replace('.', ',') : s.unitPrice, channelId: v.input.channelId ?? s.channelId, orderId: order?.id ?? '' }));
+  const pickQuote = (key: string) => {
+    const [qid, iid] = key.split('|');
+    const q = db.quotes.find((x) => x.id === qid);
+    if (!q) { setF((s) => ({ ...s, quoteId: '', quoteItemId: '' })); return; }
+    const it = quoteItem(q, iid);
+    const order = db.orders.find((o) => o.quoteId === q.id && o.quoteItemId === it.itemId && o.status === 'concluida');
+    setF((s) => ({ ...s, quoteId: q.id, quoteItemId: it.itemId, description: it.name, projectId: q.projectId ?? s.projectId, customerId: q.customerId ?? s.customerId,
+      qty: String(order?.actual?.qtyApproved ?? it.input.quantity), unitPrice: it.summary.unitPrice ? it.summary.unitPrice.replace('.', ',') : s.unitPrice,
+      channelId: it.input.channelId ?? s.channelId, orderId: order?.id ?? '', finishedGoodId: it.finishedGoodId ?? (order ? '' : s.finishedGoodId) }));
   };
+  const quoteOptions = db.quotes.filter((q) => q.status !== 'recusado').flatMap((q) => quoteItems(q).filter((it) => itemState(db, q, it.itemId) !== 'recusado')
+    .map((it) => ({ value: `${q.id}|${it.itemId}`, label: `${q.number} · ${it.name}` })));
   const preview = useMemo(() => {
     const qty = num(f.qty) ?? 0;
     const price = parseBR(f.unitPrice);
@@ -328,14 +340,14 @@ export function SaleForm({ onClose, preset }: { onClose: () => void; preset?: { 
     const ch = channelRates(db.channels.find((c) => c.id === f.channelId) ?? null);
     const fees = ch ? cents(gross.times(ch.rates).plus(ch.fixedFee)) : ZERO;
     let cost: ReturnType<typeof resolveSaleCost> = { unitCost: null, status: 'pendente' };
-    try { cost = resolveSaleCost(db, { finishedGoodId: f.finishedGoodId || undefined, orderId: f.orderId || undefined, quoteId: f.quoteId || undefined, manualUnitCost: dec(f.manualUnitCost) }); } catch { /* ignora na prévia */ }
+    try { cost = resolveSaleCost(db, { finishedGoodId: f.finishedGoodId || undefined, orderId: f.orderId || undefined, quoteId: f.quoteId || undefined, quoteItemId: f.quoteItemId || undefined, manualUnitCost: dec(f.manualUnitCost) }); } catch { /* ignora na prévia */ }
     const freightNet = (parseBR(f.freightCharged) ?? ZERO).minus(parseBR(f.freightCost) ?? ZERO);
     const receivable = gross.plus(parseBR(f.freightCharged) ?? 0).minus(f.feesWithheld ? fees : 0);
     const cogs = cost.unitCost ? cents(cost.unitCost.times(qty)) : null;
     return { gross, fees, receivable, cost, contribution: cogs ? gross.minus(fees).plus(freightNet).minus(cogs) : null, cogs };
   }, [f, db]);
   const submit = () => run((d) => registerSale(d, {
-    date: f.date, description: f.description, projectId: f.projectId || undefined, customerId: f.customerId || undefined, quoteId: f.quoteId || undefined, orderId: f.orderId || undefined,
+    date: f.date, description: f.description, projectId: f.projectId || undefined, customerId: f.customerId || undefined, quoteId: f.quoteId || undefined, quoteItemId: f.quoteItemId || undefined, orderId: f.orderId || undefined,
     finishedGoodId: f.finishedGoodId || undefined, qty: num(f.qty) ?? 0, unitPrice: dec(f.unitPrice) ?? '0', discount: dec(f.discount) ?? '0', freightCharged: dec(f.freightCharged) ?? '0', freightCost: dec(f.freightCost) ?? '0',
     channelId: f.channelId || undefined, feesWithheld: f.feesWithheld, manualUnitCost: dec(f.manualUnitCost), payment: terms.toTerms(f.date), notes: f.notes,
   }), 'Venda registrada e financeiro atualizado.').then((r) => r.ok && onClose());
@@ -345,7 +357,7 @@ export function SaleForm({ onClose, preset }: { onClose: () => void; preset?: { 
       footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={submit}>Registrar venda</button></>}>
       <div className="stack">
         <div className="grid g3">
-          <SelectField label="A partir do orçamento" value={f.quoteId} onChange={pickQuote} placeholder="— nenhum —" options={db.quotes.filter((q) => q.status !== 'recusado').map((q) => ({ value: q.id, label: `${q.number} · ${q.name}` }))} hint="Preenche produto, quantidade, preço e canal" />
+          <SelectField label="A partir do orçamento (peça)" value={f.quoteId ? `${f.quoteId}|${f.quoteItemId}` : ''} onChange={pickQuote} placeholder="— nenhum —" options={quoteOptions} hint="Preenche produto, quantidade, preço e canal" />
           <SelectField label="Ordem de produção (custo realizado)" value={f.orderId} onChange={(v) => setF((s) => ({ ...s, orderId: v, finishedGoodId: v ? '' : s.finishedGoodId }))} placeholder="— nenhuma —" options={done.map((o) => ({ value: o.id, label: `${o.number} · ${o.description}` }))} />
           <SelectField label="Peça pronta do estoque" value={f.finishedGoodId} onChange={pickFinished} placeholder="— nenhuma —" options={fgOptions} hint="Baixa o saldo de pronta-entrega" />
           <DateField label="Data da venda" required value={f.date} onChange={set('date')} />

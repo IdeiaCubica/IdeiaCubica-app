@@ -207,7 +207,7 @@ export function cancelPurchase(db: DB, purchaseId: ID, reason: string) {
   }
   for (const e of p.equipment ?? []) {
     if (e.printerCreated && e.printerId) {
-      const used = db.orders.some((o) => o.printerId === e.printerId) || db.quotes.some((q) => q.versions.some((v) => v.input.printerId === e.printerId));
+      const used = db.orders.some((o) => o.printerId === e.printerId) || db.quotes.some((q) => q.versions.some((v) => v.items.some((it) => it.input.printerId === e.printerId)));
       if (used) throw new BusinessError('A impressora cadastrada por esta compra já tem orçamentos ou produções. Não é possível cancelar a compra.');
     }
   }

@@ -2,6 +2,35 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.5.0 — 22/10/2026
+
+### Orçamentos com várias peças
+- Um orçamento agora tem **várias peças**, cada uma com filamento, tempo, parâmetros, foto e preço próprios.
+- Cada peça tem situação própria: aguardando cliente, **aprovada**, **recusada**, em produção, produzida.
+- O documento para o cliente permite escolher **quais peças** enviar (todas ou só algumas); várias peças aparecem em lista.
+- Frete passa a ser do orçamento inteiro (todas as peças na mesma caixa); “empresa paga” é rateado no custo das peças pelo peso.
+- Novas sub abas: **Por cliente**, **Por peça** e **Aprovados**.
+- Exclusão de orçamento (sem pedidos ativos, vendas ou peças separadas; fica no histórico de backups).
+- Numeração: novos orçamentos a partir de **ORC-00000203**.
+- Orçamentos antigos (uma peça) são convertidos automaticamente; nada é perdido.
+
+### Produção: pedidos e produções para estoque
+- “OP” virou **Pedido** (PED-…) e **Produção para estoque** (EST-…). Abas: Quadro, Pedidos a partir de orçamento, Produções para estoque, Histórico.
+- **Enviar para produção** escolhe as peças aprovadas e exige a **data de entrega**; cada peça vira um pedido.
+- O **Kanban é ordenado pela data de entrega** (próximas no topo; selo de “atrasado” e de entrega em até 3 dias).
+- **Retornar para o orçamento**: cancela o pedido, libera o material e a peça volta a ficar aprovada e editável.
+- Produção para estoque calcula **custo e valor sugerido de venda** na criação; ao concluir, as peças vão para o estoque.
+- **Orçar para cliente** a partir de uma peça do estoque: a peça só sai do estoque no **“Pedido aprovado”**.
+- **Cartão de agradecimento** por pedido, no modelo oficial (frente e verso, 12 × 12 cm), com opção de personalizar o nome.
+
+### Estoque
+- Nova aba **Peças produzidas**: balões com quantidade, valor investido e potencial de venda; um cartão horizontal por peça
+  com filamento gasto, tempo, custo, valor previsto de venda e dias parada.
+
+### Cadastros e parâmetros
+- Código dos insumos pela **sigla da categoria**: FL00002 → próximo filamento FL00003; etiquetas ET00001… (sigla editável na categoria).
+- **Recomendações** viraram uma sub aba ao lado de “Fontes de captação”, e cada campo mostra o valor recomendado logo abaixo.
+
 ## v1.4.0 — 21/10/2026
 
 ### Orçamento para o cliente

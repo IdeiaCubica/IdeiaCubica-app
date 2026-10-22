@@ -12,7 +12,7 @@ import type { CostParams, DB, FinishedGood, ID, OrderStatus, ProductionOrder, Pr
 import { D, Decimal, ZERO, sum } from './money';
 import { BusinessError, assert, audit, byId, newId, nextCode, nowISO, requireNonNegative, requireText, toLocalDate, todayISO } from './core';
 import { addMovement, lotBalance, releaseAll, reserve } from './inventory';
-import { emptyQuoteInput, latestVersion, resolveParams } from './quotes';
+import { emptyQuoteInput, evaluateQuote, itemState, latestVersion, quoteItem, quoteItemAt, quoteItems, refreshQuoteStatus, resolveParams, saveQuote, summarize } from './quotes';
 import { computeCosts, laborTotals, type CostResult } from './costing';
 
 export const ORDER_STATUS_LABEL: Record<OrderStatus, string> = {
@@ -76,27 +76,81 @@ function nextSequence(db: DB): number {
   return db.orders.reduce((max, o) => Math.max(max, o.sequence ?? 0), 0) + 1;
 }
 
-export function createOrderFromQuote(db: DB, quoteId: ID, opts: {
-  printerId?: ID; responsible?: string; notes?: string; purpose?: 'pedido' | 'estoque'; dueDate?: string;
-} = {}): ProductionOrder {
+/**
+ * Envia peças do orçamento para produção: um PEDIDO por peça, com data de entrega
+ * obrigatória. Peças recusadas, já em produção ou vindas do estoque não entram.
+ */
+export function createOrdersFromQuote(db: DB, quoteId: ID, itemIds: ID[], opts: { dueDate: string; printerId?: ID; responsible?: string; notes?: string }): ProductionOrder[] {
   const q = byId(db.quotes, quoteId, 'Orçamento');
-  assert(q.status !== 'convertido', 'Este orçamento já foi convertido em ordem de produção.');
-  assert(q.status !== 'recusado', 'Orçamento recusado não pode gerar produção.');
+  assert(itemIds.length > 0, 'Escolha ao menos uma peça para produzir.');
+  assert(/^\d{4}-\d{2}-\d{2}$/.test(opts.dueDate ?? ''), 'Informe a data de entrega do pedido.');
   const v = latestVersion(q);
-  assert(v.input.materials.length > 0, 'O orçamento não possui materiais selecionados.');
-  const purpose = opts.purpose ?? (q.customerId ? 'pedido' : 'estoque');
-  const order: ProductionOrder = {
-    id: newId(), number: nextCode(db, 'order', 'OP'), projectId: q.projectId, quoteId: q.id, quoteVersion: v.version,
-    description: q.name, printerId: opts.printerId ?? v.input.printerId, qtyPlanned: v.input.quantity,
-    plannedMaterials: plannedFromInput(db, v.input),
-    plannedHours: v.input.printHoursPerUnit !== null ? D(v.input.printHoursPerUnit).times(v.input.quantity).toNumber() : null,
-    status: 'planejada', responsible: opts.responsible, notes: opts.notes, createdAt: nowISO(),
-    purpose, customerId: purpose === 'pedido' ? q.customerId : undefined, dueDate: opts.dueDate || undefined, sequence: nextSequence(db),
-  };
-  db.orders.push(order);
-  q.status = 'convertido';
-  audit(db, 'Ordem de produção criada', `${order.number} a partir de ${q.number} v${v.version}`);
-  return order;
+  const orders = itemIds.map((itemId) => {
+    const it = quoteItem(q, itemId);
+    const state = itemState(db, q, itemId);
+    assert(state !== 'recusado', `A peça "${it.name}" foi recusada. Reabra-a antes de produzir.`);
+    assert(state !== 'producao' && state !== 'produzido', `A peça "${it.name}" já está em produção.`);
+    assert(!it.finishedGoodId, `A peça "${it.name}" vem do estoque de peças prontas: aprove-a (Pedido aprovado) em vez de produzir.`);
+    assert(it.input.materials.length > 0, `A peça "${it.name}" não possui filamento selecionado.`);
+    const order: ProductionOrder = {
+      id: newId(), number: nextCode(db, 'pedido', 'PED'), projectId: q.projectId, quoteId: q.id, quoteVersion: v.version, quoteItemId: itemId,
+      description: it.name, printerId: opts.printerId ?? it.input.printerId, qtyPlanned: it.input.quantity,
+      plannedMaterials: plannedFromInput(db, it.input),
+      plannedHours: it.input.printHoursPerUnit !== null ? D(it.input.printHoursPerUnit).times(it.input.quantity).toNumber() : null,
+      status: 'planejada', responsible: opts.responsible, notes: opts.notes, createdAt: nowISO(),
+      purpose: 'pedido', customerId: q.customerId, dueDate: opts.dueDate, sequence: nextSequence(db),
+    };
+    db.orders.push(order);
+    q.itemStatus = { ...q.itemStatus, [itemId]: 'aprovado' };
+    audit(db, 'Pedido criado', `${order.number}: ${it.name} (${q.number} v${v.version}), entrega ${opts.dueDate}`);
+    return order;
+  });
+  refreshQuoteStatus(db, q);
+  return orders;
+}
+
+/** Atalho: envia todas as peças possíveis do orçamento (compatível com o fluxo de uma peça). */
+export function createOrderFromQuote(db: DB, quoteId: ID, opts: { dueDate?: string; printerId?: ID; responsible?: string; notes?: string } = {}): ProductionOrder {
+  const q = byId(db.quotes, quoteId, 'Orçamento');
+  const ids = quoteItems(q).filter((it) => !it.finishedGoodId && ['aberto', 'aprovado'].includes(itemState(db, q, it.itemId))).map((it) => it.itemId);
+  assert(ids.length > 0, 'Não há peças disponíveis para produzir neste orçamento.');
+  return createOrdersFromQuote(db, quoteId, ids, { ...opts, dueDate: opts.dueDate ?? todayISO() })[0];
+}
+
+/**
+ * Retorna um pedido (ainda não concluído) para o orçamento: cancela o pedido,
+ * libera o material reservado e a peça volta a ficar "Aprovada" e editável.
+ */
+export function returnOrderToQuote(db: DB, orderId: ID, reason: string) {
+  const o = byId(db.orders, orderId, 'Pedido');
+  assert(o.quoteId, 'Este pedido não veio de um orçamento.');
+  assert(o.status !== 'concluida', 'Pedido já produzido não pode voltar para o orçamento.');
+  assert(o.status !== 'cancelada', 'Pedido já cancelado.');
+  const why = requireText(reason, 'o motivo');
+  releaseAll(db, o.id, 'op', 'liberacao_cancelamento');
+  o.status = 'cancelada';
+  o.cancelReason = `Retornado para o orçamento: ${why}`;
+  const q = db.quotes.find((x) => x.id === o.quoteId);
+  if (q) {
+    if (o.quoteItemId) q.itemStatus = { ...q.itemStatus, [o.quoteItemId]: 'aprovado' };
+    refreshQuoteStatus(db, q);
+  }
+  audit(db, 'Pedido retornado para o orçamento', `${o.number} — ${why}`);
+}
+
+/** Custo e preço sugerido de uma produção para estoque (mesmo motor dos orçamentos, padrões de Parâmetros). */
+export function stockEstimate(db: DB, o: Pick<ProductionOrder, 'qtyPlanned' | 'plannedMaterials' | 'plannedHours' | 'printerId'>) {
+  const input = emptyQuoteInput(db.settings);
+  input.quantity = o.qtyPlanned;
+  input.printerId = o.printerId ?? input.printerId;
+  input.materials = o.plannedMaterials.map((m) => ({ materialId: m.materialId, lotId: m.lotId, qtyPerUnit: m.qty / o.qtyPlanned }));
+  input.printHoursPerUnit = o.plannedHours !== null ? o.plannedHours / o.qtyPlanned : null;
+  // Produção para estoque não tem atendimento por pedido; só o tempo por peça.
+  input.labor = { perOrder: 0, perUnit: input.labor.perUnit };
+  input.shipping = undefined;
+  const params = resolveParams(db, input);
+  const ev = evaluateQuote(input, params);
+  return { input, params, summary: summarize(ev), ev };
 }
 
 export function createManualOrder(db: DB, input: {
@@ -121,18 +175,28 @@ export function createManualOrder(db: DB, input: {
   const purpose = input.purpose ?? 'estoque';
   if (input.customerId) byId(db.parties, input.customerId, 'Cliente');
   const order: ProductionOrder = {
-    ...input, plannedMaterials: planned, description, id: newId(), number: nextCode(db, 'order', 'OP'), status: 'planejada', createdAt: nowISO(),
+    ...input, plannedMaterials: planned, description, id: newId(),
+    number: purpose === 'estoque' ? nextCode(db, 'estoque', 'EST') : nextCode(db, 'pedido', 'PED'), status: 'planejada', createdAt: nowISO(),
     purpose, customerId: purpose === 'pedido' ? input.customerId : undefined, dueDate: input.dueDate || undefined, sequence: nextSequence(db),
   };
+  if (purpose === 'estoque' && planned.length) {
+    const e = stockEstimate(db, order);
+    order.estimate = { input: e.input, params: e.params, summary: e.summary };
+  }
   db.orders.push(order);
-  audit(db, 'Ordem de produção criada', `${order.number} (manual, ${purpose === 'pedido' ? 'pedido' : 'para estoque'})`);
+  audit(db, purpose === 'estoque' ? 'Produção para estoque criada' : 'Pedido criado', `${order.number} ${description}`);
   return order;
 }
 
-/** Fila de produção (planejadas, aguardando material e prontas), na ordem definida pelo usuário. */
+/** Ordem do quadro: data de entrega mais próxima primeiro (sem data por último); empate pela ordem de criação. */
+export function byDelivery(a: ProductionOrder, b: ProductionOrder) {
+  return (a.dueDate ?? '9999-12-31').localeCompare(b.dueDate ?? '9999-12-31')
+    || (a.sequence ?? Number.MAX_SAFE_INTEGER) - (b.sequence ?? Number.MAX_SAFE_INTEGER) || a.createdAt.localeCompare(b.createdAt);
+}
+
+/** Fila de produção (planejadas, aguardando material e prontas), pela data de entrega. */
 export function productionQueue(db: DB): ProductionOrder[] {
-  return db.orders.filter((o) => QUEUE_STATUSES.includes(o.status))
-    .sort((a, b) => (a.sequence ?? Number.MAX_SAFE_INTEGER) - (b.sequence ?? Number.MAX_SAFE_INTEGER) || a.createdAt.localeCompare(b.createdAt));
+  return db.orders.filter((o) => QUEUE_STATUSES.includes(o.status)).sort(byDelivery);
 }
 
 /**
@@ -293,13 +357,25 @@ function addFinishedGoodFromOrder(db: DB, o: ProductionOrder, location?: string)
   const cmp = compareOrder(db, o);
   const unit = cmp.real?.unit ?? null;
   const q = o.quoteId ? db.quotes.find((x) => x.id === o.quoteId) : undefined;
-  const price = q ? latestVersion(q).summary.unitPrice : null;
+  const item = q ? quoteItemAt(q, o.quoteVersion, o.quoteItemId) : undefined;
+  const price = item?.summary.unitPrice ?? o.estimate?.summary.unitPrice ?? null;
+  const a = o.actual!;
+  // Consumo real total (inclui perdas), agrupado por material, para consulta no estoque de peças.
+  const byMat = new Map<ID, number>();
+  const addQty = (lotId: ID, qty: number) => { const mid = db.lots.find((l) => l.id === lotId)?.materialId; if (mid) byMat.set(mid, (byMat.get(mid) ?? 0) + qty); };
+  a.materials.forEach((m) => addQty(m.lotId, m.qty));
+  a.failures.forEach((f) => { if (f.lotId && f.qtyLost > 0) addQty(f.lotId, f.qtyLost); });
   const fg: FinishedGood = {
     id: newId(), code: nextCode(db, 'finished', 'PC'), description: o.description, orderId: o.id, projectId: o.projectId, quoteId: o.quoteId,
-    qtyProduced: o.actual!.qtyApproved, unitCost: unit ? unit.toDecimalPlaces(4).toString() : null,
+    qtyProduced: a.qtyApproved, unitCost: unit ? unit.toDecimalPlaces(4).toString() : null,
     costStatus: unit ? (cmp.real!.laborEstimated ? 'estimado' : 'realizado') : 'pendente',
-    suggestedPrice: price ?? null, producedAt: toLocalDate(o.finishedAt!), location: location?.trim() || undefined,
-    image: q?.image ?? null, adjustments: [], createdAt: nowISO(),
+    suggestedPrice: price, producedAt: toLocalDate(o.finishedAt!), location: location?.trim() || undefined,
+    image: item?.image ?? null, adjustments: [], allocations: [], createdAt: nowISO(),
+    production: {
+      materials: [...byMat.entries()].map(([mid, qty]) => { const m = db.materials.find((x) => x.id === mid); return { label: m ? (m.filament ? `${m.name} (${m.filament.materialType} ${m.filament.color})` : m.name) : 'Material removido', qty, unit: m?.unit ?? '' }; }),
+      hours: a.hours + a.failures.reduce((s, f) => s + f.hoursLost, 0),
+      qtyMade: a.qtyApproved + a.qtyRejected,
+    },
   };
   db.finishedGoods.push(fg);
   o.finishedGoodId = fg.id;
@@ -329,7 +405,25 @@ export function finishedGoodBalance(db: DB, fgId: ID) {
   const fg = byId(db.finishedGoods, fgId, 'Peça pronta');
   const sold = db.sales.filter((s) => s.finishedGoodId === fgId && s.status === 'ativa').reduce((a, s) => a + s.qty, 0);
   const adjusted = fg.adjustments.reduce((a, x) => a + x.qty, 0);
-  return { produced: fg.qtyProduced, sold, adjusted, available: fg.qtyProduced - sold - adjusted };
+  const allocated = (fg.allocations ?? []).reduce((a, x) => a + x.qty, 0);
+  return { produced: fg.qtyProduced, sold, adjusted, allocated, available: fg.qtyProduced - sold - adjusted - allocated };
+}
+
+/**
+ * Orçamento a partir de uma peça pronta do estoque: o cliente pediu o valor.
+ * A peça continua no estoque até o usuário marcar "Pedido aprovado".
+ */
+export function quoteFromFinishedGood(db: DB, fgId: ID, opts: { customerId?: ID; qty: number; unitPrice?: string | null }) {
+  const fg = byId(db.finishedGoods, fgId, 'Peça pronta');
+  assert(Number.isInteger(opts.qty) && opts.qty > 0, 'Quantidade deve ser um inteiro maior que zero.');
+  const bal = finishedGoodBalance(db, fgId);
+  assert(opts.qty <= bal.available, `Só há ${bal.available} peça(s) disponível(is) de ${fg.code}.`);
+  const order = fg.orderId ? db.orders.find((o) => o.id === fg.orderId) : undefined;
+  const base = order ? orderBaseInput(db, order).input : emptyQuoteInput(db.settings);
+  const input: QuoteInput = { ...structuredClone(base), quantity: opts.qty, labor: { perOrder: 0, perUnit: 0 }, overrides: {} };
+  // Custos seguem o mesmo motor (para a margem); o preço ao cliente é o preço sugerido da peça, ou o informado.
+  input.manualPriceUnit = opts.unitPrice ?? fg.suggestedPrice ?? null;
+  return saveQuote(db, { customerId: opts.customerId, name: fg.description }, [{ name: fg.description, image: fg.image ?? null, input, finishedGoodId: fg.id }]);
 }
 
 /** Baixa manual (avaria, brinde, uso próprio). */
@@ -372,8 +466,9 @@ export interface OrderComparison {
 
 function orderBaseInput(db: DB, o: ProductionOrder): { input: QuoteInput; params: CostParams | null } {
   const q = o.quoteId ? db.quotes.find((x) => x.id === o.quoteId) : undefined;
-  const v = q?.versions.find((x) => x.version === o.quoteVersion);
-  if (v) return { input: structuredClone(v.input), params: v.params };
+  const it = q ? quoteItemAt(q, o.quoteVersion, o.quoteItemId) : undefined;
+  if (it) return { input: structuredClone(it.input), params: it.params };
+  if (o.estimate) return { input: structuredClone(o.estimate.input), params: o.estimate.params };
   const input = emptyQuoteInput(db.settings);
   input.quantity = o.qtyPlanned;
   input.printerId = o.printerId;

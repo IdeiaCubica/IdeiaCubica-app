@@ -4,13 +4,14 @@
  */
 import type { ClientQuoteDoc } from '../../domain/clientQuote';
 import { fmtDate, fmtPhone } from '../../domain/core';
-import { fmtBRL, fmtNum } from '../../domain/money';
+import { cents, fmtBRL, fmtNum } from '../../domain/money';
 import '../clientQuote.css';
 
 const firstName = (name: string) => name.trim().split(/\s+/)[0] ?? '';
 
 export function ClientQuoteDocument({ doc }: { doc: ClientQuoteDoc }) {
-  const qty = doc.item.quantity;
+  const single = doc.items.length === 1 ? doc.items[0] : null;
+  const qty = single?.quantity ?? 0;
   const contacts = [
     doc.contacts.whatsapp && { label: 'WhatsApp', value: fmtPhone(doc.contacts.whatsapp) || doc.contacts.whatsapp },
     doc.contacts.instagram && { label: 'Instagram', value: doc.contacts.instagram.startsWith('@') ? doc.contacts.instagram : `@${doc.contacts.instagram}` },
@@ -19,7 +20,7 @@ export function ClientQuoteDocument({ doc }: { doc: ClientQuoteDoc }) {
   ].filter(Boolean) as { label: string; value: string }[];
 
   return (
-    <article className="cq-page" aria-label={`Orçamento ${doc.number}`}>
+    <article className={`cq-page${doc.items.length > 4 ? ' multi' : ''}`} aria-label={`Orçamento ${doc.number}`}>
       <header className="cq-head">
         <div className="cq-brand">
           <img src="/brand/10_icone_simbolo_transparente.svg" alt="" />
@@ -55,26 +56,45 @@ export function ClientQuoteDocument({ doc }: { doc: ClientQuoteDoc }) {
         )}
       </section>
 
-      <section className={`cq-item${doc.item.image ? '' : ' no-image'}`}>
-        {doc.item.image && <div className="cq-photo"><img src={doc.item.image} alt={doc.item.description} /></div>}
-        <div className="cq-item-info">
-          <span className="cq-kicker">Sua peça</span>
-          <h2>{doc.item.description}</h2>
-          <ul className="cq-chips">
-            {doc.item.materials.length > 0 && <li><span>Material</span>{doc.item.materials.join(' + ')}</li>}
-            <li><span>Quantidade</span>{qty} {qty === 1 ? 'peça' : 'peças'}</li>
-            <li><span>Produção</span>Impressão 3D sob medida</li>
-          </ul>
-        </div>
-      </section>
+      {single ? (
+        <section className={`cq-item${single.image ? '' : ' no-image'}`}>
+          {single.image && <div className="cq-photo"><img src={single.image} alt={single.description} /></div>}
+          <div className="cq-item-info">
+            <span className="cq-kicker">Sua peça</span>
+            <h2>{single.description}</h2>
+            <ul className="cq-chips">
+              {single.materials.length > 0 && <li><span>Material</span>{single.materials.join(' + ')}</li>}
+              <li><span>Quantidade</span>{qty} {qty === 1 ? 'peça' : 'peças'}</li>
+              <li><span>Produção</span>{single.ready ? 'Pronta-entrega' : 'Impressão 3D sob medida'}</li>
+            </ul>
+          </div>
+        </section>
+      ) : (
+        <section className="cq-list">
+          <span className="cq-kicker">Suas peças ({doc.items.length})</span>
+          {doc.items.map((it, i) => (
+            <div key={i} className={`cq-row${it.image ? '' : ' no-image'}`}>
+              {it.image && <div className="cq-thumb"><img src={it.image} alt={it.description} /></div>}
+              <div className="cq-row-info">
+                <b>{it.description}</b>
+                <span>{[it.materials.join(' + '), it.ready ? 'pronta-entrega' : 'sob medida'].filter(Boolean).join(' · ')}</span>
+              </div>
+              <div className="cq-row-qty">{it.quantity} × {fmtBRL(it.unitPrice)}</div>
+              <div className="cq-row-total">{fmtBRL(cents(it.unitPrice.times(it.quantity)))}{it.discount.gt(0) && <small>− {fmtBRL(it.discount)} ({fmtNum(it.discountPct)}%)</small>}</div>
+            </div>
+          ))}
+        </section>
+      )}
 
       <section className="cq-values">
         <table>
           <tbody>
-            <tr><th>Valor por peça</th><td>{fmtBRL(doc.unitPrice)}</td></tr>
-            {qty > 1 && <tr><th>Quantidade</th><td>× {qty}</td></tr>}
-            {(qty > 1 || doc.discount.gt(0) || doc.freight) && <tr className="cq-sub"><th>Subtotal</th><td>{fmtBRL(doc.subtotal)}</td></tr>}
-            {doc.discount.gt(0) && <tr className="cq-discount"><th>Desconto{doc.discountPct.gt(0) ? ` (${fmtNum(doc.discountPct)}%)` : ''}</th><td>− {fmtBRL(doc.discount)}</td></tr>}
+            {single ? <>
+              <tr><th>Valor por peça</th><td>{fmtBRL(single.unitPrice)}</td></tr>
+              {qty > 1 && <tr><th>Quantidade</th><td>× {qty}</td></tr>}
+            </> : <tr><th>Peças</th><td>{doc.items.reduce((s, x) => s + x.quantity, 0)} un</td></tr>}
+            {(qty > 1 || !single || doc.discount.gt(0) || doc.freight) && <tr className="cq-sub"><th>Subtotal</th><td>{fmtBRL(doc.subtotal)}</td></tr>}
+            {doc.discount.gt(0) && <tr className="cq-discount"><th>Desconto{single?.discountPct.gt(0) ? ` (${fmtNum(single.discountPct)}%)` : ''}</th><td>− {fmtBRL(doc.discount)}</td></tr>}
             {doc.freight && (
               <tr><th>{doc.freight.label}{doc.freight.delivery && <small>Entrega em {doc.freight.delivery} após o envio</small>}</th>
                 <td>{doc.freight.free ? <span className="cq-free">Grátis</span> : fmtBRL(doc.freight.price)}</td></tr>

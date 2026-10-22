@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useStore } from '../store';
 import { navigate } from '../App';
 import type { Overhead, Printer, RoundingRule, SalesChannel } from '../../domain/types';
@@ -16,7 +16,19 @@ import { AddressFields } from '../components/AddressFields';
 import { ClientQuoteFields, saveClientQuoteDefaults, useClientQuoteForm } from '../components/ClientQuoteExport';
 import type { AddressParts } from '../../domain/types';
 
-type Tab = 'gerais' | 'impressoras' | 'canais' | 'indiretas' | 'fontes';
+type Tab = 'gerais' | 'impressoras' | 'canais' | 'indiretas' | 'fontes' | 'recomendacoes';
+
+const REC = Object.fromEntries([...generalRecommendations(), ...printerRecommendations()].map((r) => [r.key, r])) as Record<string, Recommendation>;
+const recText = (r: Recommendation) =>
+  r.key === 'defaultRounding' ? ROUNDING_LABEL[r.value as RoundingRule]
+  : r.unit === 'R$' ? fmtBRL(r.value)
+  : `${fmtNum(r.value, r.value.includes('.') ? (r.value.split('.')[1].length > 2 ? 3 : 2) : 0)} ${r.unit}`;
+
+/** Valor recomendado, pequeno, logo abaixo do campo. */
+function RecHint({ k, children }: { k: string; children?: ReactNode }) {
+  const r = REC[k];
+  return <>{children}{children && r ? <br /> : null}{r && <span className="rec-hint" title={r.why}>Recomendado: <b>{recText(r)}</b> <span className="rec-src">({r.source})</span></span>}</>;
+}
 
 export function Parametros({ param }: { param?: string }) {
   const { db } = useStore();
@@ -28,12 +40,14 @@ export function Parametros({ param }: { param?: string }) {
         { id: 'gerais', label: 'Parâmetros gerais' }, { id: 'impressoras', label: 'Impressoras', count: db.printers.length },
         { id: 'canais', label: 'Canais de venda', count: db.channels.length }, { id: 'indiretas', label: 'Despesas indiretas', count: db.overheads.length },
         { id: 'fontes', label: 'Fontes de captação', count: db.leadSources.length },
+        { id: 'recomendacoes', label: 'Recomendações' },
       ]} />
       {tab === 'gerais' && <Gerais />}
       {tab === 'impressoras' && <Impressoras />}
       {tab === 'canais' && <Canais />}
       {tab === 'indiretas' && <Indiretas />}
       {tab === 'fontes' && <NamedListManager list="leadSources" title="Fontes de captação de clientes" singular="fonte" usedIn="clientes" />}
+      {tab === 'recomendacoes' && <Recomendacoes />}
     </>
   );
 }
@@ -52,7 +66,7 @@ function Gerais() {
   });
   const [origin, setOrigin] = useState<AddressParts>(s.companyAddress ?? {});
   const oh = overheadRate(db);
-  /** Preenche só os campos vazios do formulário com as sugestões (o usuário ainda precisa salvar). */
+  /** Preenche só os campos vazios do formulário com as recomendações (o usuário ainda precisa salvar). */
   const fillEmpty = () => {
     const next = { ...f } as Record<string, string>;
     let n = 0;
@@ -61,17 +75,8 @@ function Gerais() {
       if (r.key in next && !next[r.key]?.trim()) { next[r.key] = r.value.replace('.', ','); n++; }
     }
     setF(next as typeof f);
-    toast(n ? 'info' : 'warning', n ? `${n} campo(s) preenchido(s) com as sugestões. Revise e clique em "Salvar parâmetros".` : 'Nenhum campo vazio para preencher.');
+    toast(n ? 'info' : 'warning', n ? `${n} campo(s) preenchido(s) com as recomendações. Revise e clique em "Salvar parâmetros".` : 'Nenhum campo vazio para preencher.');
   };
-  const createA1 = () => run((d) => {
-    const rec = Object.fromEntries(printerRecommendations().map((r) => [r.key, r.value]));
-    const p = savePrinter(d, { name: 'Bambu Lab A1', manufacturer: 'Bambu Lab', model: 'A1', acquisitionValue: rec.acquisitionValue, residualValue: rec.residualValue,
-      usefulLifeHours: Number(rec.usefulLifeHours), initialHours: 0, energyMode: 'estimado', kwhPerHour: rec.kwhPerHour, maintenancePerHour: rec.maintenancePerHour,
-      availableHoursPerMonth: Number(rec.availableHoursPerMonth), active: true, notes: 'Cadastrada com os valores sugeridos; calibre energia e manutenção com dados reais.' });
-    if (!d.settings.defaultPrinterId) d.settings.defaultPrinterId = p.id;
-    return p;
-  }, 'Bambu Lab A1 cadastrada com os valores sugeridos.').then((r) => { if (r.ok && !f.defaultPrinterId) set('defaultPrinterId')(r.value.id); });
-  const hasA1 = db.printers.some((p) => /a1/i.test(p.model) && !/mini/i.test(p.model));
   const save = () => run((d) => {
     const h = num(f.productiveHoursPerMonth);
     if (h !== null && h <= 0) throw new BusinessError('Horas produtivas devem ser maiores que zero.');
@@ -95,11 +100,11 @@ function Gerais() {
         <div className="card-head"><div><h2>Custos de produção</h2><p className="muted small">Base do cálculo de energia, mão de obra e rateio das despesas fixas.</p></div></div>
         <div className="card-body grid g3">
           <NumField label="Tarifa de energia" suffix="R$/kWh" value={f.energyTariff} onChange={set('energyTariff')}
-            hint="Valor da conta ÷ kWh consumidos (com tributos e bandeira)." />
+            hint={<RecHint k="energyTariff">Valor da conta ÷ kWh consumidos (com tributos e bandeira).</RecHint>} />
           <NumField label="Custo da hora de trabalho" suffix="R$/h" value={f.laborHourCost} onChange={set('laborHourCost')}
-            hint="Quanto vale 1 hora de trabalho humano. Não é o tempo de impressão." />
+            hint={<RecHint k="laborHourCost">Quanto vale 1 hora de trabalho humano. Não é o tempo de impressão.</RecHint>} />
           <NumField label="Horas produtivas de máquina por mês" suffix="h" value={f.productiveHoursPerMonth} onChange={set('productiveHoursPerMonth')}
-            hint={<>Base do rateio das despesas indiretas. Taxa atual: <b>{oh.rate ? `${fmtBRL(oh.rate, 4)}/h` : '—'}</b> ({fmtBRL(oh.monthly)}/mês em despesas).</>} />
+            hint={<RecHint k="productiveHoursPerMonth">Base do rateio das despesas indiretas. Taxa atual: <b>{oh.rate ? `${fmtBRL(oh.rate, 4)}/h` : '—'}</b> ({fmtBRL(oh.monthly)}/mês em despesas).</RecHint>} />
         </div>
       </div>
       <div className="card">
@@ -110,32 +115,19 @@ function Gerais() {
           <SelectField label="Canal de venda padrão" value={f.defaultChannelId} onChange={set('defaultChannelId')} placeholder="— nenhum —" options={db.channels.filter((c) => c.active).map((c) => ({ value: c.id, label: c.name }))}
             hint={db.channels.length === 0 ? <a href="#/parametros/canais">Cadastre um canal</a> : 'Define tributos e taxas sobre o preço.'} />
           <NumField label="Markup" suffix="%" value={f.defaultMarkupPct} onChange={set('defaultMarkupPct')}
-            hint={<>Lucro desejado sobre o custo. Ex.: custo R$ 50 com 100% → lucro de R$ 50. Os encargos do canal são somados por fora. A margem sobre a venda aparece no orçamento.</>} />
-          <NumField label="Taxa de falha esperada" suffix="%" value={f.defaultFailureRatePct} onChange={set('defaultFailureRatePct')} hint="Reimpressões esperadas. Use 0 se não houver." />
-          <NumField label="Mão de obra por orçamento" suffix="min" value={f.defaultLaborOrderMin} onChange={set('defaultLaborOrderMin')} hint="Preparar arquivo, fatiar, atender o cliente." />
-          <NumField label="Mão de obra por peça" suffix="min" value={f.defaultLaborUnitMin} onChange={set('defaultLaborUnitMin')} hint="Retirar, remover suportes, acabar, embalar." />
+            hint={<RecHint k="defaultMarkupPct">Lucro desejado sobre o custo. Ex.: custo R$ 50 com 100% → lucro de R$ 50. Os encargos do canal são somados por fora.</RecHint>} />
+          <NumField label="Taxa de falha esperada" suffix="%" value={f.defaultFailureRatePct} onChange={set('defaultFailureRatePct')} hint={<RecHint k="defaultFailureRatePct">Reimpressões esperadas. Use 0 se não houver.</RecHint>} />
+          <NumField label="Mão de obra por orçamento" suffix="min" value={f.defaultLaborOrderMin} onChange={set('defaultLaborOrderMin')} hint={<RecHint k="defaultLaborOrderMin">Preparar arquivo, fatiar, atender o cliente.</RecHint>} />
+          <NumField label="Mão de obra por peça" suffix="min" value={f.defaultLaborUnitMin} onChange={set('defaultLaborUnitMin')} hint={<RecHint k="defaultLaborUnitMin">Retirar, remover suportes, acabar, embalar.</RecHint>} />
           <SelectField label="Arredondamento do preço" value={f.defaultRounding} onChange={(v) => set('defaultRounding')(v as RoundingRule)}
-            options={Object.entries(ROUNDING_LABEL).map(([value, label]) => ({ value, label }))} hint="Sempre para cima." />
+            options={Object.entries(ROUNDING_LABEL).map(([value, label]) => ({ value, label }))} hint={<RecHint k="defaultRounding">Sempre para cima.</RecHint>} />
           <TextField label="Nome da empresa" value={f.companyName} onChange={set('companyName')} />
         </div>
       </div>
 
-      <div className="card rec-card">
-        <div className="card-head">
-          <div><h2>Recomendação para começar</h2><p className="muted small">Pontos de partida para a operação com a Bambu Lab A1 (R$ 4.769,10). Ajuste com os seus dados reais — o sistema não aplica nada sozinho.</p></div>
-          <div className="row">
-            <button className="btn secondary" onClick={fillEmpty}>Preencher campos vazios</button>
-            {!hasA1 && <button className="btn primary" onClick={createA1}>Cadastrar a A1 com estes valores</button>}
-          </div>
-        </div>
-        <div className="card-body stack">
-          <RecTable title="Parâmetros gerais e padrões do orçamento" rows={generalRecommendations()} />
-          <RecTable title="Impressora Bambu Lab A1 (cadastro em Impressoras)" rows={printerRecommendations()} />
-          <Alert tone="info" title="Como ler">
-            <b>informado</b> = dado seu · <b>fabricante</b> = publicação da Bambu Lab · <b>estimativa</b> = ponto de partida para calibrar.
-            Exemplo com esses valores: uma peça de 40 g de PLA a R$ 100/kg e 2 h de impressão custa cerca de R$ 4,00 de filamento + R$ 0,18 de energia + R$ 1,27 de depreciação + R$ 0,40 de manutenção, mais mão de obra e rateio.
-          </Alert>
-        </div>
+      <div className="row" style={{ justifyContent: 'space-between' }}>
+        <p className="small muted" style={{ margin: 0 }}>Abaixo de cada campo aparece o valor recomendado. Detalhes e motivos em <a href="#/parametros/recomendacoes">Recomendações</a>.</p>
+        <button className="btn ghost sm" onClick={fillEmpty}>Preencher campos vazios com o recomendado</button>
       </div>
 
       <div className="card">
@@ -156,6 +148,39 @@ function Gerais() {
 
       <Alert tone="info" title="Tributos">Alíquotas não são presumidas: configure-as por canal de venda conforme o regime da empresa e valide com seu contador.</Alert>
       <div className="row"><button className="btn primary" onClick={save}>Salvar parâmetros</button></div>
+    </div>
+  );
+}
+
+/* ---------------- Recomendações ---------------- */
+function Recomendacoes() {
+  const { db, run } = useStore();
+  const createA1 = () => run((d) => {
+    const rec = Object.fromEntries(printerRecommendations().map((r) => [r.key, r.value]));
+    const p = savePrinter(d, { name: 'Bambu Lab A1', manufacturer: 'Bambu Lab', model: 'A1', acquisitionValue: rec.acquisitionValue, residualValue: rec.residualValue,
+      usefulLifeHours: Number(rec.usefulLifeHours), initialHours: 0, energyMode: 'estimado', kwhPerHour: rec.kwhPerHour, maintenancePerHour: rec.maintenancePerHour,
+      availableHoursPerMonth: Number(rec.availableHoursPerMonth), active: true, notes: 'Cadastrada com os valores sugeridos; calibre energia e manutenção com dados reais.' });
+    if (!d.settings.defaultPrinterId) d.settings.defaultPrinterId = p.id;
+    return p;
+  }, 'Bambu Lab A1 cadastrada com os valores recomendados.');
+  const hasA1 = db.printers.some((p) => /a1/i.test(p.model) && !/mini/i.test(p.model));
+  return (
+    <div className="card rec-card">
+      <div className="card-head">
+        <div><h2>Recomendações para começar</h2><p className="muted small">Pontos de partida para a operação com a Bambu Lab A1 (R$ 4.769,10). Ajuste com os seus dados reais — o sistema não aplica nada sozinho. O valor recomendado também aparece, pequeno, abaixo de cada campo.</p></div>
+        <div className="row">
+          <a className="btn secondary" href="#/parametros/gerais">Ir para os parâmetros gerais</a>
+          {!hasA1 && <button className="btn primary" onClick={createA1}>Cadastrar a A1 com estes valores</button>}
+        </div>
+      </div>
+      <div className="card-body stack">
+        <RecTable title="Parâmetros gerais e padrões do orçamento" rows={generalRecommendations()} />
+        <RecTable title="Impressora Bambu Lab A1 (cadastro em Impressoras)" rows={printerRecommendations()} />
+        <Alert tone="info" title="Como ler">
+          <b>informado</b> = dado seu · <b>fabricante</b> = publicação da Bambu Lab · <b>estimativa</b> = ponto de partida para calibrar.
+          Exemplo com esses valores: uma peça de 40 g de PLA a R$ 100/kg e 2 h de impressão custa cerca de R$ 4,00 de filamento + R$ 0,18 de energia + R$ 1,27 de depreciação + R$ 0,40 de manutenção, mais mão de obra e rateio.
+        </Alert>
+      </div>
     </div>
   );
 }
@@ -332,9 +357,9 @@ function PrinterForm({ item, onClose, onSave }: { item?: Printer; onClose: () =>
         </div>
         <p className="section-title">Depreciação</p>
         <div className="grid g4">
-          <DecField label="Valor de aquisição" suffix="R$" value={f.acquisitionValue} onChange={set('acquisitionValue')} />
-          <DecField label="Valor residual estimado" suffix="R$" value={f.residualValue} onChange={set('residualValue')} hint="Valor de revenda ao fim da vida útil" />
-          <DecField label="Vida útil (horas produtivas)" suffix="h" value={f.usefulLifeHours} onChange={(v) => set('usefulLifeHours')(n(v))} />
+          <DecField label="Valor de aquisição" suffix="R$" value={f.acquisitionValue} onChange={set('acquisitionValue')} hint={<RecHint k="acquisitionValue">Custo total da compra (com frete)</RecHint>} />
+          <DecField label="Valor residual estimado" suffix="R$" value={f.residualValue} onChange={set('residualValue')} hint={<RecHint k="residualValue">Valor de revenda ao fim da vida útil</RecHint>} />
+          <DecField label="Vida útil (horas produtivas)" suffix="h" value={f.usefulLifeHours} onChange={(v) => set('usefulLifeHours')(n(v))} hint={<RecHint k="usefulLifeHours" />} />
           <DecField label="Horas já utilizadas" suffix="h" value={f.initialHours} onChange={(v) => set('initialHours')(n(v) ?? 0)} />
         </div>
         <p className="small muted">Depreciação por hora = (aquisição − residual) ÷ vida útil = <b>{dep ? fmtBRL(dep, 4) : 'preencha os campos'}</b>. A compra da impressora deve ser lançada no Financeiro como <b>investimento</b>, nunca como custo de uma peça.</p>
@@ -342,12 +367,12 @@ function PrinterForm({ item, onClose, onSave }: { item?: Printer; onClose: () =>
         <div className="grid g4">
           <SelectField label="Origem do consumo" value={f.energyMode} onChange={(v) => set('energyMode')(v as Printer['energyMode'])} options={[{ value: 'medido', label: 'Medido (tomada medidora)' }, { value: 'estimado', label: 'Estimado (potência média)' }]} />
           {f.energyMode === 'estimado' && <NumField label="Potência média real" suffix="W" value={f.avgW} onChange={(v) => { set('avgW')(v); const w = num(v); if (w !== null) set('kwhPerHour')(wattsToKwhPerHour(w).toString()); }} hint="Não use a potência máxima da fonte" />}
-          <DecField label="Consumo médio" suffix="kWh/h" value={f.kwhPerHour} onChange={set('kwhPerHour')} hint={f.energyMode === 'medido' ? 'kWh medidos ÷ horas de impressão' : 'Calculado da potência média'} />
+          <DecField label="Consumo médio" suffix="kWh/h" value={f.kwhPerHour} onChange={set('kwhPerHour')} hint={<RecHint k="kwhPerHour">{f.energyMode === 'medido' ? 'kWh medidos ÷ horas de impressão' : 'Calculado da potência média'}</RecHint>} />
         </div>
         <p className="section-title">Manutenção e capacidade</p>
         <div className="grid g3">
-          <DecField label="Manutenção e desgaste por hora" suffix="R$/h" value={f.maintenancePerHour} onChange={set('maintenancePerHour')} hint="Ex.: (bicos + mesa + correias por ano) ÷ horas por ano. Calibre com o histórico." />
-          <DecField label="Horas disponíveis por mês" suffix="h" value={f.availableHoursPerMonth} onChange={(v) => set('availableHoursPerMonth')(n(v))} hint="Base da taxa de utilização" />
+          <DecField label="Manutenção e desgaste por hora" suffix="R$/h" value={f.maintenancePerHour} onChange={set('maintenancePerHour')} hint={<RecHint k="maintenancePerHour">(bicos + mesa + correias por ano) ÷ horas por ano. Calibre com o histórico.</RecHint>} />
+          <DecField label="Horas disponíveis por mês" suffix="h" value={f.availableHoursPerMonth} onChange={(v) => set('availableHoursPerMonth')(n(v))} hint={<RecHint k="availableHoursPerMonth">Base da taxa de utilização</RecHint>} />
         </div>
         <TextArea label="Observações" value={f.notes} onChange={set('notes')} />
         <Check label="Impressora ativa" checked={f.active} onChange={set('active')} />

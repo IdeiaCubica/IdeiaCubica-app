@@ -1,20 +1,24 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useStore } from '../store';
 import { navigate } from '../App';
-import type { DB, Quote, QuoteExtraLine, QuoteInput, QuoteShipping, QuoteStatus, RoundingRule } from '../../domain/types';
-import { emptyQuoteInput, evaluateQuote, latestVersion, materialCostPolicy, perHour, resolveParams, saveQuote, setQuoteStatus, type QuoteEvaluation } from '../../domain/quotes';
+import type { DB, Quote, QuoteExtraLine, QuoteInput, QuoteItemStatus, QuoteShipping, QuoteStatus, QuoteVersion, QuoteVersionItem, RoundingRule } from '../../domain/types';
+import {
+  ITEM_STATE_LABEL, deleteQuote, emptyQuoteInput, evaluateQuote, isItemLocked, itemOrder, itemState, latestVersion, materialCostPolicy, perHour, quoteItems, quoteTotal,
+  resolveParams, saveQuote, setItemStatus, setQuoteStatus, type ItemState, type QuoteEvaluation,
+} from '../../domain/quotes';
 import { isLockedComponent, laborTotals, type CompStatus, type CostComponent } from '../../domain/costing';
 import { ROUNDING_LABEL } from '../../domain/pricing';
-import { createOrderFromQuote } from '../../domain/production';
+import { createOrdersFromQuote } from '../../domain/production';
+import { allocate } from '../../domain/purchases';
 import { saveParty } from '../../domain/catalog';
 import { fmtDate, fmtDateTime, fmtPhone, newId } from '../../domain/core';
-import { D, Decimal, fmtBRL, fmtNum, fmtPct } from '../../domain/money';
+import { Decimal, fmtBRL, fmtNum, fmtPct } from '../../domain/money';
 import { parse3MF } from '../../io/threeMF';
 import { parseStl } from '../../io/stl';
 import { compressImage } from '../image';
-import { Alert, Badge, Combobox, DecField, Empty, Field, InlineDec, PageHead, SelectField, TextField, TimeField, useConfirm, type Tone } from '../components/ui';
+import { Alert, Badge, Check, Combobox, DataTable, DateField, DecField, Empty, Field, InlineDec, Kpi, Modal, PageHead, SelectField, Tabs, TextField, TimeField, useConfirm, type Tone } from '../components/ui';
 import { perGramToPerKg } from '../../domain/conversions';
-import { quotePackage, quoteShipping, shippingDefaults } from '../../domain/shipping';
+import { packageFor, piecesWeightG, quoteShipping, shippingDefaults } from '../../domain/shipping';
 import { lookupCep } from '../../io/cep';
 import { fmtCep, isValidCep } from '../../domain/address';
 import { quoteFreight, type FreightOption } from '../../io/api';
@@ -30,39 +34,62 @@ const STATUS_BADGE: Record<CompStatus, { label: string; tone: Tone }> = {
   ajustado: { label: 'ajustado por você', tone: 'info' }, nao_aplicavel: { label: 'n/a', tone: 'neutral' },
 };
 
+type ListTab = 'clientes' | 'pecas' | 'aprovados';
+
 export function Orcamentos({ param }: { param?: string }) {
-  if (param) return <QuoteEditor key={param} quoteId={param === 'novo' ? undefined : param} />;
-  return <QuoteList />;
+  if (param && param !== 'pecas' && param !== 'aprovados') return <QuoteEditor key={param} quoteId={param === 'novo' ? undefined : param} />;
+  return <QuoteList tab={(param as ListTab) || 'clientes'} />;
 }
 
 /* ================================================================== */
-/* Lista em balões                                                     */
+/* Lista: por cliente (balões), por peça e aprovados                   */
 /* ================================================================== */
-function QuoteList() {
+function QuoteList({ tab }: { tab: ListTab }) {
   const { db } = useStore();
   const [status, setStatus] = useState('');
   const [q, setQ] = useState('');
   const customer = (id?: string) => db.parties.find((p) => p.id === id)?.name;
+  const match = (s: string) => !q.trim() || s.toLowerCase().includes(q.trim().toLowerCase());
   const rows = [...db.quotes].reverse()
     .filter((x) => !status || x.status === status)
-    .filter((x) => !q.trim() || `${x.number} ${x.name} ${customer(x.customerId) ?? ''}`.toLowerCase().includes(q.trim().toLowerCase()));
+    .filter((x) => match(`${x.number} ${x.name} ${customer(x.customerId) ?? ''} ${quoteItems(x).map((i) => i.name).join(' ')}`));
+  const pieces = [...db.quotes].reverse().flatMap((x) => quoteItems(x).map((it) => ({ quote: x, it, state: itemState(db, x, it.itemId) })))
+    .filter((r) => match(`${r.quote.number} ${r.it.name} ${customer(r.quote.customerId) ?? ''}`));
+  const approvedStates: ItemState[] = ['aprovado', 'producao', 'produzido', 'separado'];
+  const approved = pieces.filter((r) => approvedStates.includes(r.state));
+  const approvedValue = approved.reduce((s, r) => s.plus(r.it.summary.orderPrice ?? 0), new Decimal(0));
   return (
     <>
-      <PageHead eyebrow="Orçamentos" title="Orçamentos" text="Cada balão é um orçamento. Clique para ver os detalhes, ajustar valores ou gerar a produção."
+      <PageHead eyebrow="Orçamentos" title="Orçamentos" text="Orce várias peças por cliente, envie o orçamento de todas ou só de algumas e mande para produção as que o cliente aprovar."
         actions={<button className="btn primary" onClick={() => navigate('orcamentos/novo')}>Novo orçamento</button>} />
+      <Tabs<ListTab> value={tab} onChange={(t) => navigate(t === 'clientes' ? 'orcamentos' : `orcamentos/${t}`)} tabs={[
+        { id: 'clientes', label: 'Por cliente', count: db.quotes.length || undefined },
+        { id: 'pecas', label: 'Por peça', count: pieces.length || undefined },
+        { id: 'aprovados', label: 'Aprovados', count: approved.length || undefined },
+      ]} />
       {db.quotes.length === 0 ? (
-        <div className="card"><Empty title="Nenhum orçamento ainda" text="Informe cliente, peça, filamento, peso e tempo: o sistema calcula custo, R$/h e o valor para o cliente." action={<button className="btn primary" onClick={() => navigate('orcamentos/novo')}>Criar o primeiro orçamento</button>} /></div>
+        <div className="card"><Empty title="Nenhum orçamento ainda" text="Informe cliente, peças, filamento, peso e tempo: o sistema calcula custo, R$/h e o valor para o cliente." action={<button className="btn primary" onClick={() => navigate('orcamentos/novo')}>Criar o primeiro orçamento</button>} /></div>
       ) : (
         <>
           <div className="row" style={{ marginBottom: 20 }}>
             <input type="search" className="search-lg" placeholder="Buscar por cliente, peça ou número…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Buscar orçamentos" />
-            <div style={{ width: 260, maxWidth: '100%' }}>
+            {tab === 'clientes' && <div style={{ width: 260, maxWidth: '100%' }}>
               <Combobox ariaLabel="Filtrar por situação" value={status} onChange={setStatus} placeholder="Todas as situações" options={Object.entries(QUOTE_STATUS).map(([value, v]) => ({ value, label: v.label }))} />
-            </div>
-            <span className="muted" style={{ marginLeft: 'auto' }}>{rows.length} orçamento(s)</span>
+            </div>}
+            <span className="muted" style={{ marginLeft: 'auto' }}>{tab === 'clientes' ? `${rows.length} orçamento(s)` : `${(tab === 'pecas' ? pieces : approved).length} peça(s)`}</span>
           </div>
-          {rows.length === 0 ? <p className="muted">Nenhum orçamento encontrado.</p> : (
+          {tab === 'clientes' && (rows.length === 0 ? <p className="muted">Nenhum orçamento encontrado.</p> : (
             <div className="quote-grid">{rows.map((x) => <QuoteCard key={x.id} quote={x} customer={customer(x.customerId)} />)}</div>
+          ))}
+          {tab !== 'clientes' && (
+            <>
+              {tab === 'aprovados' && <div className="kpis" style={{ marginBottom: 18 }}>
+                <Kpi label="Peças aprovadas" value={approved.length} accent />
+                <Kpi label="Valor aprovado" value={fmtBRL(approvedValue)} />
+                <Kpi label="Aguardando produção" value={approved.filter((r) => r.state === 'aprovado').length} hint="aprovadas e ainda sem pedido" />
+              </div>}
+              <PieceTable rows={tab === 'pecas' ? pieces : approved} customer={customer} />
+            </>
           )}
         </>
       )}
@@ -70,30 +97,52 @@ function QuoteList() {
   );
 }
 
+const ITEM_TONE: Record<ItemState, Tone> = { aberto: 'neutral', aprovado: 'success', recusado: 'error', producao: 'primary', produzido: 'info', separado: 'success' };
+
+function PieceTable({ rows, customer }: { rows: { quote: Quote; it: QuoteVersionItem; state: ItemState }[]; customer: (id?: string) => string | undefined }) {
+  return (
+    <div className="card">
+      <DataTable rows={rows} rowKey={(r) => r.quote.id + r.it.itemId} onRowClick={(r) => navigate(`orcamentos/${r.quote.id}`)}
+        empty={<Empty title="Nenhuma peça nesta lista" />}
+        columns={[
+          { key: 'i', header: 'Peça', render: (r) => <div className="row" style={{ gap: 10, flexWrap: 'nowrap' }}>{r.it.image ? <img src={r.it.image} alt="" className="kb-thumb" /> : null}<div><b>{r.it.name}</b><div className="muted small">{r.it.finishedGoodId ? 'pronta-entrega (estoque)' : `${r.it.input.quantity} un`}</div></div></div>, sort: (r) => r.it.name },
+          { key: 'c', header: 'Cliente', render: (r) => customer(r.quote.customerId) ?? <span className="muted">—</span>, sort: (r) => customer(r.quote.customerId) ?? '' },
+          { key: 'n', header: 'Orçamento', render: (r) => <span className="mono">{r.quote.number}</span>, sort: (r) => r.quote.number },
+          { key: 'v', header: 'Valor', num: true, render: (r) => fmtBRL(r.it.summary.orderPrice), sort: (r) => Number(r.it.summary.orderPrice ?? 0) },
+          { key: 'u', header: 'Por peça', num: true, render: (r) => fmtBRL(r.it.summary.unitPrice) },
+          { key: 's', header: 'Situação', render: (r) => <Badge tone={ITEM_TONE[r.state]}>{ITEM_STATE_LABEL[r.state]}</Badge>, sort: (r) => r.state },
+          { key: 'd', header: 'Data', render: (r) => fmtDate(latestVersion(r.quote).createdAt), sort: (r) => latestVersion(r.quote).createdAt },
+        ]} />
+    </div>
+  );
+}
+
 function QuoteCard({ quote, customer }: { quote: Quote; customer?: string }) {
+  const { db } = useStore();
   const v = latestVersion(quote);
-  const s = v.summary;
-  const qty = v.input.quantity;
-  const price = s.orderPrice ?? (s.unitPrice ? D(s.unitPrice).times(qty).toString() : null);
-  const perH = price && s.hours && D(s.hours).gt(0) ? D(price).div(s.hours) : null;
+  const items = v.items;
+  const tot = quoteTotal(db, quote);
+  const perH = tot.hours.gt(0) ? tot.price.div(tot.hours) : null;
+  const img = items.find((i) => i.image)?.image;
+  const approved = items.filter((i) => ['aprovado', 'producao', 'produzido', 'separado'].includes(itemState(db, quote, i.itemId))).length;
   return (
     <button className="quote-card" onClick={() => navigate(`orcamentos/${quote.id}`)} aria-label={`Abrir orçamento ${quote.number}: ${quote.name}`}>
-      <div className="qc-img">{quote.image ? <img src={quote.image} alt="" /> : <img className="ph" src="/brand/10_icone_simbolo_transparente.svg" alt="" />}</div>
+      <div className="qc-img">{img ? <img src={img} alt="" /> : <img className="ph" src="/brand/10_icone_simbolo_transparente.svg" alt="" />}{items.length > 1 && <span className="qc-count">{items.length} peças</span>}</div>
       <div className="qc-body">
         <div className="row" style={{ justifyContent: 'space-between', gap: 8 }}>
           <span className="mono muted">{quote.number}</span>
           <Badge tone={QUOTE_STATUS[quote.status].tone}>{QUOTE_STATUS[quote.status].label}</Badge>
         </div>
         <h3 className="qc-title">{quote.name}</h3>
-        <p className="muted qc-client">{customer ?? 'Cliente não informado'}{qty > 1 ? ` · ${qty} peças` : ''}</p>
-        <div className="qc-price">{price ? fmtBRL(price) : '—'}<span>valor para o cliente</span></div>
+        <p className="muted qc-client">{customer ?? 'Cliente não informado'}{items.length > 1 ? ` · ${items.map((i) => i.name).slice(0, 3).join(', ')}${items.length > 3 ? '…' : ''}` : items[0].input.quantity > 1 ? ` · ${items[0].input.quantity} peças` : ''}</p>
+        <div className="qc-price">{tot.count ? fmtBRL(tot.price) : '—'}<span>valor para o cliente</span></div>
         <div className="qc-meta">
-          <span>Custo <b>{s.totalCost ? fmtBRL(s.totalCost) : '—'}</b></span>
+          <span>Custo <b>{fmtBRL(tot.cost)}</b></span>
           <span>R$/h <b>{perH ? fmtBRL(perH) : '—'}</b></span>
         </div>
         <div className="row" style={{ justifyContent: 'space-between', gap: 8 }}>
-          <span className="small muted">{fmtDate(v.createdAt)} · v{quote.versions.length}</span>
-          {!s.complete && <Badge tone="warning">incompleto</Badge>}
+          <span className="small muted">{fmtDate(v.createdAt)} · v{quote.versions.length}{items.length > 1 ? ` · ${approved}/${items.length} aprovadas` : ''}</span>
+          {items.some((i) => !i.summary.complete) && <Badge tone="warning">incompleto</Badge>}
         </div>
       </div>
     </button>
@@ -114,50 +163,97 @@ function Section({ title, subtitle, children, right }: { title: string; subtitle
 
 const filamentMaterials = (db: DB) => db.materials.filter((m) => m.active && m.filament);
 
+interface DraftItem { itemId?: string; name: string; image: string | null; input: QuoteInput; finishedGoodId?: string }
+
+const newDraft = (db: DB): DraftItem => {
+  const base = emptyQuoteInput(db.settings);
+  const first = filamentMaterials(db)[0];
+  return { name: '', image: null, input: first ? { ...base, materials: [{ materialId: first.id, qtyPerUnit: 0 }] } : base };
+};
+const draftsOf = (q: Quote): DraftItem[] => latestVersion(q).items.map((it) => ({
+  itemId: it.itemId, name: it.name, image: it.image ?? null, input: { overrides: {}, ...structuredClone(it.input) }, finishedGoodId: it.finishedGoodId,
+}));
 function QuoteEditor({ quoteId }: { quoteId?: string }) {
   const { db, run, toast } = useStore();
   const [confirm, confirmEl] = useConfirm();
   const quote = quoteId ? db.quotes.find((q) => q.id === quoteId) : undefined;
-  const [input, setInput] = useState<QuoteInput>(() => {
-    if (quote) return { overrides: {}, ...structuredClone(latestVersion(quote).input) };
-    const base = emptyQuoteInput(db.settings);
-    const first = filamentMaterials(db)[0];
-    return first ? { ...base, materials: [{ materialId: first.id, qtyPerUnit: 0 }] } : base;
-  });
-  const [meta, setMeta] = useState({ name: quote?.name ?? '', customerId: quote?.customerId ?? '', image: quote?.image ?? null as string | null, note: '' });
+  const [items, setItems] = useState<DraftItem[]>(() => (quote ? draftsOf(quote) : [newDraft(db)]));
+  const [active, setActive] = useState(0);
+  const [shipping, setShipping] = useState<QuoteShipping>(() => (quote ? latestVersion(quote).shipping ?? quoteShipping(db, latestVersion(quote).items[0].input) : shippingDefaults(db.settings)));
+  const [meta, setMeta] = useState({ title: quote && quote.name !== latestVersion(quote).items[0]?.name ? quote.name : '', customerId: quote?.customerId ?? '', note: '' });
   const [newClient, setNewClient] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const patch = (p: Partial<QuoteInput>) => setInput((s) => ({ ...s, ...p }));
-  const unsaved = !!quote && (JSON.stringify(input) !== JSON.stringify({ overrides: {}, ...latestVersion(quote).input })
-    || meta.name !== quote.name || (meta.customerId || undefined) !== quote.customerId || (meta.image ?? null) !== (quote.image ?? null));
+  const [producing, setProducing] = useState(false);
+  const idx = Math.min(active, items.length - 1);
+  const cur = items[idx];
+  const input = cur.input;
+  const patchItem = (i: number, p: Partial<DraftItem>) => setItems((s) => s.map((x, k) => (k === i ? { ...x, ...p } : x)));
+  const patch = (p: Partial<QuoteInput>) => setItems((s) => s.map((x, k) => (k === idx ? { ...x, input: { ...x.input, ...p } } : x)));
+  const stateOf = (it: DraftItem): ItemState => (quote && it.itemId ? itemState(db, quote, it.itemId) : 'aberto');
+  const lockedItem = (it: DraftItem) => !!quote && !!it.itemId && isItemLocked(db, quote, it.itemId);
+  const curLocked = lockedItem(cur);
+  const unsaved = !!quote && (JSON.stringify(items) !== JSON.stringify(draftsOf(quote))
+    || JSON.stringify(shipping) !== JSON.stringify(latestVersion(quote).shipping ?? quoteShipping(db, latestVersion(quote).items[0].input))
+    || (meta.customerId || undefined) !== quote.customerId);
 
   const params = useMemo(() => resolveParams(db, input), [db, input]);
   const evaluation = useMemo<{ ev?: QuoteEvaluation; error?: string }>(() => {
     try { return { ev: evaluateQuote(input, params) }; } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
   }, [input, params]);
+  // Totais de todas as peças (não recusadas), recalculados com os parâmetros atuais.
+  const totals = useMemo(() => {
+    let price = new Decimal(0), cost = new Decimal(0), pending = false, count = 0;
+    items.forEach((it) => {
+      if (stateOf(it) === 'recusado') return;
+      count++;
+      try {
+        const ev = evaluateQuote(it.input, resolveParams(db, it.input));
+        cost = cost.plus(ev.costs.total);
+        if (ev.pricing.analysis) price = price.plus(ev.pricing.analysis.revenue); else pending = true;
+      } catch { pending = true; }
+    });
+    return { price, cost, pending, count };
+  }, [items, db]);
 
   if (quoteId && !quote) return <Empty title="Orçamento não encontrado" action={<button className="btn secondary" onClick={() => navigate('orcamentos')}>Voltar</button>} />;
-  const locked = quote?.status === 'convertido';
 
-  const save = () => run((d) => saveQuote(d, { quoteId: quote?.id, name: meta.name, customerId: meta.customerId || undefined, image: meta.image, note: meta.note || undefined, projectId: quote?.projectId }, input),
+  const save = () => run((d) => saveQuote(d, { quoteId: quote?.id, name: meta.title || undefined, customerId: meta.customerId || undefined, note: meta.note || undefined, projectId: quote?.projectId },
+    items.map((it) => ({ itemId: it.itemId, name: it.name, image: it.image, input: it.input, finishedGoodId: it.finishedGoodId })), shipping),
     quote ? 'Orçamento atualizado (nova versão salva; as anteriores ficam no histórico).' : 'Orçamento criado.')
-    .then((r) => { if (r.ok) { setMeta((m) => ({ ...m, note: '' })); if (!quote) navigate(`orcamentos/${r.value.id}`); } });
+    .then((r) => {
+      if (!r.ok) return;
+      setMeta((m) => ({ ...m, note: '' }));
+      if (!quote) navigate(`orcamentos/${r.value.id}`);
+      else setItems(draftsOf(r.value));
+    });
 
-  const toOrder = async () => {
+  const remove = async () => {
     if (!quote) return;
-    const ok = await confirm({ title: 'Gerar ordem de produção?', confirmLabel: 'Gerar OP',
-      text: <>A produção usará a <b>versão {quote.versions.length}</b> salva. Alterações não salvas nesta tela não entram. Depois disso o orçamento fica bloqueado para edição.
-        <br />{quote.customerId ? 'Com cliente: entra como pedido do cliente.' : 'Sem cliente: entra como produção para estoque (pronta-entrega).'} A OP vai para o fim da fila de produção; você pode mudar isso no quadro.</> });
-    if (ok === null) return;
-    const r = await run((d) => createOrderFromQuote(d, quote.id), 'Ordem de produção criada e colocada na fila.');
-    if (r.ok) navigate('producao/quadro');
+    const reason = await confirm({ title: `Excluir o orçamento ${quote.number}?`, danger: true, confirmLabel: 'Excluir orçamento', reasonLabel: 'Motivo da exclusão',
+      text: 'O orçamento sai das listas. Só é possível sem pedidos ativos, vendas ou peças separadas. Uma cópia fica no histórico automático de backups (Configurações).' });
+    if (!reason) return;
+    const r = await run((d) => deleteQuote(d, quote.id, reason), `Orçamento ${quote.number} excluído.`);
+    if (r.ok) navigate('orcamentos');
   };
-
+  const addItem = () => { setItems((s) => [...s, newDraft(db)]); setActive(items.length); };
+  const duplicate = () => { setItems((s) => [...s, { ...structuredClone(cur), itemId: undefined, finishedGoodId: undefined, name: cur.name ? `${cur.name} (cópia)` : '' }]); setActive(items.length); };
+  const removeItem = async () => {
+    if (items.length === 1) return toast('warning', 'O orçamento precisa ter ao menos uma peça.');
+    if (curLocked) return toast('warning', 'Esta peça está em produção e não pode ser removida.');
+    const ok = await confirm({ title: `Remover "${cur.name || `Peça ${idx + 1}`}"?`, confirmLabel: 'Remover peça', danger: true, text: 'A peça sai do orçamento ao salvar. Versões anteriores continuam no histórico.' });
+    if (ok === null) return;
+    setItems((s) => s.filter((_, k) => k !== idx));
+    setActive(Math.max(0, idx - 1));
+  };
+  const setStatus = (it: DraftItem, status: QuoteItemStatus) => {
+    if (!quote || !it.itemId) return toast('warning', 'Salve o orçamento antes de aprovar ou recusar peças.');
+    if (unsaved) return toast('warning', 'Há alterações não salvas. Salve antes de mudar a situação das peças.');
+    run((d) => setItemStatus(d, quote.id, it.itemId!, status), status === 'aprovado' ? (it.finishedGoodId ? 'Pedido aprovado: peças do estoque separadas.' : 'Peça aprovada.') : status === 'recusado' ? 'Peça recusada.' : 'Peça reaberta.');
+  };
   const onImage = async (file: File) => {
-    try { setMeta((m) => ({ ...m, image: null })); const img = await compressImage(file); setMeta((m) => ({ ...m, image: img })); }
+    try { patchItem(idx, { image: null }); const img = await compressImage(file); patchItem(idx, { image: img }); }
     catch (e) { toast('error', e instanceof Error ? e.message : 'Falha ao ler a imagem.'); }
   };
-
   const onSliceFile = async (file: File) => {
     try {
       const buf = await file.arrayBuffer();
@@ -178,24 +274,27 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
   };
 
   const ev = evaluation.ev;
+  const title = meta.title || items[0]?.name || 'Novo orçamento';
+  const producible = quote ? items.filter((it) => it.itemId && !it.finishedGoodId && ['aberto', 'aprovado'].includes(stateOf(it))) : [];
+  const curState = stateOf(cur);
+  const curOrder = quote && cur.itemId ? itemOrder(db, quote, cur.itemId) : undefined;
   return (
     <>
-      <PageHead eyebrow={quote ? `Orçamento ${quote.number} · versão ${quote.versions.length}` : 'Novo orçamento'} title={meta.name || 'Novo orçamento'}
+      <PageHead eyebrow={quote ? `Orçamento ${quote.number} · versão ${quote.versions.length} · ${items.length} peça(s)` : 'Novo orçamento'} title={title}
         actions={<>
           <button className="btn ghost" onClick={() => navigate('orcamentos')}>Voltar</button>
-          {quote && !locked && <div style={{ width: 230 }}><Combobox ariaLabel="Situação do orçamento" value={quote.status}
-            onChange={(v) => v && v !== quote.status && run((d) => setQuoteStatus(d, quote.id, v as QuoteStatus), 'Situação atualizada.')}
-            options={(['rascunho', 'enviado', 'aprovado', 'recusado'] as QuoteStatus[]).map((s) => ({ value: s, label: QUOTE_STATUS[s].label }))} /></div>}
+          {quote && <button className="btn ghost danger-text" onClick={remove}>Excluir</button>}
+          {quote && <Badge tone={QUOTE_STATUS[quote.status].tone}>{QUOTE_STATUS[quote.status].label}</Badge>}
+          {quote && (quote.status === 'rascunho' || quote.status === 'enviado') && <button className="btn ghost" onClick={() => run((d) => setQuoteStatus(d, quote.id, quote.status === 'enviado' ? 'rascunho' : 'enviado'), 'Situação atualizada.')}>{quote.status === 'enviado' ? 'Voltar para rascunho' : 'Marcar como enviado'}</button>}
           {quote && <button className="btn secondary" onClick={() => setExporting(true)}>Orçamento para o cliente</button>}
-          {quote && !locked && <button className="btn navy" onClick={toOrder} disabled={quote.status === 'recusado'}>Gerar produção</button>}
-          {!locked && <button className="btn primary" onClick={save}>{quote ? 'Salvar alterações' : 'Salvar orçamento'}</button>}
+          {quote && <button className="btn navy" onClick={() => (unsaved ? toast('warning', 'Salve as alterações antes de enviar para produção.') : setProducing(true))} disabled={producible.length === 0}>Enviar para produção</button>}
+          <button className="btn primary" onClick={save}>{quote ? 'Salvar alterações' : 'Salvar orçamento'}</button>
         </>} />
-      {locked && <div style={{ marginBottom: 20 }}><Alert tone="info" title="Orçamento em produção">Somente leitura. Para mudar valores, crie um novo orçamento.</Alert></div>}
 
       <div className="split">
-        <fieldset disabled={locked} className="stack">
-          {/* 1. Pedido */}
-          <Section title="1. Pedido">
+        <div className="stack">
+          {/* 1. Cliente */}
+          <Section title="1. Cliente">
             <div className="grid g2">
               <Field label="Cliente">
                 <div className="row" style={{ flexWrap: 'nowrap', gap: 8 }}>
@@ -204,63 +303,138 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
                   <button type="button" className="btn secondary" onClick={() => setNewClient(true)}>+ Novo</button>
                 </div>
               </Field>
-              <TextField label="Descrição da peça" required value={meta.name} onChange={(v) => setMeta((m) => ({ ...m, name: v }))} placeholder="Ex.: Chaveiro personalizado com logo" />
-              <DecField label="Quantidade de peças" required value={input.quantity} onChange={(v) => patch({ quantity: v === null ? 0 : Math.max(0, Math.round(Number(v))) })} suffix="un" />
-              <Field label="Link do MakerWorld">
-                <div className="row" style={{ flexWrap: 'nowrap', gap: 8 }}>
-                  <input value={input.source.url ?? ''} placeholder="https://makerworld.com/..." aria-label="Link do MakerWorld" style={{ flex: 1 }}
-                    onChange={(e) => patch({ source: { ...input.source, url: e.target.value, kind: e.target.value ? 'makerworld' : 'manual' } })} />
-                  {input.source.url && /^https?:\/\//.test(input.source.url) && <a className="btn secondary" href={input.source.url} target="_blank" rel="noreferrer noopener">Abrir ↗</a>}
-                </div>
-              </Field>
+              <TextField label="Nome do orçamento (opcional)" value={meta.title} onChange={(v) => setMeta((m) => ({ ...m, title: v }))} placeholder={items[0]?.name || 'Ex.: Lembrancinhas do aniversário'} hint="Vazio = nome da primeira peça" />
             </div>
-            <Field label="Imagem do item solicitado" hint="Opcional. A imagem é reduzida automaticamente antes de salvar.">
-              <div className="image-drop">
-                {meta.image ? <img src={meta.image} alt="Imagem do item" /> : <span className="muted">Nenhuma imagem</span>}
-                <div className="row">
-                  <label className="btn secondary">{meta.image ? 'Trocar imagem' : 'Escolher imagem'}<input type="file" accept="image/*" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) onImage(f); e.target.value = ''; }} /></label>
-                  {meta.image && <button type="button" className="btn ghost" onClick={() => setMeta((m) => ({ ...m, image: null }))}>Remover</button>}
+          </Section>
+
+          {/* 2. Peças */}
+          <div className="card">
+            <div className="card-head"><div><h2>2. Peças do orçamento</h2><p className="muted small">Orce várias peças: o cliente pode aprovar algumas e outras não. Clique numa peça para editar.</p></div>
+              <div className="row"><button type="button" className="btn secondary sm" onClick={duplicate}>Duplicar peça</button><button type="button" className="btn primary sm" onClick={addItem}>+ Adicionar peça</button></div></div>
+            <div className="card-body">
+              <div className="piece-tabs" role="tablist" aria-label="Peças do orçamento">
+                {items.map((it, i) => {
+                  const st = stateOf(it);
+                  let price: Decimal | null = null;
+                  try { price = evaluateQuote(it.input, resolveParams(db, it.input)).pricing.analysis?.revenue ?? null; } catch { price = null; }
+                  return (
+                    <button key={it.itemId ?? `novo-${i}`} type="button" role="tab" aria-selected={i === idx} className={`piece-tab${i === idx ? ' on' : ''}${st === 'recusado' ? ' refused' : ''}`} onClick={() => setActive(i)}>
+                      {it.image ? <img src={it.image} alt="" /> : <span className="piece-num">{i + 1}</span>}
+                      <span className="piece-txt"><b>{it.name || `Peça ${i + 1}`}</b><small>{it.input.quantity} un · {price ? fmtBRL(price) : '—'}</small></span>
+                      <Badge tone={ITEM_TONE[st]}>{ITEM_STATE_LABEL[st]}</Badge>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          {curLocked && <Alert tone="info" title={`“${cur.name}” · ${ITEM_STATE_LABEL[curState]}`}>
+            Somente leitura enquanto estiver em produção ou separada do estoque.{curOrder && <> Pedido <b>{curOrder.number}</b>{curOrder.dueDate ? ` · entrega ${fmtDate(curOrder.dueDate)}` : ''}. <a href="#/producao/pedidos">Ver pedidos</a></>}
+          </Alert>}
+          {cur.finishedGoodId && <Alert tone="info" title="Peça a pronta-entrega">Vem do estoque de peças prontas ({db.finishedGoods.find((g) => g.id === cur.finishedGoodId)?.code}). Ao aprovar, vira “Pedido aprovado” e as peças são separadas; não precisa produzir.</Alert>}
+
+          <fieldset disabled={curLocked} className="stack">
+            <Section title={`3. ${cur.name || `Peça ${idx + 1}`}`} right={quote && cur.itemId && !curLocked ? (
+              <div className="row">
+                {curState !== 'aprovado' && <button type="button" className="btn secondary sm" onClick={() => setStatus(cur, 'aprovado')}>{cur.finishedGoodId ? 'Pedido aprovado' : 'Cliente aprovou'}</button>}
+                {curState !== 'recusado' && <button type="button" className="btn ghost sm" onClick={() => setStatus(cur, 'recusado')}>Cliente recusou</button>}
+                {curState !== 'aberto' && <button type="button" className="btn ghost sm" onClick={() => setStatus(cur, 'aberto')}>Reabrir</button>}
+              </div>) : undefined}>
+              <div className="grid g2">
+                <TextField label="Descrição da peça" required value={cur.name} onChange={(v) => patchItem(idx, { name: v })} placeholder="Ex.: Chaveiro personalizado com logo" />
+                <DecField label="Quantidade de peças" required value={input.quantity} onChange={(v) => patch({ quantity: v === null ? 0 : Math.max(0, Math.round(Number(v))) })} suffix="un" />
+                <Field label="Link do MakerWorld">
+                  <div className="row" style={{ flexWrap: 'nowrap', gap: 8 }}>
+                    <input value={input.source.url ?? ''} placeholder="https://makerworld.com/..." aria-label="Link do MakerWorld" style={{ flex: 1 }}
+                      onChange={(e) => patch({ source: { ...input.source, url: e.target.value, kind: e.target.value ? 'makerworld' : 'manual' } })} />
+                    {input.source.url && /^https?:\/\//.test(input.source.url) && <a className="btn secondary" href={input.source.url} target="_blank" rel="noreferrer noopener">Abrir ↗</a>}
+                  </div>
+                </Field>
+                <div className="row" style={{ alignItems: 'end', justifyContent: 'flex-end' }}>
+                  <button type="button" className="btn ghost sm" onClick={removeItem} disabled={items.length === 1}>Remover esta peça</button>
                 </div>
               </div>
-            </Field>
-          </Section>
-
-          {/* 2. Filamentos */}
-          <FilamentSection db={db} input={input} patch={patch} />
-
-          {/* 3. Tempo */}
-          <Section title="3. Tempo de produção" subtitle="Tempo de impressão de 1 peça (do fatiador).">
-            <TimeField label="Tempo de impressão de 1 peça" required value={input.printHoursPerUnit} onChange={(v) => patch({ printHoursPerUnit: v })} hint="como aparece no fatiador (ex.: 1 h 20 min)" />
-            <div className="grid g2">
-              <SelectField label="Impressora" value={input.printerId ?? ''} onChange={(v) => patch({ printerId: v || undefined })} placeholder="— selecione —"
-                options={db.printers.filter((p) => p.active || p.id === input.printerId).map((p) => ({ value: p.id, label: p.name }))}
-                hint={db.printers.length === 0 ? <a href="#/parametros/impressoras">Cadastre a impressora em Parâmetros de Custos</a> : undefined} />
-              <Field label="Preencher a partir do arquivo (opcional)" hint="3MF fatiado (Bambu Studio/Orca) preenche peso e tempo.">
-                <input type="file" accept=".3mf,.stl,.zip" onChange={(e) => { const f = e.target.files?.[0]; if (f) onSliceFile(f); e.target.value = ''; }} />
+              <Field label="Imagem da peça" hint="Opcional. Vai no orçamento do cliente. A imagem é reduzida automaticamente antes de salvar.">
+                <div className="image-drop">
+                  {cur.image ? <img src={cur.image} alt="Imagem da peça" /> : <span className="muted">Nenhuma imagem</span>}
+                  <div className="row">
+                    <label className="btn secondary">{cur.image ? 'Trocar imagem' : 'Escolher imagem'}<input type="file" accept="image/*" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) onImage(f); e.target.value = ''; }} /></label>
+                    {cur.image && <button type="button" className="btn ghost" onClick={() => patchItem(idx, { image: null })}>Remover</button>}
+                  </div>
+                </div>
               </Field>
-            </div>
-          </Section>
+            </Section>
 
-          {/* 4. Parâmetros deste orçamento */}
-          <ParamsSection db={db} input={input} patch={patch} />
+            <FilamentSection db={db} input={input} patch={patch} />
 
-          {/* 5. Frete */}
-          <FreightSection db={db} input={input} patch={patch} customerId={meta.customerId} />
+            <Section title="Tempo de produção" subtitle="Tempo de impressão de 1 peça (do fatiador).">
+              <TimeField label="Tempo de impressão de 1 peça" required value={input.printHoursPerUnit} onChange={(v) => patch({ printHoursPerUnit: v })} hint="como aparece no fatiador (ex.: 1 h 20 min)" />
+              <div className="grid g2">
+                <SelectField label="Impressora" value={input.printerId ?? ''} onChange={(v) => patch({ printerId: v || undefined })} placeholder="— selecione —"
+                  options={db.printers.filter((p) => p.active || p.id === input.printerId).map((p) => ({ value: p.id, label: p.name }))}
+                  hint={db.printers.length === 0 ? <a href="#/parametros/impressoras">Cadastre a impressora em Parâmetros de Custos</a> : undefined} />
+                <Field label="Preencher a partir do arquivo (opcional)" hint="3MF fatiado (Bambu Studio/Orca) preenche peso e tempo.">
+                  <input type="file" accept=".3mf,.stl,.zip" onChange={(e) => { const f = e.target.files?.[0]; if (f) onSliceFile(f); e.target.value = ''; }} />
+                </Field>
+              </div>
+            </Section>
 
-          {!locked && quote && <Section title="Observação desta versão"><TextField label="O que mudou (opcional)" value={meta.note} onChange={(v) => setMeta((m) => ({ ...m, note: v }))} /></Section>}
-          {quote && <VersionHistory quote={quote} onLoad={(i) => setInput({ overrides: {}, ...structuredClone(i) })} />}
-        </fieldset>
+            <ParamsSection db={db} input={input} patch={patch} />
+          </fieldset>
+
+          {/* Frete do orçamento inteiro */}
+          <FreightSection db={db} items={items} shipping={shipping} setShipping={setShipping} setItems={setItems} customerId={meta.customerId} lockedIds={items.filter(lockedItem).map((it) => it.itemId!)} />
+
+          {quote && <Section title="Observação desta versão"><TextField label="O que mudou (opcional)" value={meta.note} onChange={(v) => setMeta((m) => ({ ...m, note: v }))} /></Section>}
+          {quote && <VersionHistory quote={quote} onLoad={(v) => { setItems(v.items.map((it) => ({ itemId: it.itemId, name: it.name, image: it.image ?? null, input: { overrides: {}, ...structuredClone(it.input) }, finishedGoodId: it.finishedGoodId }))); setActive(0); if (v.shipping) setShipping(structuredClone(v.shipping)); }} />}
+        </div>
 
         <div className="sticky stack">
+          <div className="card quote-total-card">
+            <div className="card-body">
+              <span className="muted small">Total do orçamento ({totals.count} peça{totals.count === 1 ? '' : 's'}{items.length > totals.count ? `, ${items.length - totals.count} recusada(s)` : ''})</span>
+              <b className="qt-price">{fmtBRL(totals.price)}</b>
+              <span className="small">Custo total {fmtBRL(totals.cost)}{totals.pending ? ' · valores parciais' : ''}</span>
+            </div>
+          </div>
+          <p className="section-title" style={{ margin: '4px 0 -4px' }}>{cur.name || `Peça ${idx + 1}`}</p>
           {evaluation.error ? <Alert tone="error" title="Não foi possível calcular">{evaluation.error}</Alert>
-            : ev && <ResultPanel ev={ev} input={input} patch={patch} locked={locked} />}
+            : ev && <ResultPanel ev={ev} input={input} patch={patch} locked={curLocked} />}
         </div>
       </div>
       {newClient && <PartyForm kind="cliente" onClose={() => setNewClient(false)}
         onSave={(v) => run((d) => saveParty(d, v), 'Cliente cadastrado.').then((r) => { if (r.ok) { setMeta((m) => ({ ...m, customerId: r.value.id })); setNewClient(false); } })} />}
       {exporting && quote && <ClientQuoteExport quote={quote} onClose={() => setExporting(false)} unsaved={unsaved} />}
+      {producing && quote && <ProduceDialog quote={quote} onClose={() => setProducing(false)} />}
       {confirmEl}
     </>
+  );
+}
+
+/* ---------------- Enviar peças para produção ---------------- */
+function ProduceDialog({ quote, onClose }: { quote: Quote; onClose: () => void }) {
+  const { db, run } = useStore();
+  const items = quoteItems(quote).filter((it) => !it.finishedGoodId && ['aberto', 'aprovado'].includes(itemState(db, quote, it.itemId)));
+  const [sel, setSel] = useState<string[]>(() => items.filter((it) => itemState(db, quote, it.itemId) === 'aprovado').map((it) => it.itemId).concat(
+    items.every((it) => itemState(db, quote, it.itemId) !== 'aprovado') ? items.map((it) => it.itemId) : []));
+  const [dueDate, setDueDate] = useState('');
+  const toggle = (id: string) => setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
+  const submit = () => run((d) => createOrdersFromQuote(d, quote.id, sel, { dueDate }), `${sel.length} pedido(s) criado(s) e colocados no quadro pela data de entrega.`)
+    .then((r) => { if (r.ok) { onClose(); navigate('producao/quadro'); } });
+  return (
+    <Modal title="Enviar para produção" subtitle={`${quote.number} · cada peça vira um pedido`} onClose={onClose}
+      footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={submit} disabled={!sel.length}>Criar {sel.length} pedido(s)</button></>}>
+      <div className="stack">
+        <DateField label="Data de entrega ao cliente" required value={dueDate} onChange={setDueDate} hint="O quadro de produção é organizado por esta data (próximas entregas no topo)." />
+        <p className="section-title">Peças que o cliente aprovou</p>
+        {items.map((it) => (
+          <Check key={it.itemId} checked={sel.includes(it.itemId)} onChange={() => toggle(it.itemId)}
+            label={`${it.name} · ${it.input.quantity} un · ${fmtBRL(it.summary.orderPrice)} · ${ITEM_STATE_LABEL[itemState(db, quote, it.itemId)]}`} />
+        ))}
+        <p className="small muted">As peças enviadas ficam travadas no orçamento. Para alterar depois, use “Retornar para o orçamento” no pedido.</p>
+      </div>
+    </Modal>
   );
 }
 
@@ -344,14 +518,25 @@ function ParamsSection({ db, input, patch }: { db: DB; input: QuoteInput; patch:
 }
 
 /* ---------------- Frete (SuperFrete) ---------------- */
-function FreightSection({ db, input, patch, customerId }: { db: DB; input: QuoteInput; patch: (p: Partial<QuoteInput>) => void; customerId: string }) {
+function FreightSection({ db, items, shipping, setShipping, setItems, customerId, lockedIds }: {
+  db: DB; items: DraftItem[]; shipping: QuoteShipping; setShipping: (s: QuoteShipping) => void;
+  setItems: (fn: (s: DraftItem[]) => DraftItem[]) => void; customerId: string; lockedIds: string[];
+}) {
   const { toast } = useStore();
   const customer = db.parties.find((p) => p.id === customerId);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [options, setOptions] = useState<FreightOption[] | null>(null);
-  const ship = quoteShipping(db, input);
-  const setShip = (p: Partial<QuoteShipping>) => { setOptions(null); patch({ shipping: { ...ship, ...p } }); };
+  const ship = shipping;
+  const setShip = (p: Partial<QuoteShipping>) => { setOptions(null); setShipping({ ...ship, ...p }); };
+  const editable = items.filter((it) => !it.itemId || !lockedIds.includes(it.itemId));
+  /** Frete pago pela empresa: rateado entre as peças editáveis pelo peso (entra no custo de cada uma). */
+  const setSubsidy = (price: string | null) => setItems((s) => {
+    const targets = s.filter((it) => !it.itemId || !lockedIds.includes(it.itemId));
+    const weights = targets.map((it) => piecesWeightG(db, it.input));
+    const parts = price ? allocate(new Decimal(price), weights.some((w) => w.gt(0)) ? weights : weights.map(() => new Decimal(1))) : [];
+    return s.map((it) => { const k = targets.indexOf(it); return k < 0 ? it : { ...it, input: { ...it.input, freightSubsidyPerOrder: price ? parts[k].toString() : null } }; });
+  });
   const customerCep = (customer?.addressParts?.cep ?? '').replace(/\D/g, '');
   const destCep = (ship.destCep || customerCep).replace(/\D/g, '');
   const origin = (ship.originCep ?? '').replace(/\D/g, '');
@@ -365,7 +550,7 @@ function FreightSection({ db, input, patch, customerId }: { db: DB; input: Quote
     lookupCep(origin).then((a) => { if (alive) setOriginCity(a.city && a.state ? `${a.city}/${a.state}` : null); }).catch(() => undefined);
     return () => { alive = false; };
   }, [origin]);
-  const { pkg, missing, piecesG } = quotePackage(db, input);
+  const { pkg, missing, piecesG } = packageFor(db, items.filter((it) => it.input.quantity > 0).map((it) => it.input), ship);
   const calc = async () => {
     setError(null); setOptions(null);
     if (!isValidCep(origin)) return setError('Informe o CEP de saída (8 dígitos). O padrão fica em Parâmetros de Custos → Gerais → Envios.');
@@ -380,16 +565,19 @@ function FreightSection({ db, input, patch, customerId }: { db: DB; input: Quote
     finally { setLoading(false); }
   };
   const companyPays = (o: FreightOption) => {
-    patch({ freightSubsidyPerOrder: o.price, shipping: { ...ship, clientFreight: null } });
-    toast('success', `Frete ${o.name} (${fmtBRL(o.price)}) incluído no custo como “Frete pago pela empresa”. No orçamento do cliente aparece “Frete grátis”.`);
+    if (!editable.length) return toast('warning', 'Todas as peças estão em produção; o custo delas não pode mais mudar.');
+    setSubsidy(o.price);
+    setShipping({ ...ship, clientFreight: null });
+    toast('success', `Frete ${o.name} (${fmtBRL(o.price)}) rateado no custo das peças como “Frete pago pela empresa”. O cliente vê “Frete grátis”. Salve o orçamento.`);
   };
   const clientPays = (o: FreightOption) => {
-    patch({ freightSubsidyPerOrder: null, shipping: { ...ship, clientFreight: { service: o.name, price: o.price!, deliveryMin: o.deliveryMin, deliveryMax: o.deliveryMax } } });
+    setSubsidy(null);
+    setShipping({ ...ship, clientFreight: { service: o.name, price: o.price!, deliveryMin: o.deliveryMin, deliveryMax: o.deliveryMax } });
     toast('success', `Frete ${o.name} (${fmtBRL(o.price)}) será somado ao total no orçamento do cliente. Salve o orçamento.`);
   };
   const cf = ship.clientFreight;
   return (
-    <Section title="5. Frete (SuperFrete)" subtitle="Caixa desta peça, CEP de saída e de destino. Tudo vem do padrão e pode ser alterado só neste orçamento. Opcional.">
+    <Section title="4. Frete do orçamento (SuperFrete)" subtitle={`Todas as ${items.length} peça(s) na mesma caixa. CEPs e caixa vêm do padrão e podem ser alterados só neste orçamento. Opcional.`}>
       <div className="grid g2">
         <Field label="CEP de saída" hint={!isValidCep(origin) ? <a href="#/parametros/gerais">Cadastre o endereço padrão de saída em Parâmetros → Envios</a>
           : ship.originCep === defaults.originCep ? `Padrão da empresa${originCity ? ` · ${originCity}` : ''}` : `Alterado neste orçamento${originCity ? ` · ${originCity}` : ''}`}>
@@ -401,7 +589,7 @@ function FreightSection({ db, input, patch, customerId }: { db: DB; input: Quote
             onChange={(e) => setShip({ destCep: e.target.value.replace(/\D/g, '').slice(0, 8) || null })} />
         </Field>
       </div>
-      <p className="section-title">Caixa desta peça</p>
+      <p className="section-title">Caixa do envio</p>
       <div className="grid g4">
         <DecField label="Comprimento" suffix="cm" value={ship.lengthCm} onChange={(v) => setShip({ lengthCm: v === null ? null : Number(v) })} />
         <DecField label="Largura" suffix="cm" value={ship.widthCm} onChange={(v) => setShip({ widthCm: v === null ? null : Number(v) })} />
@@ -442,16 +630,17 @@ function FreightSection({ db, input, patch, customerId }: { db: DB; input: Quote
 }
 
 /* ---------------- Histórico ---------------- */
-function VersionHistory({ quote, onLoad }: { quote: Quote; onLoad: (i: QuoteInput) => void }) {
+function VersionHistory({ quote, onLoad }: { quote: Quote; onLoad: (v: QuoteVersion) => void }) {
   if (quote.versions.length < 2) return null;
+  const sumOf = (v: QuoteVersion, k: 'totalCost' | 'orderPrice') => v.items.reduce((s, it) => s.plus(it.summary[k] ?? 0), new Decimal(0));
   return (
     <div className="card">
       <details className="params-details">
-        <summary><div><h2>Histórico de versões ({quote.versions.length})</h2><p className="muted small">Versões anteriores nunca são alteradas.</p></div></summary>
-        <table className="tbl"><thead><tr><th>Versão</th><th>Data</th><th className="num">Custo</th><th className="num">Preço unit.</th><th>Nota</th><th /></tr></thead><tbody>
+        <summary><div><h2>Histórico de versões ({quote.versions.length})</h2><p className="muted small">Versões anteriores nunca são alteradas. Carregar traz a versão para a tela; salve para valer.</p></div></summary>
+        <table className="tbl"><thead><tr><th>Versão</th><th>Data</th><th className="num">Peças</th><th className="num">Custo</th><th className="num">Valor</th><th>Nota</th><th /></tr></thead><tbody>
           {[...quote.versions].reverse().map((v) => (
-            <tr key={v.version}><td><b>v{v.version}</b></td><td>{fmtDateTime(v.createdAt)}</td><td className="num">{fmtBRL(v.summary.totalCost)}</td><td className="num">{fmtBRL(v.summary.unitPrice)}</td>
-              <td className="small">{v.note ?? ''}</td><td><button type="button" className="btn ghost sm" onClick={() => onLoad(v.input)}>Carregar</button></td></tr>
+            <tr key={v.version}><td><b>v{v.version}</b></td><td>{fmtDateTime(v.createdAt)}</td><td className="num">{v.items.length}</td><td className="num">{fmtBRL(sumOf(v, 'totalCost'))}</td><td className="num">{fmtBRL(sumOf(v, 'orderPrice'))}</td>
+              <td className="small">{v.note ?? ''}</td><td><button type="button" className="btn ghost sm" onClick={() => onLoad(v)}>Carregar</button></td></tr>
           ))}
         </tbody></table>
       </details>

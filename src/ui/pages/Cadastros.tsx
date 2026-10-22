@@ -3,7 +3,7 @@ import { useStore } from '../store';
 import { navigate } from '../App';
 import type { AddressParts, Category, DB, Material, NamedItem, Party, Unit } from '../../domain/types';
 import { AddressFields } from '../components/AddressFields';
-import { deleteNamed, namedUsage, priceHistory, saveCategory, saveMaterial, saveNamed, saveParty, type NamedList } from '../../domain/catalog';
+import { deleteNamed, namedUsage, nextMaterialCode, normalizeSigla, priceHistory, saveCategory, saveMaterial, saveNamed, saveParty, suggestSigla, type NamedList } from '../../domain/catalog';
 import { lotBalance, materialBalance, reorderAnalysis } from '../../domain/inventory';
 import { materialCostPolicy } from '../../domain/quotes';
 import { UNIT_LABEL, fmtDate, fmtDocument, fmtPhone } from '../../domain/core';
@@ -187,7 +187,8 @@ export function MaterialForm({ material, onClose, onSave }: { material?: Materia
     referencePrice: material?.referenceCost ? toInputBR(initialIsFil ? perGramToPerKg(material.referenceCost) : material.referenceCost, 4) : '',
     minStock: toInputBR(material?.minStock ?? null), leadTimeDays: toInputBR(material?.leadTimeDays ?? null), location: material?.location ?? '', notes: material?.notes ?? '',
   });
-  const isFil = db.categories.find((c) => c.id === f.categoryId)?.isFilament ?? false;
+  const selCat = db.categories.find((c) => c.id === f.categoryId);
+  const isFil = selCat?.isFilament ?? false;
   const submit = () => {
     const ref = dec(f.referencePrice);
     onSave({
@@ -207,7 +208,8 @@ export function MaterialForm({ material, onClose, onSave }: { material?: Materia
         <div className="grid g3">
           <SelectField label="Categoria" required value={f.categoryId} onChange={set('categoryId')} options={db.categories.filter((c) => c.active || c.id === f.categoryId).map((c) => ({ value: c.id, label: c.name }))} />
           <TextField label="Nome / descrição" required value={f.name} onChange={set('name')} placeholder={isFil ? 'Ex.: PLA Preto Fosco Marca X' : 'Ex.: Caixa kraft 15×15×10'} />
-          <TextField label="Código interno" value={f.code} onChange={set('code')} hint="Vazio = gerado automaticamente" />
+          <TextField label="Código interno" value={f.code} onChange={set('code')} placeholder={!material && selCat ? nextMaterialCode(db, selCat) : undefined}
+            hint={material ? 'Código do cadastro' : selCat ? `Vazio = ${nextMaterialCode(db, selCat)} (sigla ${selCat.code ?? ''} + sequência)` : 'Vazio = gerado pela sigla da categoria'} />
           <SelectField label="Marca" value={f.brandId} onChange={set('brandId')} placeholder="— digite para buscar —" options={namedOptions(db.brands, f.brandId)}
             hint={db.brands.length === 0 ? <a href="#/cadastros/marcas">Cadastre as marcas</a> : undefined} />
           <SelectField label="Fabricante" value={f.manufacturerId} onChange={set('manufacturerId')} placeholder="— digite para buscar —" options={namedOptions(db.manufacturers, f.manufacturerId)}
@@ -250,6 +252,7 @@ function CategoriesModal({ onClose }: { onClose: () => void }) {
         <DataTable rows={db.categories} rowKey={(c) => c.id} onRowClick={setCat} empty={null}
           columns={[
             { key: 'n', header: 'Categoria', render: (c) => <>{c.name} {!c.active && <Badge>inativa</Badge>}</>, sort: (c) => c.name },
+            { key: 's', header: 'Sigla', render: (c) => <span className="mono">{c.code ?? '—'}</span>, sort: (c) => c.code ?? '' },
             { key: 'f', header: 'Tipo', render: (c) => c.isFilament ? <Badge tone="primary">filamento</Badge> : 'insumo geral' },
             { key: 'q', header: 'Materiais', num: true, render: (c) => db.materials.filter((m) => m.categoryId === c.id).length },
           ]} />
@@ -260,12 +263,16 @@ function CategoriesModal({ onClose }: { onClose: () => void }) {
 }
 
 function CategoryForm({ item, onClose, onSave }: { item?: Category; onClose: () => void; onSave: (v: Omit<Category, 'id'>, id?: string) => void }) {
-  const [f, set] = useForm({ name: item?.name ?? '', isFilament: item?.isFilament ?? false, active: item?.active ?? true });
+  const { db } = useStore();
+  const [f, set] = useForm({ name: item?.name ?? '', code: item?.code ?? '', isFilament: item?.isFilament ?? false, active: item?.active ?? true });
+  const sigla = normalizeSigla(f.code) || (f.name.trim() ? suggestSigla(db, f.name, item?.id) : '');
   return (
     <Modal title={item ? 'Editar categoria' : 'Nova categoria'} onClose={onClose}
-      footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={() => onSave(f, item?.id)}>Salvar</button></>}>
+      footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={() => onSave({ ...f, code: f.code || undefined }, item?.id)}>Salvar</button></>}>
       <div className="stack">
         <TextField label="Nome" required value={f.name} onChange={set('name')} />
+        <TextField label="Sigla" value={f.code} onChange={(v) => set('code')(normalizeSigla(v))} placeholder={sigla || 'Ex.: FL'}
+          hint={sigla ? `Códigos dos insumos desta categoria: ${sigla}00001, ${sigla}00002… Vazio = ${suggestSigla(db, f.name || 'Insumo', item?.id)}.` : 'De 2 a 4 letras. Usada no código automático dos insumos.'} />
         <Check label="É filamento (material de impressão, controlado em gramas)" checked={f.isFilament} onChange={set('isFilament')} />
         <Check label="Ativa" checked={f.active} onChange={set('active')} />
       </div>

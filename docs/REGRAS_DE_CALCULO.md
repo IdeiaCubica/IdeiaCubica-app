@@ -113,7 +113,25 @@ Exemplo (sem taxas): custo R$ 50, markup 100% → preço R$ 100, lucro R$ 50, ma
 - O tempo é digitado em **horas inteiras + minutos** e guardado em horas decimais: h + min ÷ 60 (1 h 20 min = 1,3333 h).
   Exibição arredonda ao minuto com “vai um” (1,9999 h → 2 h 0 min).
 
+## 5a. Orçamento com várias peças — `quotes.ts`
+
+- Cada versão do orçamento guarda a lista de peças; cada peça tem entrada, snapshot de parâmetros e resumo próprios
+  (os cálculos de custo e preço são os mesmos da peça única, peça a peça).
+- Total do orçamento = Σ valor das peças não recusadas (ou das escolhidas no documento) + frete cobrado do cliente.
+- Situação da peça: aberta / aprovada / recusada (definida pelo usuário); “em produção” e “produzida” vêm do pedido ativo;
+  “pedido aprovado (estoque)” quando a peça vem do estoque de peças prontas e foi separada.
+- Peça com pedido ativo ou separada fica **travada**: uma nova versão do orçamento precisa mantê-la igual e não pode removê-la.
+- Situação geral: todas recusadas → recusado; todas as não recusadas em produção/separadas → em produção; alguma aprovada → aprovado.
+- Frete “empresa paga”: rateado entre as peças editáveis proporcionalmente ao peso (g) de cada uma; entra no custo de cada peça.
+
 ## 6. Produção — `production.ts`
+
+- **Pedido** (PED-…): uma peça aprovada do orçamento, com data de entrega obrigatória. **Produção para estoque** (EST-…): sem orçamento;
+  custo e preço sugerido calculados na criação com os parâmetros padrão (1 lote = quantidade produzida, sem mão de obra por pedido).
+- Quadro (Kanban): cada coluna em ordem de data de entrega crescente; sem data por último; empate pela ordem de criação.
+- Retornar pedido ao orçamento: só antes de concluir; libera reservas, cancela o pedido e a peça volta a “aprovada”.
+- Orçamento a partir de peça pronta: preço = valor previsto de venda da peça (editável). “Pedido aprovado” separa as peças
+  (saldo disponível = produzidas − vendidas − baixas − separadas); a venda consome a separação.
 
 - Preparar OP: reserva **tudo ou nada**; com falta de material, a OP fica "Aguardando material" sem reservas parciais.
 - Linha sem lote fixo (orçamento por material): a reserva usa os lotes do material **por ordem de entrada** (o mais antigo primeiro),

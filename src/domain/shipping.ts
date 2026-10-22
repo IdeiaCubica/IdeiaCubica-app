@@ -31,16 +31,29 @@ export function quoteShipping(db: DB, input: Pick<QuoteInput, 'shipping'>): Quot
   return input.shipping ?? shippingDefaults(db.settings);
 }
 
-export function quotePackage(db: DB, input: Pick<QuoteInput, 'materials' | 'quantity' | 'shipping'>): { pkg: ShippingPackage | null; missing: string[]; piecesG: number } {
-  const box = quoteShipping(db, input);
-  const missing: string[] = [];
+/** Peso (g) das peças de uma linha: filamento por peça × quantidade. */
+export function piecesWeightG(db: DB, input: Pick<QuoteInput, 'materials' | 'quantity'>): Decimal {
   let gramsPerUnit = D(0);
   for (const m of input.materials) {
     const mat = db.materials.find((x) => x.id === (m.materialId || db.lots.find((l) => l.id === m.lotId)?.materialId));
     const factor = mat?.unit === 'kg' ? 1000 : mat?.unit === 'g' || !mat ? 1 : 0;
     gramsPerUnit = gramsPerUnit.plus(D(m.qtyPerUnit || 0).times(factor));
   }
-  const piecesG = gramsPerUnit.times(input.quantity || 0);
+  return gramsPerUnit.times(input.quantity || 0);
+}
+
+/** Pacote de um orçamento com várias peças: todas na mesma caixa do orçamento. */
+export function packageFor(db: DB, inputs: Pick<QuoteInput, 'materials' | 'quantity'>[], ship: QuoteShipping) {
+  const merged = { materials: [] as QuoteInput['materials'], quantity: 1, shipping: ship };
+  const grams = inputs.reduce((s, i) => s.plus(piecesWeightG(db, i)), D(0));
+  merged.materials = grams.gt(0) ? [{ materialId: '', qtyPerUnit: grams.toNumber() }] : [];
+  return quotePackage(db, merged);
+}
+
+export function quotePackage(db: DB, input: Pick<QuoteInput, 'materials' | 'quantity' | 'shipping'>): { pkg: ShippingPackage | null; missing: string[]; piecesG: number } {
+  const box = quoteShipping(db, input);
+  const missing: string[] = [];
+  const piecesG = piecesWeightG(db, input);
   if (piecesG.lte(0)) missing.push('peso da peça');
   if (!(box.lengthCm! > 0) || !(box.widthCm! > 0) || !(box.heightCm! > 0)) missing.push('medidas da caixa');
   if ((box.packagingWeightG ?? 0) < 0) missing.push('peso da embalagem válido');

@@ -16,13 +16,14 @@ import { categoryByName, cancelTitle, createTitlesFromTerms, titlePaid } from '.
 import { SYS_FIN } from './schema';
 import { channelRates } from './pricing';
 import { compareOrder, finishedGoodBalance } from './production';
-import { latestVersion } from './quotes';
+import { quoteItem } from './quotes';
 
 export interface SaleInput {
   date: ISODate;
   customerId?: ID;
   projectId?: ID;
   quoteId?: ID;
+  quoteItemId?: ID;
   orderId?: ID;
   finishedGoodId?: ID;
   description: string;
@@ -39,7 +40,7 @@ export interface SaleInput {
 }
 
 /** Determina o custo unitário da venda e sua natureza. */
-export function resolveSaleCost(db: DB, input: Pick<SaleInput, 'orderId' | 'quoteId' | 'manualUnitCost' | 'finishedGoodId'>): { unitCost: Decimal | null; status: Sale['costStatus'] } {
+export function resolveSaleCost(db: DB, input: Pick<SaleInput, 'orderId' | 'quoteId' | 'quoteItemId' | 'manualUnitCost' | 'finishedGoodId'>): { unitCost: Decimal | null; status: Sale['costStatus'] } {
   if (input.finishedGoodId) {
     const fg = byId(db.finishedGoods, input.finishedGoodId, 'Peça pronta');
     if (fg.unitCost !== null) return { unitCost: D(fg.unitCost), status: fg.costStatus };
@@ -52,7 +53,7 @@ export function resolveSaleCost(db: DB, input: Pick<SaleInput, 'orderId' | 'quot
   }
   if (input.quoteId) {
     const q = byId(db.quotes, input.quoteId, 'Orçamento');
-    const u = latestVersion(q).summary.unitCost;
+    const u = quoteItem(q, input.quoteItemId).summary.unitCost;
     if (u) return { unitCost: D(u), status: 'estimado' };
   }
   const manual = Dn(input.manualUnitCost);
@@ -80,15 +81,20 @@ export function registerSale(db: DB, input: SaleInput): Sale {
   const ch = channelRates(channel ?? null);
   const fees = ch ? cents(gross.times(ch.rates).plus(ch.fixedFee)) : ZERO;
   if (input.customerId) byId(db.parties, input.customerId, 'Cliente');
+  // Venda de peça separada para um pedido aprovado (orçamento do estoque): consome a separação.
+  const fgItem = input.finishedGoodId ? db.finishedGoods.find((g) => g.id === input.finishedGoodId) : undefined;
+  const alloc = fgItem?.allocations?.find((a) => a.quoteId === input.quoteId && (!input.quoteItemId || a.itemId === input.quoteItemId));
   if (input.finishedGoodId) {
     const bal = finishedGoodBalance(db, input.finishedGoodId);
-    assert(input.qty <= bal.available, `Só há ${bal.available} peça(s) pronta(s) deste item em estoque.`);
+    const available = bal.available + (alloc?.qty ?? 0);
+    assert(input.qty <= available, `Só há ${available} peça(s) pronta(s) deste item em estoque.`);
   }
   const cost = resolveSaleCost(db, input);
+  if (fgItem && alloc) fgItem.allocations = fgItem.allocations!.filter((a) => a.id !== alloc.id);
 
   const sale: Sale = {
     id: newId(), number: nextCode(db, 'sale', 'VND'), date: input.date, customerId: input.customerId, projectId: input.projectId,
-    quoteId: input.quoteId, orderId: input.orderId, finishedGoodId: input.finishedGoodId, description, qty: input.qty, unitPrice: unitPrice.toString(),
+    quoteId: input.quoteId, quoteItemId: input.quoteItemId ?? alloc?.itemId, orderId: input.orderId, finishedGoodId: input.finishedGoodId, description, qty: input.qty, unitPrice: unitPrice.toString(),
     discount: discount.toString(), freightCharged: freightCharged.toString(), freightCost: freightCost.toString(), channelId: input.channelId,
     fees: { ratesPct: ch ? ch.rates.times(100).toString() : '0', fixed: ch ? ch.fixedFee.toString() : '0', total: fees.toString() },
     feesWithheld: input.feesWithheld, unitCost: cost.unitCost ? cost.unitCost.toString() : null, costStatus: cost.status,

@@ -7,8 +7,10 @@ import { fmtDate, todayISO } from '../../domain/core';
 import { D, fmtBRL, fmtNum } from '../../domain/money';
 import { Alert, Badge, Check, Combobox, DataTable, DateField, Empty, Kpi, Modal, NumField, PageHead, SelectField, Tabs, TextField, dec, num, useForm } from '../components/ui';
 import { materialDesc } from './Cadastros';
+import { PecasProntas, finishedStockSummary } from './PecasProntas';
 
-type Tab = 'lotes' | 'movimentos' | 'reposicao';
+type Tab = 'lotes' | 'pecas' | 'movimentos' | 'reposicao';
+const TABS: Tab[] = ['lotes', 'pecas', 'movimentos', 'reposicao'];
 
 export const MOV_LABEL: Record<MovementType, { label: string; sign: 1 | -1 | 0; tone: 'success' | 'error' | 'warning' | 'info' | 'neutral' }> = {
   entrada: { label: 'Entrada', sign: 1, tone: 'success' }, consumo: { label: 'Consumo', sign: -1, tone: 'info' },
@@ -21,27 +23,32 @@ const STATUS_ORDER = { falta: 0, repor: 1, sem_parametros: 2, ok: 3 } as const;
 
 export function Estoque({ param }: { param?: string }) {
   const { db } = useStore();
-  const [tab, setTabState] = useState<Tab>(param === 'reposicao' || param === 'movimentos' ? param : 'lotes');
+  const [tab, setTabState] = useState<Tab>(TABS.includes(param as Tab) ? (param as Tab) : 'lotes');
   const setTab = (t: Tab) => { setTabState(t); navigate(t === 'lotes' ? 'estoque' : `estoque/${t}`); };
-  useEffect(() => { if (param === 'reposicao' || param === 'movimentos') setTabState(param); else if (!param) setTabState('lotes'); }, [param]);
+  useEffect(() => { if (TABS.includes(param as Tab)) setTabState(param as Tab); else if (!param) setTabState('lotes'); }, [param]);
   const [initial, setInitial] = useState(false);
   const reorder = db.materials.filter((m) => m.active).map((m) => reorderAnalysis(db, m));
   const toBuy = reorder.filter((r) => r.status === 'repor' || r.status === 'falta').length;
   const missing = reorder.filter((r) => r.status === 'falta');
   const withBalance = db.lots.filter((l) => lotBalance(db, l.id).physical.gt(0)).length;
+  const fg = finishedStockSummary(db);
   return (
     <>
-      <PageHead eyebrow="Módulo 4" title="Gestão de estoque" text="Saldos calculados a partir das movimentações. Disponível = saldo físico − reservado."
+      <PageHead eyebrow="Módulo 4" title="Gestão de estoque" text="Materiais de produção e peças produzidas para venda. Saldos calculados a partir das movimentações."
         actions={<button className="btn secondary" onClick={() => setInitial(true)} disabled={!db.materials.length}>Lançar estoque inicial</button>} />
       <div className="kpis" style={{ marginBottom: 18 }}>
-        <Kpi label="Valor do estoque" value={fmtBRL(inventoryValue(db))} hint="Custo histórico de aquisição por lote" accent />
-        <Kpi label="Lotes com saldo" value={withBalance} />
+        <Kpi label="Materiais em estoque" value={fmtBRL(inventoryValue(db))} hint={`${withBalance} lote(s) com saldo · custo de aquisição`} accent />
+        <button type="button" className="kpi-btn" onClick={() => setTab('pecas')} aria-label="Ver peças produzidas em estoque">
+          <Kpi label="Peças produzidas em estoque" value={fg.pieces} hint={`${fmtBRL(fg.invested)} investidos · potencial ${fmtBRL(fg.potential)}`} />
+        </button>
         <Kpi label="Materiais a repor" value={toBuy} hint={toBuy ? 'Veja a aba Reposição' : 'Nenhuma reposição sugerida'} />
       </div>
       <Tabs<Tab> value={tab} onChange={setTab} tabs={[
-        { id: 'lotes', label: 'Lotes e saldos' }, { id: 'movimentos', label: 'Movimentações', count: db.movements.length }, { id: 'reposicao', label: 'Reposição', count: toBuy || undefined },
+        { id: 'lotes', label: 'Materiais (lotes e saldos)' }, { id: 'pecas', label: 'Peças produzidas', count: fg.pieces || undefined },
+        { id: 'movimentos', label: 'Movimentações', count: db.movements.length }, { id: 'reposicao', label: 'Reposição', count: toBuy || undefined },
       ]} />
       {tab === 'lotes' && <Lotes />}
+      {tab === 'pecas' && <PecasProntas />}
       {tab === 'movimentos' && <Movimentos />}
       {tab === 'reposicao' && (
         <div className="card">

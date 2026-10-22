@@ -4,10 +4,10 @@
  * nem dados internos. Valores vêm da versão SALVA do orçamento, recalculada
  * com o snapshot de parâmetros dela (mesmos números da tela).
  */
-import type { ClientQuoteSettings, DB, Quote } from './types';
+import type { ClientQuoteSettings, DB, ID, Quote } from './types';
 import { D, Decimal, ZERO, cents } from './money';
 import { addDays, todayISO } from './core';
-import { evaluateQuote, latestVersion } from './quotes';
+import { evaluateQuote, itemState, latestVersion } from './quotes';
 import { quoteShipping } from './shipping';
 import { formatAddress } from './address';
 
@@ -23,16 +23,29 @@ export function clientQuoteSettings(db: DB): ClientQuoteSettings {
   return { ...CLIENT_QUOTE_DEFAULTS, ...db.settings.clientQuote };
 }
 
+export interface ClientQuoteDocItem {
+  description: string;
+  image: string | null;
+  materials: string[];
+  quantity: number;
+  unitPrice: Decimal;
+  /** Valor da peça já com desconto. */
+  total: Decimal;
+  discountPct: Decimal;
+  discount: Decimal;
+  /** Peça a pronta-entrega (do estoque). */
+  ready: boolean;
+}
+
 export interface ClientQuoteDoc {
   number: string;
   version: number;
   issueDate: string;
   validUntil: string | null;
   customer: { name: string; phone?: string; address?: string } | null;
-  item: { description: string; image: string | null; materials: string[]; quantity: number };
-  unitPrice: Decimal;
+  items: ClientQuoteDocItem[];
+  /** Soma das peças sem desconto. */
   subtotal: Decimal;
-  discountPct: Decimal;
   discount: Decimal;
   freight: { label: string; price: Decimal | null; delivery: string | null; free: boolean } | null;
   total: Decimal;
@@ -46,30 +59,43 @@ export interface ClientQuoteDoc {
 const deliveryText = (min: number | null, max: number | null) =>
   min === null ? null : min === max || max === null ? `${min} dia${min === 1 ? '' : 's'} útei${min === 1 ? 'l' : 's'}` : `${min} a ${max} dias úteis`;
 
-export function buildClientQuote(db: DB, quote: Quote, opts: Partial<ClientQuoteSettings> = {}, today = todayISO()): ClientQuoteDoc {
+/**
+ * Monta o documento com as peças escolhidas (padrão: todas as não recusadas).
+ * Permite enviar ao cliente o orçamento de todas as peças ou só de algumas.
+ */
+export function buildClientQuote(db: DB, quote: Quote, opts: Partial<ClientQuoteSettings> = {}, today = todayISO(), itemIds?: ID[]): ClientQuoteDoc {
   const v = latestVersion(quote);
-  const ev = evaluateQuote(v.input, v.params);
-  const a = ev.pricing.analysis;
-  if (!a) throw new Error('Este orçamento ainda não tem valor para o cliente. Complete as informações e salve antes de gerar o documento.');
+  const chosen = v.items.filter((it) => (itemIds ? itemIds.includes(it.itemId) : itemState(db, quote, it.itemId) !== 'recusado'));
+  if (!chosen.length) throw new Error('Escolha ao menos uma peça para o documento.');
   const cfg = { ...clientQuoteSettings(db), ...opts };
-  const qty = v.input.quantity;
-  const subtotal = cents(a.unitPrice.times(qty));
-  const total = a.revenue;
-  const discount = subtotal.minus(total);
 
-  const ship = quoteShipping(db, v.input);
-  const companyPaysFreight = D(v.input.freightSubsidyPerOrder ?? 0).gt(0);
+  const items: ClientQuoteDocItem[] = chosen.map((it) => {
+    const a = evaluateQuote(it.input, it.params).pricing.analysis;
+    if (!a) throw new Error(`A peça "${it.name}" ainda não tem valor para o cliente. Complete as informações e salve antes de gerar o documento.`);
+    const qty = it.input.quantity;
+    const gross = cents(a.unitPrice.times(qty));
+    const materials = [...new Set(it.input.materials.map((m) => {
+      const mat = db.materials.find((x) => x.id === (m.materialId || db.lots.find((l) => l.id === m.lotId)?.materialId));
+      if (!mat) return null;
+      return mat.filament ? `${mat.filament.materialType} ${mat.filament.color}`.trim() : mat.name;
+    }).filter((x): x is string => !!x))];
+    const discount = gross.minus(a.revenue);
+    return {
+      description: it.name, image: it.image ?? null, materials, quantity: qty, unitPrice: a.unitPrice, total: a.revenue,
+      discountPct: a.discountPct, discount: discount.gt(0) ? discount : ZERO, ready: !!it.finishedGoodId,
+    };
+  });
+  const subtotal = items.reduce((s, x) => s.plus(cents(x.unitPrice.times(x.quantity))), ZERO);
+  const discount = items.reduce((s, x) => s.plus(x.discount), ZERO);
+  const total = items.reduce((s, x) => s.plus(x.total), ZERO);
+
+  const ship = v.shipping ?? quoteShipping(db, chosen[0].input);
+  const companyPaysFreight = chosen.some((it) => D(it.input.freightSubsidyPerOrder ?? 0).gt(0));
   const cf = ship.clientFreight;
   const freight = companyPaysFreight
     ? { label: 'Frete', price: null, delivery: null, free: true }
     : cf ? { label: `Frete (${cf.service})`, price: cents(D(cf.price)), delivery: deliveryText(cf.deliveryMin, cf.deliveryMax), free: false }
     : null;
-
-  const materials = [...new Set(v.input.materials.map((m) => {
-    const mat = db.materials.find((x) => x.id === (m.materialId || db.lots.find((l) => l.id === m.lotId)?.materialId));
-    if (!mat) return null;
-    return mat.filament ? `${mat.filament.materialType} ${mat.filament.color}`.trim() : mat.name;
-  }).filter((x): x is string => !!x))];
 
   const c = db.parties.find((p) => p.id === quote.customerId);
   const address = c?.addressParts ? formatAddress(c.addressParts) : c?.address;
@@ -79,11 +105,9 @@ export function buildClientQuote(db: DB, quote: Quote, opts: Partial<ClientQuote
     issueDate: today,
     validUntil: cfg.validityDays ? addDays(today, cfg.validityDays) : null,
     customer: c ? { name: c.name, phone: c.phone, address: address || undefined } : null,
-    item: { description: quote.name, image: quote.image ?? null, materials, quantity: qty },
-    unitPrice: a.unitPrice,
+    items,
     subtotal,
-    discountPct: a.discountPct,
-    discount: discount.gt(0) ? discount : ZERO,
+    discount,
     freight,
     total: freight?.price ? total.plus(freight.price) : total,
     productionDays: cfg.productionDays,

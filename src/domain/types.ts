@@ -31,6 +31,8 @@ export interface Category {
   /** Categorias de filamento habilitam os campos técnicos e são usadas como material de impressão. */
   isFilament: boolean;
   active: boolean;
+  /** Sigla usada no código dos insumos (ex.: FL → FL00001, FL00002…). */
+  code?: string;
 }
 
 export type PartyKind = 'fornecedor' | 'cliente';
@@ -293,6 +295,10 @@ export interface Settings {
   shippingBox?: ShippingBox;
   /** Textos e contatos do orçamento enviado ao cliente. */
   clientQuote?: ClientQuoteSettings;
+  /** Quantidade de dígitos por contador de numeração (padrão 4). Ex.: { quote: 8 } → ORC-00000203. */
+  codeDigits?: Record<string, number>;
+  /** Migrações de dados já aplicadas (executadas uma única vez). */
+  appliedMigrations?: string[];
 }
 
 export interface ClientQuoteSettings {
@@ -425,15 +431,33 @@ export interface CostParams {
   channel: null | Omit<SalesChannel, 'active' | 'notes'>;
 }
 
+/** Resumo para auditoria (o detalhamento é recalculado deterministicamente de input + params). */
+export interface QuoteSummary { totalCost: DecStr | null; unitCost: DecStr | null; unitPrice: DecStr | null; marginPct: DecStr | null; complete: boolean; hours?: DecStr | null; orderPrice?: DecStr | null; markupPct?: DecStr | null }
+
+/** Uma peça do orçamento, dentro de uma versão (imutável). */
+export interface QuoteVersionItem {
+  /** Identificador estável da peça entre as versões do orçamento. */
+  itemId: ID;
+  name: string;
+  image?: string | null;
+  input: QuoteInput;
+  params: CostParams;
+  summary: QuoteSummary;
+  /** Peça orçada a partir do estoque de peças prontas (não precisa produzir). */
+  finishedGoodId?: ID;
+}
+
 export interface QuoteVersion {
   version: number;
   createdAt: ISODateTime;
-  input: QuoteInput;
-  params: CostParams;
-  /** Resumo para auditoria (o detalhamento é recalculado deterministicamente de input + params). */
-  summary: { totalCost: DecStr | null; unitCost: DecStr | null; unitPrice: DecStr | null; marginPct: DecStr | null; complete: boolean; hours?: DecStr | null; orderPrice?: DecStr | null; markupPct?: DecStr | null };
+  items: QuoteVersionItem[];
+  /** Envio do orçamento inteiro (caixa, CEPs, frete cobrado do cliente). */
+  shipping?: QuoteShipping;
   note?: string;
 }
+
+/** Situação de cada peça (não versionada). "producao" é derivada do pedido ativo. */
+export type QuoteItemStatus = 'aberto' | 'aprovado' | 'recusado';
 
 export type QuoteStatus = 'rascunho' | 'enviado' | 'aprovado' | 'recusado' | 'convertido';
 export interface ShippingBox { lengthCm: number | null; widthCm: number | null; heightCm: number | null; packagingWeightG: number | null }
@@ -456,8 +480,10 @@ export interface Quote {
   status: QuoteStatus;
   createdAt: ISODateTime;
   versions: QuoteVersion[];
-  /** Imagem do item solicitado (data URL JPEG comprimida). */
-  image?: string | null;
+  /** Situação de cada peça pelo itemId (ausente = aberto). */
+  itemStatus?: Record<ID, QuoteItemStatus>;
+  /** Orçamento já enviado ao cliente (documento gerado). */
+  sentAt?: ISODateTime;
 }
 
 /* ------------------------------------------------------------------ */
@@ -481,9 +507,13 @@ export interface ProductionOrder {
   projectId?: ID;
   quoteId?: ID;
   quoteVersion?: number;
+  /** Peça do orçamento que gerou este pedido. */
+  quoteItemId?: ID;
   description: string;
   printerId?: ID;
   qtyPlanned: number;
+  /** Produção para estoque: custo e preço sugerido calculados na criação (sem orçamento prévio). */
+  estimate?: { input: QuoteInput; params: CostParams; summary: QuoteSummary };
   /** Sem lotId, a reserva escolhe lotes do material por ordem de entrada (primeiro que entra, primeiro que sai). */
   plannedMaterials: { materialId: ID; lotId?: ID; qty: number }[];
   plannedHours: number | null;
@@ -535,6 +565,10 @@ export interface FinishedGood {
   location?: string;
   image?: string | null;
   adjustments: { id: ID; date: ISODate; qty: number; reason: string }[];
+  /** Peças separadas para pedidos aprovados (orçamento feito a partir do estoque), ainda não vendidas. */
+  allocations?: { id: ID; quoteId: ID; itemId: ID; qty: number; customerId?: ID; dueDate?: ISODate; createdAt: ISODateTime }[];
+  /** Consumo real da produção (total do lote produzido), para consulta no estoque. */
+  production?: { materials: { label: string; qty: number; unit: string }[]; hours: number; qtyMade: number };
   notes?: string;
   createdAt: ISODateTime;
 }
@@ -609,6 +643,7 @@ export interface Sale {
   orderId?: ID;
   /** Venda de peças prontas do estoque (baixa o saldo do lote de peças). */
   finishedGoodId?: ID;
+  quoteItemId?: ID;
   description: string;
   qty: number;
   unitPrice: DecStr;

@@ -7,6 +7,7 @@ import { createPortal } from 'react-dom';
 import { useStore } from '../store';
 import type { ClientQuoteSettings, Quote } from '../../domain/types';
 import { buildClientQuote, clientQuoteSettings } from '../../domain/clientQuote';
+import { itemState, quoteItems, setQuoteStatus } from '../../domain/quotes';
 import { BusinessError, fmtDate } from '../../domain/core';
 import { fmtBRL } from '../../domain/money';
 import { ClientQuoteDocument } from './ClientQuoteDocument';
@@ -65,10 +66,14 @@ export function ClientQuoteExport({ quote, onClose, unsaved }: { quote: Quote; o
   const { db, run, toast } = useStore();
   const [form, setForm] = useClientQuoteForm();
   const [asDefault, setAsDefault] = useState(false);
+  const allItems = quoteItems(quote);
+  // Padrão: todas as peças não recusadas. O usuário escolhe quais vão para o cliente.
+  const [chosen, setChosen] = useState<string[]>(() => allItems.filter((it) => itemState(db, quote, it.itemId) !== 'recusado').map((it) => it.itemId));
+  const toggle = (id: string) => setChosen((s) => (s.includes(id) ? s.filter((x) => x !== id) : allItems.map((i) => i.itemId).filter((x) => x === id || s.includes(x))));
   const built = useMemo(() => {
-    try { return { doc: buildClientQuote(db, quote, fromForm(form)) }; }
+    try { return { doc: buildClientQuote(db, quote, fromForm(form), undefined, chosen) }; }
     catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
-  }, [db, quote, form]);
+  }, [db, quote, form, chosen]);
   const doc = built.doc;
 
   // Nome sugerido do PDF = título da página durante a impressão.
@@ -88,13 +93,15 @@ export function ClientQuoteExport({ quote, onClose, unsaved }: { quote: Quote; o
       const r = await run((d) => saveClientQuoteDefaults(form)(d), 'Textos salvos como padrão.');
       if (!r.ok) return;
     }
+    // Gerar o documento marca o orçamento como enviado (se ainda era rascunho).
+    if (quote.status === 'rascunho') await run((d) => setQuoteStatus(d, quote.id, 'enviado'));
     toast('info', 'Na janela que abrir, escolha “Salvar como PDF” como destino.');
     setTimeout(() => window.print(), 50);
   };
 
   const message = doc ? [
     `Olá${doc.customer ? `, ${doc.customer.name.split(' ')[0]}` : ''}! Segue o orçamento ${doc.number} da Ideia Cúbica:`,
-    `• ${doc.item.description} — ${doc.item.quantity} ${doc.item.quantity === 1 ? 'peça' : 'peças'}`,
+    ...doc.items.map((it) => `• ${it.description} — ${it.quantity} ${it.quantity === 1 ? 'peça' : 'peças'}: ${fmtBRL(it.total)}`),
     `• Total: ${fmtBRL(doc.total)}${doc.freight?.free ? ' (frete grátis)' : doc.freight ? ` (inclui ${doc.freight.label.toLowerCase()})` : ''}`,
     doc.productionDays !== null ? `• Produção: até ${doc.productionDays} dias úteis após a aprovação` : '',
     doc.validUntil ? `• Válido até ${fmtDate(doc.validUntil)}` : '',
@@ -115,10 +122,15 @@ export function ClientQuoteExport({ quote, onClose, unsaved }: { quote: Quote; o
       <div className="cq-export">
         <div className="stack">
           {unsaved && <Alert tone="warning" title="Há alterações não salvas">O documento usa a última versão salva. Feche, clique em “Salvar alterações” e gere de novo.</Alert>}
+          {allItems.length > 1 && <div className="stack" style={{ gap: 6 }}>
+            <p className="section-title" style={{ margin: 0 }}>Peças no documento</p>
+            {allItems.map((it) => <Check key={it.itemId} checked={chosen.includes(it.itemId)} onChange={() => toggle(it.itemId)}
+              label={`${it.name} · ${fmtBRL(it.summary.orderPrice)}${itemState(db, quote, it.itemId) === 'recusado' ? ' (recusada)' : ''}`} />)}
+          </div>}
           <ClientQuoteFields value={form} onChange={setForm} contacts={false} />
           <Check label="Salvar estes textos como padrão" checked={asDefault} onChange={setAsDefault} />
           <p className="small muted">Contatos do rodapé (WhatsApp, Instagram, e-mail): Parâmetros de Custos → Gerais → Orçamento para o cliente.</p>
-          {!quote.image && <p className="small muted">Sem foto neste orçamento: o documento fica sem imagem. Para incluir, adicione a foto no orçamento e salve.</p>}
+          <p className="small muted">A foto de cada peça vai no documento quando a peça tem foto; sem foto, a peça aparece sem imagem.</p>
         </div>
         {built.error ? <Alert tone="warning" title="Não foi possível gerar">{built.error}</Alert> : (
           <div className="cq-preview" aria-label="Pré-visualização do orçamento">

@@ -5,8 +5,12 @@ import { saveAccount, saveChannel, saveMaterial, saveParty, savePrinter } from '
 import { cancelPurchase, registerPurchase } from './purchases';
 import { accountBalance, openTotals, reverseSettlement, settleTitle, titleOpen } from './finance';
 import { adjustInventory, lotBalance, purchaseAlerts, reorderAnalysis, reserve, releaseAll, addMovement } from './inventory';
-import { emptyQuoteInput, latestVersion, materialCostPolicy, saveQuote } from './quotes';
-import { cancelOrder, compareOrder, completeOrder, createManualOrder, createOrderFromQuote, daysInStock, finishedGoodBalance, moveInQueue, orderDelivery, productionQueue, queueShortages, reserveOrderMaterials, startOrder, writeOffFinishedGood } from './production';
+import { deleteQuote, emptyQuoteInput, itemState, latestVersion, materialCostPolicy, quoteTotal, saveQuote, setItemStatus } from './quotes';
+import {
+  cancelOrder, compareOrder, completeOrder, createManualOrder, createOrderFromQuote, createOrdersFromQuote, daysInStock, finishedGoodBalance, moveInQueue,
+  orderDelivery, productionQueue, queueShortages, quoteFromFinishedGood, reserveOrderMaterials, returnOrderToQuote, startOrder, writeOffFinishedGood,
+} from './production';
+import { migrate } from './schema';
 import { managementResult, registerSale } from './sales';
 import type { DB } from './types';
 import { buildClientQuote } from './clientQuote';
@@ -215,16 +219,16 @@ describe('Produção e vendas', () => {
     const ch = saveChannel(db, { name: 'Direto', taxPct: '0', commissionPct: '0', paymentFeePct: '0', otherPct: '0', fixedFeePerOrder: '0', active: true });
     const input = { ...emptyQuoteInput(db.settings), quantity: 4, materials: [{ materialId: filamentId, lotId, qtyPerUnit: 50 }], printHoursPerUnit: 1,
       printerId: printer.id, channelId: ch.id, failureRatePct: failure, markupPct: '40' };
-    const q = saveQuote(db, { name: 'Chaveiro' }, input);
+    const q = saveQuote(db, { name: 'Chaveiro' }, [{ name: 'Chaveiro', input }]);
     return { lotId, q, printer, ch };
   }
 
   it('orçamento preserva snapshot: mudar custo depois não altera versão antiga', () => {
     const { q, lotId } = setupQuote();
-    const before = q.versions[0].summary.totalCost;
+    const before = q.versions[0].items[0].summary.totalCost;
     db.lots.find((l) => l.id === lotId)!.unitCost = '0.50';
-    expect(q.versions[0].params.lots[lotId].unitCost).toBe('0.11');
-    expect(q.versions[0].summary.totalCost).toBe(before);
+    expect(q.versions[0].items[0].params.lots[lotId].unitCost).toBe('0.11');
+    expect(q.versions[0].items[0].summary.totalCost).toBe(before);
   });
 
   it('ciclo completo: reserva → início → conclusão com falha → comparação', () => {
@@ -268,8 +272,8 @@ describe('Produção e vendas', () => {
     const { printer, ch } = setupQuote();       // 1º lote: 1.000 g
     buyCash();                                   // 2º lote: 1.000 g
     const lots = db.lots.filter((l) => l.materialId === filamentId);
-    const q = saveQuote(db, { name: 'Peça grande' }, { ...emptyQuoteInput(db.settings), quantity: 3, materials: [{ materialId: filamentId, qtyPerUnit: 500 }],
-      printHoursPerUnit: 1, printerId: printer.id, channelId: ch.id, failureRatePct: '0', markupPct: '40' });
+    const q = saveQuote(db, { name: 'Peça grande' }, [{ name: 'Peça grande', input: { ...emptyQuoteInput(db.settings), quantity: 3, materials: [{ materialId: filamentId, qtyPerUnit: 500 }],
+      printHoursPerUnit: 1, printerId: printer.id, channelId: ch.id, failureRatePct: '0', markupPct: '40' } }]);
     const op = createOrderFromQuote(db, q.id);
     expect(op.plannedMaterials[0]).toMatchObject({ materialId: filamentId, qty: 1500 });
     expect(reserveOrderMaterials(db, op.id).ok).toBe(true);
@@ -289,18 +293,19 @@ describe('Produção e vendas', () => {
     expect(op.status).toBe('cancelada');
   });
 
-  it('fila de produção: nova OP vai para o fim e pode ser reordenada', () => {
+  it('fila de produção: ordenada pela entrega (sem data por último), empate pela criação', () => {
     const { q, printer } = setupQuote();
-    const a = createOrderFromQuote(db, q.id);
+    const a = createOrderFromQuote(db, q.id, { dueDate: '2026-12-20' });
     const b = createManualOrder(db, { description: 'Vaso', qtyPlanned: 2, plannedMaterials: [{ materialId: filamentId, qty: 100 }], plannedHours: 3, printerId: printer.id });
-    const c = createManualOrder(db, { description: 'Suporte', qtyPlanned: 1, plannedMaterials: [{ materialId: filamentId, qty: 50 }], plannedHours: 1 });
-    expect(productionQueue(db).map((o) => o.id)).toEqual([a.id, b.id, c.id]);
-    moveInQueue(db, c.id, 0);
+    const c = createManualOrder(db, { description: 'Suporte', qtyPlanned: 1, plannedMaterials: [{ materialId: filamentId, qty: 50 }], plannedHours: 1, dueDate: '2026-12-01' });
     expect(productionQueue(db).map((o) => o.id)).toEqual([c.id, a.id, b.id]);
-    moveInQueue(db, c.id, 99);
-    expect(productionQueue(db).map((o) => o.sequence)).toEqual([1, 2, 3]);
+    // Sem data de entrega, vale a ordem manual
+    const d = createManualOrder(db, { description: 'Placa', qtyPlanned: 1, plannedMaterials: [{ materialId: filamentId, qty: 1 }], plannedHours: 1 });
+    moveInQueue(db, d.id, 0);
+    expect(productionQueue(db).map((o) => o.id)).toEqual([c.id, a.id, d.id, b.id]);
+    db.orders = db.orders.filter((o) => o.id !== d.id);
     startOrder(db, a.id);
-    expect(productionQueue(db).map((o) => o.id)).toEqual([b.id, c.id]);
+    expect(productionQueue(db).map((o) => o.id)).toEqual([c.id, b.id]);
     expect(() => moveInQueue(db, a.id, 0)).toThrow(/fila/);
     // OP manual sem lote fixo reserva por material
     expect(b.plannedMaterials[0].lotId).toBeUndefined();
@@ -339,7 +344,7 @@ describe('Produção e vendas', () => {
 
   it('OP de pedido não vai para o estoque de peças; entrega é marcada pela venda', () => {
     const { q, ch } = setupQuote();
-    const op = createOrderFromQuote(db, q.id, { purpose: 'pedido', dueDate: '2026-03-01' });
+    const op = createOrderFromQuote(db, q.id, { dueDate: '2026-03-01' });
     expect(orderDelivery(db, op)).toBe('fila');
     startOrder(db, op.id);
     expect(orderDelivery(db, op)).toBe('producao');
@@ -354,31 +359,144 @@ describe('Produção e vendas', () => {
   it('orçamento para o cliente: valores da versão salva, frete do cliente e nenhum dado de custo', () => {
     const { q, lotId, printer, ch } = setupQuote();
     const cli = saveParty(db, { kind: 'cliente', name: 'Maria', phone: '11987654321' });
-    const q2 = saveQuote(db, { name: 'Vaso', customerId: cli.id, image: 'data:image/jpeg;base64,AAA' }, {
-      ...latestVersion(q).input, quantity: 3, manualPriceUnit: '25', discountPct: '10',
-      shipping: { originCep: '01001000', destCep: null, lengthCm: 20, widthCm: 15, heightCm: 10, packagingWeightG: 80,
-        clientFreight: { service: 'PAC', price: '22.5', deliveryMin: 3, deliveryMax: 5 } },
-    });
+    const base = latestVersion(q).items[0].input;
+    const ship = { originCep: '01001000', destCep: null, lengthCm: 20, widthCm: 15, heightCm: 10, packagingWeightG: 80,
+      clientFreight: { service: 'PAC', price: '22.5', deliveryMin: 3, deliveryMax: 5 } };
+    const q2 = saveQuote(db, { customerId: cli.id }, [
+      { name: 'Vaso', image: 'data:image/jpeg;base64,AAA', input: { ...base, quantity: 3, manualPriceUnit: '25', discountPct: '10' } },
+      { name: 'Porta-lápis', input: { ...base, quantity: 2, manualPriceUnit: '10' } },
+    ], ship);
     void lotId; void printer; void ch;
     const doc = buildClientQuote(db, q2, { validityDays: 7 }, '2026-10-21');
-    expect(doc.unitPrice.toString()).toBe('25');
-    expect(doc.subtotal.toString()).toBe('75');
+    expect(doc.items.map((i) => i.unitPrice.toString())).toEqual(['25', '10']);
+    expect(doc.subtotal.toString()).toBe('95');      // 75 + 20
     expect(doc.discount.toString()).toBe('7.5');     // 25 × 10% × 3
     expect(doc.freight).toEqual({ label: 'Frete (PAC)', price: D('22.5'), delivery: '3 a 5 dias úteis', free: false });
-    expect(doc.total.toString()).toBe('90');         // 67,50 + 22,50
+    expect(doc.total.toString()).toBe('110');        // 67,50 + 20 + 22,50
     expect(doc.validUntil).toBe('2026-10-28');
-    expect(doc.item.image).toBe('data:image/jpeg;base64,AAA');
-    expect(doc.item.materials).toEqual(['PLA Preto']);
+    expect(doc.items[0].image).toBe('data:image/jpeg;base64,AAA');
+    expect(doc.items[1].image).toBeNull();
+    expect(doc.items[0].materials).toEqual(['PLA Preto']);
     expect(doc.customer?.name).toBe('Maria');
+    // Só algumas peças: o cliente aprova uma parte
+    const only = buildClientQuote(db, q2, {}, '2026-10-21', [q2.versions[0].items[1].itemId]);
+    expect(only.items).toHaveLength(1);
+    expect(only.total.toString()).toBe('42.5');      // 20 + 22,50
     // Nenhum campo interno vai para o documento
     const json = JSON.stringify(doc);
     for (const k of ['cost', 'Cost', 'margin', 'markup', 'hours', 'weight', 'qtyPerUnit', 'source']) expect(json).not.toContain(k);
-    // Sem imagem: não aparece. Frete pago pela empresa: "grátis".
-    const q3 = saveQuote(db, { name: 'Sem foto' }, { ...latestVersion(q).input, freightSubsidyPerOrder: '15' });
+    // Frete pago pela empresa: "grátis".
+    const q3 = saveQuote(db, { name: 'Sem foto' }, [{ name: 'Sem foto', input: { ...base, freightSubsidyPerOrder: '15' } }]);
     const d3 = buildClientQuote(db, q3, {}, '2026-10-21');
-    expect(d3.item.image).toBeNull();
+    expect(d3.items[0].image).toBeNull();
     expect(d3.freight?.free).toBe(true);
-    expect(d3.total.toString()).toBe(D(latestVersion(q3).summary.orderPrice!).toString());
+    expect(d3.total.toString()).toBe(D(latestVersion(q3).items[0].summary.orderPrice!).toString());
+  });
+
+  it('orçamento com várias peças: aprova algumas, produz por peça com data de entrega e retorna pedido', () => {
+    const { q } = setupQuote();
+    const base = latestVersion(q).items[0].input;
+    const cli = saveParty(db, { kind: 'cliente', name: 'João' });
+    const qq = saveQuote(db, { customerId: cli.id }, [
+      { name: 'Chaveiro A', input: { ...base, quantity: 2 } },
+      { name: 'Chaveiro B', input: { ...base, quantity: 1 } },
+      { name: 'Chaveiro C', input: { ...base, quantity: 1 } },
+    ]);
+    const [a, b, c] = latestVersion(qq).items.map((i) => i.itemId);
+    expect(quoteTotal(db, qq).count).toBe(3);
+    setItemStatus(db, qq.id, c, 'recusado');
+    expect(quoteTotal(db, qq).count).toBe(2);
+    expect(() => createOrdersFromQuote(db, qq.id, [a], { dueDate: '' })).toThrow(/data de entrega/);
+    const [pa] = createOrdersFromQuote(db, qq.id, [a], { dueDate: '2026-11-10' });
+    expect(pa.number).toMatch(/^PED-/);
+    expect(pa.quoteItemId).toBe(a);
+    expect(pa.customerId).toBe(cli.id);
+    expect(itemState(db, qq, a)).toBe('producao');
+    expect(qq.status).toBe('aprovado');             // B ainda aberta
+    // Peça em produção não pode ser alterada nem removida
+    const items = latestVersion(qq).items;
+    expect(() => saveQuote(db, { quoteId: qq.id, customerId: cli.id }, items.map((i) => ({ itemId: i.itemId, name: i.name, input: { ...i.input, quantity: 9 } })))).toThrow(/em produção/);
+    expect(() => saveQuote(db, { quoteId: qq.id, customerId: cli.id }, items.filter((i) => i.itemId !== a).map((i) => ({ itemId: i.itemId, name: i.name, input: i.input })))).toThrow(/não pode ser removida/);
+    // Quadro: entrega mais próxima primeiro
+    const [pb] = createOrdersFromQuote(db, qq.id, [b], { dueDate: '2026-11-01' });
+    expect(productionQueue(db).filter((o) => o.quoteId === qq.id).map((o) => o.id)).toEqual([pb.id, pa.id]);
+    expect(qq.status).toBe('convertido');           // todas as não recusadas em produção
+    // Retornar o pedido para o orçamento: libera e volta a ficar aprovada e editável
+    returnOrderToQuote(db, pa.id, 'cliente mudou a cor');
+    expect(pa.status).toBe('cancelada');
+    expect(itemState(db, qq, a)).toBe('aprovado');
+    expect(qq.status).toBe('aprovado');
+    // Exclusão bloqueada com pedido ativo; liberada depois
+    expect(() => deleteQuote(db, qq.id, 'teste')).toThrow(/pedidos ativos/);
+    returnOrderToQuote(db, pb.id, 'teste');
+    deleteQuote(db, qq.id, 'teste');
+    expect(db.quotes.find((x) => x.id === qq.id)).toBeUndefined();
+  });
+
+  it('produção para estoque calcula custo e preço; orçamento a partir da peça pronta separa ao aprovar', () => {
+    const { lotId, printer, ch } = setupQuote();
+    db.settings.defaultMarkupPct = '100';
+    db.settings.defaultChannelId = ch.id;
+    const op = createManualOrder(db, { description: 'Dragão', qtyPlanned: 4, plannedMaterials: [{ lotId, qty: 200 }], plannedHours: 8, printerId: printer.id, purpose: 'estoque' });
+    expect(op.number).toMatch(/^EST-/);
+    expect(op.estimate?.summary.unitCost).toBeTruthy();
+    expect(op.estimate?.summary.unitPrice).toBeTruthy();
+    startOrder(db, op.id);
+    completeOrder(db, op.id, { materials: [{ lotId, qty: 200 }], hours: 8, qtyApproved: 4, qtyRejected: 0, laborMinutes: null, failures: [] });
+    const fg = db.finishedGoods.find((g) => g.orderId === op.id)!;
+    expect(fg.suggestedPrice).toBe(op.estimate!.summary.unitPrice);
+    expect(fg.production).toEqual({ materials: [{ label: 'PLA Preto A (PLA Preto)', qty: 200, unit: 'g' }], hours: 8, qtyMade: 4 });
+    const cli = saveParty(db, { kind: 'cliente', name: 'Ana' });
+    const qs = quoteFromFinishedGood(db, fg.id, { customerId: cli.id, qty: 3 });
+    const it = latestVersion(qs).items[0];
+    expect(it.finishedGoodId).toBe(fg.id);
+    expect(it.summary.unitPrice).toBe(fg.suggestedPrice);
+    expect(finishedGoodBalance(db, fg.id).available).toBe(4);   // continua no estoque
+    expect(() => createOrdersFromQuote(db, qs.id, [it.itemId], { dueDate: '2026-11-01' })).toThrow(/estoque/);
+    setItemStatus(db, qs.id, it.itemId, 'aprovado');             // "Pedido aprovado": separa 3
+    expect(itemState(db, qs, it.itemId)).toBe('separado');
+    expect(finishedGoodBalance(db, fg.id).available).toBe(1);
+    // Venda consome a separação
+    registerSale(db, { date: '2026-02-10', description: fg.description, finishedGoodId: fg.id, quoteId: qs.id, quoteItemId: it.itemId, qty: 3, unitPrice: '50', discount: '0',
+      freightCharged: '0', freightCost: '0', channelId: ch.id, feesWithheld: true, payment: { mode: 'avista', accountId, installments: 1, firstDue: '2026-02-10', intervalDays: 30 } });
+    expect(finishedGoodBalance(db, fg.id)).toMatchObject({ sold: 3, allocated: 0, available: 1 });
+    expect(itemState(db, qs, it.itemId)).toBe('separado');
+  });
+
+  it('migração: orçamento antigo de uma peça vira items[] e pedidos apontam para a peça', () => {
+    const { q } = setupQuote();
+    const op = createOrderFromQuote(db, q.id, { dueDate: '2026-11-01' });
+    const v = q.versions[0];
+    const legacy = structuredClone(db) as unknown as { quotes: Record<string, unknown>[]; orders: Record<string, unknown>[] };
+    const lq = legacy.quotes[0] as { versions: Record<string, unknown>[]; image?: string; status: string };
+    lq.versions = [{ version: 1, createdAt: v.createdAt, input: v.items[0].input, params: v.items[0].params, summary: v.items[0].summary }];
+    lq.image = 'data:x'; lq.status = 'convertido';
+    delete (legacy.orders[0] as { quoteItemId?: string }).quoteItemId;
+    const m = migrate(legacy);
+    const mq = m.quotes[0];
+    expect(mq.versions[0].items[0]).toMatchObject({ itemId: `${q.id}:1`, name: 'Chaveiro', image: 'data:x' });
+    expect(m.orders[0].quoteItemId).toBe(`${q.id}:1`);
+    expect(itemState(m, mq, `${q.id}:1`)).toBe('producao');
+    void op;
+  });
+
+  it('numeração: orçamentos começam em ORC-00000203; códigos de insumo seguem a sigla da categoria', () => {
+    const fresh = createEmptyDB();
+    const qx = saveQuote(fresh, {}, [{ name: 'X', input: emptyQuoteInput(fresh.settings) }]);
+    expect(qx.number).toBe('ORC-00000203');
+    const old = structuredClone(fresh) as typeof fresh;
+    old.counters = { quote: 1 }; old.settings.appliedMigrations = []; old.settings.codeDigits = {};
+    const mig = migrate(old);
+    expect(saveQuote(mig, {}, [{ name: 'Y', input: emptyQuoteInput(mig.settings) }]).number).toBe('ORC-00000203');
+    expect(saveQuote(migrate(mig), {}, [{ name: 'Z', input: emptyQuoteInput(mig.settings) }]).number).toBe('ORC-00000204');
+    // Insumos: sigla da categoria + sequência
+    const fil = fresh.categories.find((c) => c.isFilament)!;
+    expect(fil.code).toBe('FL');
+    saveMaterial(fresh, { name: 'PLA manual', categoryId: fil.id, unit: 'g', active: true, code: 'FL00002', filament: { materialType: 'PLA', color: 'Azul', netWeightG: 1000 } });
+    const next = saveMaterial(fresh, { name: 'PLA novo', categoryId: fil.id, unit: 'g', active: true, filament: { materialType: 'PLA', color: 'Rosa', netWeightG: 1000 } });
+    expect(next.code).toBe('FL00003');
+    const et = fresh.categories.find((c) => c.name === 'Etiquetas')!;
+    expect(saveMaterial(fresh, { name: 'Etiqueta', categoryId: et.id, unit: 'un', active: true }).code).toBe('ET00001');
   });
 
   it('venda a prazo gera conta a receber; recebimento liquida', () => {

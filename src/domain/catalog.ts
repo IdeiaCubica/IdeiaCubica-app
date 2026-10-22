@@ -1,7 +1,7 @@
 /** Cadastros: materiais, categorias, fornecedores/clientes, impressoras, canais, despesas indiretas, contas. */
 import type { Account, Category, DB, ID, Material, NamedItem, Overhead, Party, Printer, SalesChannel } from './types';
 import { D, Decimal, Dn } from './money';
-import { BusinessError, assert, audit, byId, isValidCnpj, isValidCpf, newId, nextCode, nowISO, onlyDigits, requireText } from './core';
+import { BusinessError, assert, audit, byId, isValidCnpj, isValidCpf, newId, nowISO, onlyDigits, requireText } from './core';
 import { formatAddress, isValidCep } from './address';
 
 /* ---------------- Materiais ---------------- */
@@ -36,12 +36,52 @@ export function saveMaterial(db: DB, input: MaterialInput, id?: ID): Material {
     return mat;
   }
   const mat: Material = {
-    ...input, id: newId(), name, code: code || nextCode(db, 'material', 'MAT'),
+    ...input, id: newId(), name, code: code || nextMaterialCode(db, category),
     filament: category.isFilament ? input.filament : undefined, createdAt: nowISO(),
   };
   db.materials.push(mat);
   audit(db, 'Material cadastrado', `${mat.code} ${mat.name}`);
   return mat;
+}
+
+const DEFAULT_SIGLAS: Record<string, string> = {
+  filamentos: 'FL', 'sacos plasticos': 'SP', 'caixas e embalagens': 'CX', etiquetas: 'ET', 'fitas adesivas': 'FT',
+  'cola e adesivos': 'CL', pinceis: 'PN', lixas: 'LX', 'ferramentas e acessorios': 'FR', 'pecas de reposicao': 'PR', 'outros consumiveis': 'OC',
+};
+const plain = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+
+/** Sigla sugerida para uma categoria: conhecida, ou as iniciais (sem repetir outra categoria). */
+export function suggestSigla(db: DB, name: string, exceptId?: ID): string {
+  const known = DEFAULT_SIGLAS[plain(name)];
+  const used = new Set(db.categories.filter((c) => c.id !== exceptId && c.code).map((c) => c.code!));
+  if (known && !used.has(known)) return known;
+  const words = plain(name).replace(/[^a-z0-9 ]/g, '').split(/\s+/).filter((w) => w.length > 2 || /\d/.test(w));
+  const letters = (words.length > 1 ? words[0][0] + words[1][0] : (words[0] ?? 'IN').slice(0, 2)).toUpperCase();
+  if (!used.has(letters)) return letters;
+  for (const ch of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') if (!used.has(letters[0] + ch)) return letters[0] + ch;
+  return letters + used.size;
+}
+
+export function normalizeSigla(s: string) { return s.normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4); }
+
+/**
+ * Próximo código do insumo pela sigla da categoria: SIGLA + 5 dígitos, seguindo o
+ * maior número já usado com essa sigla (inclusive códigos digitados à mão).
+ * Ex.: existe FL00002 → próximo FL00003.
+ */
+export function nextMaterialCode(db: DB, category: Category): string {
+  const sigla = category.code || suggestSigla(db, category.name, category.id);
+  const re = new RegExp(`^${sigla}-?(\\d+)$`, 'i');
+  const max = db.materials.reduce((m, x) => { const g = x.code.match(re); return g ? Math.max(m, Number(g[1])) : m; }, 0);
+  let n = max + 1;
+  let code = `${sigla}${String(n).padStart(5, '0')}`;
+  while (db.materials.some((x) => x.code.toLowerCase() === code.toLowerCase())) code = `${sigla}${String(++n).padStart(5, '0')}`;
+  return code;
+}
+
+/** Garante sigla em todas as categorias (dados anteriores à v1.5). */
+export function ensureCategorySiglas(db: DB) {
+  for (const c of db.categories) if (!c.code) c.code = suggestSigla(db, c.name, c.id);
 }
 
 /** Histórico de custos de aquisição de um material (por lote, em ordem cronológica). */
@@ -91,15 +131,18 @@ export function deleteNamed(db: DB, list: NamedList, id: ID) {
 export function saveCategory(db: DB, input: Omit<Category, 'id'>, id?: ID) {
   const name = requireText(input.name, 'o nome da categoria');
   if (db.categories.some((c) => c.name.toLowerCase() === name.toLowerCase() && c.id !== id)) throw new BusinessError('Já existe uma categoria com esse nome.');
+  const code = normalizeSigla(input.code ?? '') || suggestSigla(db, name, id);
+  assert(code.length >= 2, 'A sigla deve ter de 2 a 4 letras ou números.');
+  if (db.categories.some((c) => c.code === code && c.id !== id)) throw new BusinessError(`A sigla ${code} já é usada por outra categoria.`);
   if (id) {
     const c = byId(db.categories, id, 'Categoria');
     if (c.isFilament !== input.isFilament && db.materials.some((m) => m.categoryId === id)) {
       throw new BusinessError('Não é possível mudar o tipo (filamento) de uma categoria que já possui materiais.');
     }
-    Object.assign(c, { ...input, name });
+    Object.assign(c, { ...input, name, code });
     return c;
   }
-  const c = { ...input, name, id: newId() };
+  const c = { ...input, name, code, id: newId() };
   db.categories.push(c);
   return c;
 }

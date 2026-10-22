@@ -4,9 +4,9 @@ import { depreciationPerHour } from '../../domain/catalog';
 import { cashBalance, openTotals } from '../../domain/finance';
 import { inventoryValue, purchaseAlerts } from '../../domain/inventory';
 import { managementResult } from '../../domain/sales';
-import { latestVersion, materialCostPolicy } from '../../domain/quotes';
-import { ORDER_STATUS_LABEL } from '../../domain/production';
-import { todayISO } from '../../domain/core';
+import { materialCostPolicy, quoteTotal } from '../../domain/quotes';
+import { ORDER_STATUS_LABEL, byDelivery } from '../../domain/production';
+import { fmtDate, todayISO } from '../../domain/core';
 import { fmtBRL, fmtNum, fmtPct } from '../../domain/money';
 import { Alert, Badge, Kpi, PageHead } from '../components/ui';
 import { QUOTE_STATUS } from './Orcamentos';
@@ -69,17 +69,17 @@ export function Painel() {
         {reorder.length > shortage.length && <Alert tone="warning" title={`Abaixo do ponto de pedido (${reorder.length - shortage.length})`}>{reorder.filter((r) => r.status === 'repor').map((r) => r.material.name).join(', ')}. <a href="#/estoque/reposicao">Ver reposição</a></Alert>}
         <div className="grid g2">
           <div className="card">
-            <div className="card-head"><h2>Produção em andamento</h2><a href="#/producao/ordens" className="small">ver todas</a></div>
-            {activeOrders.length === 0 ? <div className="card-body muted">Nenhuma ordem em aberto.</div> : (
-              <table className="tbl"><tbody>{activeOrders.slice(0, 6).map((o) => (
-                <tr key={o.id} className="clickable" onClick={() => navigate('producao/ordens')}><td className="mono">{o.number}</td><td>{o.description}</td><td className="num">{o.qtyPlanned} un</td><td><Badge tone={o.status === 'aguardando_material' ? 'error' : 'info'}>{ORDER_STATUS_LABEL[o.status]}</Badge></td></tr>
+            <div className="card-head"><h2>Próximas entregas</h2><a href="#/producao/quadro" className="small">ver quadro</a></div>
+            {activeOrders.length === 0 ? <div className="card-body muted">Nenhum pedido ou produção em aberto.</div> : (
+              <table className="tbl"><tbody>{[...activeOrders].sort(byDelivery).slice(0, 6).map((o) => (
+                <tr key={o.id} className="clickable" onClick={() => navigate('producao/quadro')}><td className="mono">{o.number}</td><td>{o.description}</td><td>{o.dueDate ? fmtDate(o.dueDate) : '—'}</td><td><Badge tone={o.status === 'aguardando_material' ? 'error' : 'info'}>{ORDER_STATUS_LABEL[o.status]}</Badge></td></tr>
               ))}</tbody></table>)}
           </div>
           <div className="card">
             <div className="card-head"><h2>Orçamentos recentes</h2><a href="#/orcamentos" className="small">ver todos</a></div>
             {recentQuotes.length === 0 ? <div className="card-body muted">Nenhum orçamento ainda. <a href="#/orcamentos/novo">Criar o primeiro</a></div> : (
-              <table className="tbl"><tbody>{recentQuotes.map((q) => { const v = latestVersion(q); return (
-                <tr key={q.id} className="clickable" onClick={() => navigate(`orcamentos/${q.id}`)}><td className="mono">{q.number}</td><td>{q.name}</td><td className="num">{fmtBRL(v.summary.unitPrice)}</td><td><Badge tone={QUOTE_STATUS[q.status].tone}>{QUOTE_STATUS[q.status].label}</Badge></td></tr>); })}</tbody></table>)}
+              <table className="tbl"><tbody>{recentQuotes.map((q) => (
+                <tr key={q.id} className="clickable" onClick={() => navigate(`orcamentos/${q.id}`)}><td className="mono">{q.number}</td><td>{q.name}</td><td className="num">{fmtBRL(quoteTotal(db, q).price)}</td><td><Badge tone={QUOTE_STATUS[q.status].tone}>{QUOTE_STATUS[q.status].label}</Badge></td></tr>))}</tbody></table>)}
           </div>
         </div>
       </div>

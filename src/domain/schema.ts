@@ -7,6 +7,8 @@
  */
 import type { Category, DB, FinCategory } from './types';
 import { BusinessError, newId } from './core';
+import { ensureCategorySiglas } from './catalog';
+import { migrateQuoteItems } from './quotes';
 
 const cat = (name: string, isFilament = false): Category => ({ id: newId(), name, isFilament, active: true });
 const fin = (name: string, direction: 'in' | 'out', nature: FinCategory['nature'], system = false): FinCategory =>
@@ -22,7 +24,7 @@ export const SYS_FIN = {
 } as const;
 
 export function createEmptyDB(): DB {
-  return {
+  const db: DB = {
     schemaVersion: 1,
     counters: {},
     settings: {
@@ -76,6 +78,12 @@ export function createEmptyDB(): DB {
     sales: [],
     audit: [],
   };
+  ensureCategorySiglas(db);
+  // Banco novo já nasce com a numeração definida pela empresa.
+  db.counters.quote = 202;
+  db.settings.codeDigits = { quote: 8 };
+  db.settings.appliedMigrations = ['numeracao-orc-203'];
+  return db;
 }
 
 /** Valida e migra um objeto lido do armazenamento ou de um backup. */
@@ -92,7 +100,22 @@ export function migrate(raw: unknown): DB {
   migrateBrandTexts(db);
   // v1.1.0 tinha o módulo de tendências (removido na v1.1.1).
   delete (db as { trends?: unknown }).trends;
+  ensureCategorySiglas(db);
+  migrateQuoteItems(db);
+  once(db, 'numeracao-orc-203', () => {
+    // Pedido da empresa: novos orçamentos a partir de ORC-00000203.
+    db.counters.quote = Math.max(db.counters.quote ?? 0, 202);
+    db.settings.codeDigits = { ...db.settings.codeDigits, quote: 8 };
+  });
   return db;
+}
+
+/** Executa uma migração de dados uma única vez por banco. */
+function once(db: DB, key: string, fn: () => void) {
+  const done = db.settings.appliedMigrations ?? [];
+  if (done.includes(key)) return;
+  fn();
+  db.settings.appliedMigrations = [...done, key];
 }
 
 /** v0.1 guardava marca/fabricante como texto livre no filamento: vira item das listas de Cadastros. */

@@ -4,11 +4,12 @@ import { createEmptyDB } from './schema';
 import { saveAccount, saveChannel, saveMaterial, saveParty, savePrinter } from './catalog';
 import { cancelPurchase, registerPurchase } from './purchases';
 import { accountBalance, openTotals, reverseSettlement, settleTitle, titleOpen } from './finance';
-import { adjustInventory, lotBalance, purchaseAlerts, reorderAnalysis, reserve, releaseAll, addMovement } from './inventory';
+import { adjustInventory, deleteInitialStock, lotBalance, purchaseAlerts, registerInitialStock, reorderAnalysis, reserve, releaseAll, addMovement, unitCostFromTotal, updateInitialStock } from './inventory';
 import { deleteQuote, emptyQuoteInput, itemState, latestVersion, materialCostPolicy, quoteTotal, saveQuote, setItemStatus } from './quotes';
 import {
   cancelOrder, compareOrder, completeOrder, createManualOrder, createOrderFromQuote, createOrdersFromQuote, daysInStock, finishedGoodBalance, moveInQueue,
   orderDelivery, productionQueue, queueShortages, quoteFromFinishedGood, reserveOrderMaterials, returnOrderToQuote, startOrder, writeOffFinishedGood,
+  deleteFinishedGood, registerFinishedGood, updateFinishedGood,
 } from './production';
 import { migrate } from './schema';
 import { managementResult, registerSale } from './sales';
@@ -169,6 +170,31 @@ describe('Estoque', () => {
     expect(() => addMovement(db, { lotId, type: 'consumo', qty: 10, ref: { kind: 'op', id: 'a' }, key: 'op:a:consumo' })).toThrow(/duplicado/);
     expect(lotBalance(db, lotId).physical.toString()).toBe('990');
   });
+  it('estoque inicial: custo pelo total pago (R$ 73,58 por 1.000 g = R$ 73,58/kg), correção e exclusão', () => {
+    const unit = unitCostFromTotal('73.58', 1000);
+    expect(unit.toString()).toBe('0.07358');
+    expect(unit.times(1000).toString()).toBe('73.58');      // exibido como R$ 73,58/kg (não R$ 73.580/kg)
+    const lot = registerInitialStock(db, { materialId: filamentId, qty: 1000, unitCost: unit.toString(), date: '2026-10-22' });
+    expect(lot.cost.goods).toBe('73.58');
+    // Lançou errado (R$/g digitado como preço do carretel): corrige
+    updateInitialStock(db, lot.id, { qty: 800, unitCost: unitCostFromTotal('60', 800).toString(), date: '2026-10-21' });
+    expect(lotBalance(db, lot.id).physical.toString()).toBe('800');
+    expect(lot.unitCost).toBe('0.075');
+    expect(db.movements.find((m) => m.lotId === lot.id)!.date).toBe('2026-10-21');
+    // Depois de usado não pode mais mudar nem excluir
+    reserve(db, lot.id, 10, 'op-x');
+    expect(() => updateInitialStock(db, lot.id, { qty: 900, unitCost: '0.07', date: '2026-10-21' })).toThrow(/já teve consumo/);
+    expect(() => deleteInitialStock(db, lot.id, 'erro')).toThrow(/já teve consumo/);
+    releaseAll(db, 'op-x');
+    db.movements = db.movements.filter((m) => m.lotId !== lot.id || m.type === 'entrada');
+    deleteInitialStock(db, lot.id, 'lançado errado');
+    expect(db.lots.find((l) => l.id === lot.id)).toBeUndefined();
+    expect(db.movements.some((m) => m.lotId === lot.id)).toBe(false);
+    // Lote de compra não é editado aqui
+    const p = buyCash();
+    expect(() => deleteInitialStock(db, p.items[0].lotId, 'x')).toThrow(/compra/);
+  });
+
   it('inventário gera ajuste com justificativa obrigatória', () => {
     const lotId = buyCash().items[0].lotId;
     expect(() => adjustInventory(db, { lotId, countedQty: 950, reason: '' })).toThrow(/justificativa/);
@@ -339,6 +365,17 @@ describe('Produção e vendas', () => {
       freightCost: '0', feesWithheld: true, payment: { mode: 'avista', accountId, installments: 1, firstDue: '2026-02-10', intervalDays: 30 } })).toThrow(/Só há 1/);
     writeOffFinishedGood(db, fg.id, 1, 'avaria');
     expect(finishedGoodBalance(db, fg.id).available).toBe(0);
+    // Peças produzidas: só descrição/local/preço mudam; vendidas não podem ser excluídas
+    expect(() => updateFinishedGood(db, fg.id, { description: 'Dragão', qty: 9 })).toThrow(/vêm da produção/);
+    updateFinishedGood(db, fg.id, { description: 'Dragão articulado G', location: 'B', suggestedPrice: '70' });
+    expect(fg.suggestedPrice).toBe('70');
+    expect(() => deleteFinishedGood(db, fg.id, 'x')).toThrow(/não podem ser excluídas/);
+    // Cadastro manual errado: corrige e exclui
+    const man = registerFinishedGood(db, { description: 'Chaveiro', qty: 5, unitCost: '75.58', producedAt: '2026-10-01' });
+    updateFinishedGood(db, man.id, { description: 'Chaveiro', qty: 6, unitCost: '3.58', producedAt: '2026-10-02' });
+    expect([man.qtyProduced, man.unitCost, man.producedAt]).toEqual([6, '3.58', '2026-10-02']);
+    deleteFinishedGood(db, man.id, 'lançado errado');
+    expect(db.finishedGoods.find((g) => g.id === man.id)).toBeUndefined();
     expect(daysInStock({ producedAt: '2026-01-01' }, '2026-01-31')).toBe(30);
   });
 

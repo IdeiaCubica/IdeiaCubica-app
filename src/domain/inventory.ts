@@ -128,6 +128,55 @@ export function registerInitialStock(db: DB, input: {
   return lot;
 }
 
+/**
+ * Custo por unidade de estoque a partir do valor total pago (a forma segura de digitar):
+ * ex.: R$ 73,58 por 1.000 g → R$ 0,07358/g (R$ 73,58/kg).
+ */
+export function unitCostFromTotal(totalPaid: Decimal.Value, qty: number): Decimal {
+  assert(qty > 0, 'Informe a quantidade para calcular o custo unitário.');
+  return D(totalPaid).div(qty);
+}
+
+/** Lote de estoque inicial sem nenhuma movimentação além da entrada (pode ser corrigido ou excluído). */
+export function isUntouchedLot(db: DB, lotId: ID) {
+  return db.movements.filter((m) => m.lotId === lotId).every((m) => m.type === 'entrada');
+}
+
+function requireEditableInitial(db: DB, lotId: ID) {
+  const lot = byId(db.lots, lotId, 'Lote');
+  assert(lot.origin === 'estoque_inicial', 'Este lote veio de uma compra. Para corrigir, cancele a compra em Compras e registre de novo.');
+  assert(isUntouchedLot(db, lotId),
+    'Este lote já teve consumo, reserva, perda ou ajuste. Para corrigir a quantidade, use o inventário (contagem) do lote; o custo de lotes já usados não muda para não alterar custos já apurados.');
+  return lot;
+}
+
+/** Corrige um lançamento de estoque inicial ainda não usado (quantidade, custo, data, lote, observações). */
+export function updateInitialStock(db: DB, lotId: ID, input: { qty: number; unitCost: string; date: ISODate; batchNumber?: string; notes?: string }) {
+  const lot = requireEditableInitial(db, lotId);
+  requirePositive(input.qty, 'A quantidade');
+  const unitCost = D(input.unitCost);
+  assert(!unitCost.isNegative(), 'O custo unitário não pode ser negativo.');
+  Object.assign(lot, {
+    initialQty: input.qty, unitCost: unitCost.toString(), date: input.date, batchNumber: input.batchNumber, notes: input.notes,
+    cost: { goods: cents(unitCost.times(input.qty)).toString(), freight: '0', other: '0' },
+  });
+  const entry = db.movements.find((m) => m.lotId === lotId && m.type === 'entrada');
+  if (entry) Object.assign(entry, { qty: input.qty, date: input.date });
+  const mat = db.materials.find((m) => m.id === lot.materialId);
+  audit(db, 'Estoque inicial corrigido', `${lot.code} ${mat?.name ?? ''}: ${input.qty} ${mat?.unit ?? ''} a ${unitCost.toString()}/${mat?.unit ?? ''}`);
+  return lot;
+}
+
+/** Exclui um lançamento de estoque inicial feito por engano (só se ainda não foi usado). */
+export function deleteInitialStock(db: DB, lotId: ID, reason: string) {
+  const lot = requireEditableInitial(db, lotId);
+  const why = requireText(reason, 'o motivo da exclusão');
+  db.movements = db.movements.filter((m) => m.lotId !== lotId);
+  db.lots = db.lots.filter((l) => l.id !== lotId);
+  const mat = db.materials.find((m) => m.id === lot.materialId);
+  audit(db, 'Estoque inicial excluído', `${lot.code} ${mat?.name ?? ''} — ${why}`);
+}
+
 /** Inventário: compara contagem física com o saldo e gera ajuste rastreável. */
 export function adjustInventory(db: DB, input: { lotId: ID; countedQty: number; reason: string; date?: ISODate }) {
   const reason = requireText(input.reason, 'a justificativa do ajuste');

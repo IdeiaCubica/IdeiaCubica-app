@@ -7,9 +7,9 @@ import { deleteNamed, namedUsage, nextMaterialCode, normalizeSigla, priceHistory
 import { lotBalance, materialBalance, reorderAnalysis } from '../../domain/inventory';
 import { materialCostPolicy } from '../../domain/quotes';
 import { UNIT_LABEL, fmtDate, fmtDocument, fmtPhone } from '../../domain/core';
-import { Decimal, fmtBRL, fmtNum, toInputBR } from '../../domain/money';
+import { Decimal, fmtBRL, fmtNum, parseBR, toInputBR } from '../../domain/money';
 import { perGramToPerKg, perKgToPerGram } from '../../domain/conversions';
-import { Badge, Check, Combobox, DataTable, Empty, Modal, NumField, PageHead, SelectField, Tabs, TextArea, TextField, dec, num, useConfirm, useForm } from '../components/ui';
+import { Alert, Badge, Check, Combobox, DataTable, Empty, Modal, NumField, PageHead, SelectField, Tabs, TextArea, TextField, dec, num, useConfirm, useForm } from '../components/ui';
 
 type Tab = 'materiais' | 'clientes' | 'fornecedores' | 'marcas' | 'fabricantes';
 export const FILAMENT_TYPES = ['PLA', 'PLA Silk', 'PLA Matte', 'PETG', 'ABS', 'ASA', 'TPU', 'PC', 'Nylon', 'Outro'];
@@ -176,19 +176,22 @@ function MaterialDetail({ material, onClose, onEdit }: { material: Material; onC
 export function MaterialForm({ material, onClose, onSave }: { material?: Material; onClose: () => void; onSave: (v: Parameters<typeof saveMaterial>[1], id?: string) => void }) {
   const { db } = useStore();
   const fil = material?.filament;
-  const initialIsFil = material ? material.unit === 'g' && !!fil : true;
+  // Tudo que é controlado em gramas tem o preço digitado em R$/kg (gravado em R$/g).
+  const initialInGrams = material ? material.unit === 'g' : true;
   const [f, set] = useForm({
     code: material?.code ?? '', name: material?.name ?? '', categoryId: material?.categoryId ?? db.categories.find((c) => c.isFilament)?.id ?? '',
     // Filamento é sempre em gramas; para os demais insumos o padrão é unidade.
     unit: material?.unit ?? 'un', active: material?.active ?? true, brandId: material?.brandId ?? '', manufacturerId: material?.manufacturerId ?? '',
     materialType: fil?.materialType ?? 'PLA', color: fil?.color ?? '', colorHex: fil?.colorHex ?? '#0d1925',
     netWeightG: toInputBR(fil?.netWeightG ?? null), spoolWeightG: toInputBR(fil?.spoolWeightG ?? null),
-    // Filamento: preço digitado em R$/kg e gravado em R$/g.
-    referencePrice: material?.referenceCost ? toInputBR(initialIsFil ? perGramToPerKg(material.referenceCost) : material.referenceCost, 4) : '',
+    referencePrice: material?.referenceCost ? toInputBR(initialInGrams ? perGramToPerKg(material.referenceCost) : material.referenceCost, 4) : '',
     minStock: toInputBR(material?.minStock ?? null), leadTimeDays: toInputBR(material?.leadTimeDays ?? null), location: material?.location ?? '', notes: material?.notes ?? '',
   });
   const selCat = db.categories.find((c) => c.id === f.categoryId);
   const isFil = selCat?.isFilament ?? false;
+  const inGrams = isFil || f.unit === 'g';
+  const refValue = parseBR(f.referencePrice);
+  const refSuspicious = inGrams && refValue && (refValue.gt(1000) || refValue.lt(5));
   const submit = () => {
     const ref = dec(f.referencePrice);
     onSave({
@@ -196,7 +199,7 @@ export function MaterialForm({ material, onClose, onSave }: { material?: Materia
       brandId: f.brandId || undefined, manufacturerId: f.manufacturerId || undefined,
       filament: isFil ? { materialType: f.materialType, color: f.color, colorHex: f.colorHex,
         netWeightG: num(f.netWeightG), spoolWeightG: num(f.spoolWeightG), grossWeightG: material?.filament?.grossWeightG ?? null, diameterMm: material?.filament?.diameterMm ?? null } : undefined,
-      referenceCost: ref === null ? null : isFil ? perKgToPerGram(ref).toString() : ref,
+      referenceCost: ref === null ? null : inGrams ? perKgToPerGram(ref).toString() : ref,
       minStock: num(f.minStock), safetyStock: material?.safetyStock ?? null, leadTimeDays: num(f.leadTimeDays), location: f.location, notes: f.notes,
     }, material?.id);
   };
@@ -227,10 +230,12 @@ export function MaterialForm({ material, onClose, onSave }: { material?: Materia
         ) : (
           <div className="grid g3">
             <SelectField label="Unidade de controle" value={f.unit} onChange={(v) => set('unit')(v as Unit)} options={(Object.keys(UNIT_LABEL) as Unit[]).map((u) => ({ value: u, label: UNIT_LABEL[u] }))} hint="Não pode ser alterada após existirem compras." />
-            <NumField label="Preço de referência" suffix={`R$/${f.unit}`} value={f.referencePrice} onChange={set('referencePrice')} hint="Usado enquanto não houver compra registrada." />
+            <NumField label="Preço de referência" suffix={inGrams ? 'R$/kg' : `R$/${f.unit}`} value={f.referencePrice} onChange={set('referencePrice')}
+              hint={inGrams ? 'Preço por quilo (ex.: pacote de 1 kg por R$ 73,58 → 73,58). Usado enquanto não houver compra registrada.' : `Preço por ${UNIT_LABEL[f.unit as Unit]?.toLowerCase() ?? f.unit} (ex.: pacote com 100 por R$ 30 → 0,30). Usado enquanto não houver compra registrada.`} />
             <TextField label="Localização" value={f.location} onChange={set('location')} />
           </div>
         )}
+        {refSuspicious && <Alert tone="warning" title="Confira o preço">R$ {f.referencePrice}/kg está fora do normal para material controlado em gramas (em geral R$ 20 a R$ 300/kg). O campo é o preço por <b>quilo</b>.</Alert>}
         <div className="grid g3">
           <NumField label="Estoque mínimo" suffix={unitLabel} value={f.minStock} onChange={set('minStock')} />
           <NumField label="Prazo de reposição" suffix="dias" value={f.leadTimeDays} onChange={set('leadTimeDays')} />

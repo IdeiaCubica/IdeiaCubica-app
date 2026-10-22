@@ -2,6 +2,21 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.5.1 — 22/10/2026
+
+### Correção: preço por kg 1.000× maior
+- **Cadastro de insumo** controlado em gramas (que não é filamento): o “Preço de referência” pedia R$ por **grama**, mas o sistema
+  mostra R$/kg; um preço de pacote digitado ali virava 1.000× maior (ex.: 75,58 → R$ 75.580/kg). Agora todo insumo em gramas
+  tem o preço digitado em **R$/kg**, com aviso quando o valor está fora do normal.
+- **Lançar estoque inicial**: o custo era pedido por grama. Agora é o **valor total pago** pela quantidade (padrão), ou R$/kg,
+  com a prévia do custo por kg antes de salvar e aviso de valor fora do normal.
+- Lotes mostram o custo em R$/kg para materiais em gramas.
+
+### Corrigir e excluir lançamentos de estoque
+- Estoque inicial ainda não usado: **Editar lançamento** (quantidade, valor, data, lote) e **Excluir lançamento**.
+- Peças prontas cadastradas à mão: editar tudo ou excluir enquanto não houver venda, baixa, separação ou orçamento;
+  peças produzidas: editar descrição, local, preço previsto e observações.
+
 ## v1.5.0 — 22/10/2026
 
 ### Orçamentos com várias peças

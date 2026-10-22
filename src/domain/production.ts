@@ -401,6 +401,57 @@ export function registerFinishedGood(db: DB, input: {
   return fg;
 }
 
+/** Peças sem venda, baixa ou separação podem ter quantidade/custo corrigidos ou ser excluídas. */
+export function isUntouchedFinishedGood(db: DB, fgId: ID) {
+  const fg = byId(db.finishedGoods, fgId, 'Peça pronta');
+  return !db.sales.some((s) => s.finishedGoodId === fgId && s.status === 'ativa') && fg.adjustments.length === 0 && !(fg.allocations ?? []).length
+    && !db.quotes.some((q) => q.versions.some((v) => v.items.some((it) => it.finishedGoodId === fgId)));
+}
+
+/**
+ * Corrige peças prontas. Descrição, local, preço previsto e observações sempre podem mudar;
+ * quantidade, custo e data só em peças cadastradas à mão e ainda não movimentadas
+ * (as produzidas vêm do consumo real da produção).
+ */
+export function updateFinishedGood(db: DB, fgId: ID, input: {
+  description: string; location?: string; suggestedPrice?: string | null; notes?: string; qty?: number; unitCost?: string | null; producedAt?: string;
+}) {
+  const fg = byId(db.finishedGoods, fgId, 'Peça pronta');
+  const description = requireText(input.description, 'a descrição da peça');
+  if (input.suggestedPrice) assert(D(input.suggestedPrice).gte(0), 'O preço não pode ser negativo.');
+  const changesCore = (input.qty !== undefined && input.qty !== fg.qtyProduced)
+    || (input.unitCost !== undefined && (input.unitCost ?? null) !== fg.unitCost)
+    || (input.producedAt !== undefined && input.producedAt !== fg.producedAt);
+  if (changesCore) {
+    assert(!fg.orderId, 'Quantidade, custo e data de peças produzidas vêm da produção e não podem ser alterados aqui.');
+    assert(isUntouchedFinishedGood(db, fgId), 'Estas peças já foram vendidas, baixadas ou orçadas. Use “Dar baixa” para corrigir a quantidade.');
+    if (input.qty !== undefined) { assert(Number.isInteger(input.qty) && input.qty > 0, 'Quantidade deve ser um inteiro maior que zero.'); fg.qtyProduced = input.qty; }
+    if (input.unitCost !== undefined) {
+      const c = input.unitCost ? D(input.unitCost) : null;
+      if (c) assert(!c.isNegative(), 'Custo não pode ser negativo.');
+      fg.unitCost = c ? c.toString() : null;
+      fg.costStatus = c ? 'estimado' : 'pendente';
+    }
+    if (input.producedAt !== undefined) { assert(/^\d{4}-\d{2}-\d{2}$/.test(input.producedAt), 'Informe a data de produção.'); fg.producedAt = input.producedAt; }
+  }
+  Object.assign(fg, { description, location: input.location?.trim() || undefined, suggestedPrice: input.suggestedPrice || null, notes: input.notes });
+  audit(db, 'Peças prontas alteradas', `${fg.code} ${description}`);
+  return fg;
+}
+
+/** Exclui peças lançadas por engano (sem venda, baixa, separação ou orçamento). */
+export function deleteFinishedGood(db: DB, fgId: ID, reason: string) {
+  const fg = byId(db.finishedGoods, fgId, 'Peça pronta');
+  const why = requireText(reason, 'o motivo da exclusão');
+  assert(isUntouchedFinishedGood(db, fgId), 'Estas peças já foram vendidas, baixadas, separadas ou orçadas e não podem ser excluídas. Use “Dar baixa”.');
+  if (fg.orderId) {
+    const o = db.orders.find((x) => x.id === fg.orderId);
+    if (o) o.finishedGoodId = undefined;
+  }
+  db.finishedGoods = db.finishedGoods.filter((x) => x.id !== fgId);
+  audit(db, 'Peças prontas excluídas', `${fg.code} ${fg.description} — ${why}`);
+}
+
 export function finishedGoodBalance(db: DB, fgId: ID) {
   const fg = byId(db.finishedGoods, fgId, 'Peça pronta');
   const sold = db.sales.filter((s) => s.finishedGoodId === fgId && s.status === 'ativa').reduce((a, s) => a + s.qty, 0);

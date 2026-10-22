@@ -6,10 +6,10 @@ import { useState } from 'react';
 import { useStore } from '../store';
 import { navigate } from '../App';
 import type { FinishedGood } from '../../domain/types';
-import { daysInStock, finishedGoodBalance, quoteFromFinishedGood, registerFinishedGood, writeOffFinishedGood } from '../../domain/production';
+import { daysInStock, deleteFinishedGood, finishedGoodBalance, isUntouchedFinishedGood, quoteFromFinishedGood, registerFinishedGood, updateFinishedGood, writeOffFinishedGood } from '../../domain/production';
 import { fmtDuration } from '../../domain/conversions';
 import { fmtDate, todayISO } from '../../domain/core';
-import { D, ZERO, fmtBRL, fmtNum } from '../../domain/money';
+import { D, ZERO, fmtBRL, fmtNum, toInputBR } from '../../domain/money';
 import { Badge, Check, Combobox, DateField, Empty, Field, Kpi, Modal, NumField, SelectField, TextArea, TextField, dec, num, useConfirm, useForm, type Tone } from '../components/ui';
 import { SaleForm } from './Financeiro';
 
@@ -41,6 +41,12 @@ export function PecasProntas() {
   const writeOff = async (g: FinishedGood) => {
     const reason = await confirm({ title: `Dar baixa em 1 peça de ${g.code}?`, danger: true, confirmLabel: 'Dar baixa', reasonLabel: 'Motivo (avaria, brinde, uso próprio…)', text: 'Use para peças que saíram sem venda. Para várias peças, repita.' });
     if (reason) run((d) => writeOffFinishedGood(d, g.id, 1, reason), 'Baixa registrada.');
+  };
+  const [editing, setEditing] = useState<FinishedGood | null>(null);
+  const remove = async (g: FinishedGood) => {
+    const reason = await confirm({ title: `Excluir ${g.code} · ${g.description}?`, danger: true, confirmLabel: 'Excluir', reasonLabel: 'Motivo',
+      text: 'Use para lançamentos feitos por engano. As peças saem do estoque (fica registrado na auditoria). O material consumido na produção não volta.' });
+    if (reason) run((d) => deleteFinishedGood(d, g.id, reason), 'Peças excluídas do estoque.');
   };
   const margin = sum.potential.gt(0) ? sum.potential.minus(sum.invested).div(sum.potential) : null;
   return (
@@ -90,6 +96,10 @@ export function PecasProntas() {
                         <button className="btn secondary sm" onClick={() => setSelling(g)}>Vender direto</button>
                         <button className="btn ghost sm" onClick={() => writeOff(g)}>Dar baixa</button>
                       </>}
+                      <div className="row" style={{ gap: 6 }}>
+                        <button className="btn ghost sm" onClick={() => setEditing(g)}>Editar</button>
+                        {isUntouchedFinishedGood(db, g.id) && <button className="btn ghost sm danger-text" onClick={() => remove(g)}>Excluir</button>}
+                      </div>
                     </div>
                   </article>
                 );
@@ -101,6 +111,7 @@ export function PecasProntas() {
       {selling && <SaleForm preset={{ finishedGoodId: selling.id }} onClose={() => setSelling(null)} />}
       {quoting && <QuoteFromStock fg={quoting} onClose={() => setQuoting(null)} />}
       {adding && <FinishedGoodForm onClose={() => setAdding(false)} />}
+      {editing && <FinishedGoodForm fg={editing} onClose={() => setEditing(null)} />}
       {confirmEl}
     </>
   );
@@ -130,22 +141,32 @@ function QuoteFromStock({ fg, onClose }: { fg: FinishedGood; onClose: () => void
   );
 }
 
-function FinishedGoodForm({ onClose }: { onClose: () => void }) {
+function FinishedGoodForm({ onClose, fg }: { onClose: () => void; fg?: FinishedGood }) {
   const { db, run } = useStore();
-  const [f, set] = useForm({ description: '', projectId: '', qty: '1', unitCost: '', suggestedPrice: '', producedAt: todayISO(), location: '', notes: '' });
-  const submit = () => run((d) => registerFinishedGood(d, {
-    description: f.description, projectId: f.projectId || undefined, qty: num(f.qty) ?? 0, unitCost: dec(f.unitCost), suggestedPrice: dec(f.suggestedPrice),
-    producedAt: f.producedAt, location: f.location, notes: f.notes,
-  }), 'Peças cadastradas no estoque.').then((r) => r.ok && onClose());
+  const editing = !!fg;
+  // Quantidade, custo e data: só em peças cadastradas à mão e ainda não movimentadas.
+  const coreEditable = !fg || (!fg.orderId && isUntouchedFinishedGood(db, fg.id));
+  const [f, set] = useForm({
+    description: fg?.description ?? '', projectId: fg?.projectId ?? '', qty: fg ? String(fg.qtyProduced) : '1',
+    unitCost: fg?.unitCost ? toInputBR(fg.unitCost, 4) : '', suggestedPrice: fg?.suggestedPrice ? toInputBR(fg.suggestedPrice) : '',
+    producedAt: fg?.producedAt ?? todayISO(), location: fg?.location ?? '', notes: fg?.notes ?? '',
+  });
+  const submit = () => run((d) => (editing
+    ? updateFinishedGood(d, fg!.id, { description: f.description, location: f.location, suggestedPrice: dec(f.suggestedPrice), notes: f.notes,
+      ...(coreEditable ? { qty: num(f.qty) ?? 0, unitCost: dec(f.unitCost), producedAt: f.producedAt } : {}) })
+    : registerFinishedGood(d, {
+      description: f.description, projectId: f.projectId || undefined, qty: num(f.qty) ?? 0, unitCost: dec(f.unitCost), suggestedPrice: dec(f.suggestedPrice),
+      producedAt: f.producedAt, location: f.location, notes: f.notes,
+    })), editing ? 'Peças atualizadas.' : 'Peças cadastradas no estoque.').then((r) => r.ok && onClose());
   return (
-    <Modal title="Cadastrar peças prontas já existentes" subtitle="Para peças produzidas antes de usar o sistema. Não movimenta o estoque de materiais." onClose={onClose}
-      footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={submit}>Cadastrar</button></>}>
+    <Modal title={editing ? `Editar ${fg!.code}` : 'Cadastrar peças prontas já existentes'} subtitle={editing ? (coreEditable ? 'Cadastro manual ainda não movimentado: tudo pode ser corrigido.' : 'Quantidade, custo e data vêm da produção ou já tiveram movimento; o restante pode ser alterado.') : 'Para peças produzidas antes de usar o sistema. Não movimenta o estoque de materiais.'} onClose={onClose}
+      footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={submit}>{editing ? 'Salvar' : 'Cadastrar'}</button></>}>
       <div className="grid g2">
         <TextField label="Peça / descrição" required value={f.description} onChange={set('description')} />
-        <SelectField label="Projeto" value={f.projectId} onChange={set('projectId')} placeholder="— nenhum —" options={db.projects.map((p) => ({ value: p.id, label: p.name }))} />
-        <NumField label="Quantidade" required value={f.qty} onChange={set('qty')} />
-        <DateField label="Data de produção" required value={f.producedAt} onChange={set('producedAt')} />
-        <NumField label="Custo unitário de fabricação" suffix="R$" value={f.unitCost} onChange={set('unitCost')} hint="Estimado. Vazio = margem pendente na venda." />
+        {!editing && <SelectField label="Projeto" value={f.projectId} onChange={set('projectId')} placeholder="— nenhum —" options={db.projects.map((p) => ({ value: p.id, label: p.name }))} />}
+        <NumField label="Quantidade" required value={f.qty} onChange={set('qty')} disabled={!coreEditable} />
+        <DateField label="Data de produção" required value={f.producedAt} onChange={coreEditable ? set('producedAt') : () => undefined} />
+        <NumField label="Custo unitário de fabricação (por peça)" suffix="R$" value={f.unitCost} onChange={set('unitCost')} disabled={!coreEditable} hint="Custo de UMA peça. Vazio = margem pendente na venda." />
         <NumField label="Valor previsto de venda" suffix="R$" value={f.suggestedPrice} onChange={set('suggestedPrice')} />
         <TextField label="Local de armazenamento" value={f.location} onChange={set('location')} placeholder="Ex.: prateleira A" />
       </div>

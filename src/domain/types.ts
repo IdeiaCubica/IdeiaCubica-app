@@ -145,12 +145,36 @@ export interface PaymentTerms {
   intervalDays: number;
 }
 
+/**
+ * Equipamento comprado (impressora, ferramenta durável): é investimento, não
+ * entra no estoque de insumos nem vira custo direto; a impressora entra no
+ * custo das peças pela depreciação por hora.
+ */
+export interface PurchaseEquipment {
+  id: ID;
+  description: string;
+  qty: number;
+  /** Valor total da mercadoria (sem frete). */
+  price: DecStr;
+  /** Frete e outros custos atribuídos pelo rateio. */
+  freight: DecStr;
+  other: DecStr;
+  /** Custo total de aquisição = mercadoria + frete + outros. */
+  total: DecStr;
+  printerId?: ID;
+  /** A impressora foi cadastrada por esta compra. */
+  printerCreated?: boolean;
+  /** Valor de aquisição anterior da impressora existente (para estorno). */
+  prevAcquisition?: DecStr | null;
+}
+
 export interface Purchase {
   id: ID;
   number: string;
   date: ISODate;
   supplierId?: ID;
   items: PurchaseItem[];
+  equipment?: PurchaseEquipment[];
   freight: DecStr;
   otherCosts: DecStr;
   total: DecStr;

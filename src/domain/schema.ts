@@ -18,6 +18,7 @@ export const SYS_FIN = {
   vendaProdutos: 'Venda de produtos',
   taxasVenda: 'Taxas e comissões de venda',
   freteVenda: 'Frete de vendas',
+  equipamentos: 'Impressoras e equipamentos',
 } as const;
 
 export function createEmptyDB(): DB {
@@ -67,7 +68,7 @@ export function createEmptyDB(): DB {
       fin('Contabilidade', 'out', 'despesa_fixa'),
       fin('Energia elétrica', 'out', 'despesa_fixa'),
       fin('Manutenção de equipamentos', 'out', 'despesa_fixa'),
-      fin('Impressoras e equipamentos', 'out', 'investimento'),
+      fin(SYS_FIN.equipamentos, 'out', 'investimento', true),
       fin('Retirada dos sócios', 'out', 'retirada'),
       fin('Outras despesas', 'out', 'outros'),
     ],

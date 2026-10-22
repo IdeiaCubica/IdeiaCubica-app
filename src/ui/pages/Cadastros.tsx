@@ -173,13 +173,14 @@ function MaterialDetail({ material, onClose, onEdit }: { material: Material; onC
   );
 }
 
-function MaterialForm({ material, onClose, onSave }: { material?: Material; onClose: () => void; onSave: (v: Parameters<typeof saveMaterial>[1], id?: string) => void }) {
+export function MaterialForm({ material, onClose, onSave }: { material?: Material; onClose: () => void; onSave: (v: Parameters<typeof saveMaterial>[1], id?: string) => void }) {
   const { db } = useStore();
   const fil = material?.filament;
   const initialIsFil = material ? material.unit === 'g' && !!fil : true;
   const [f, set] = useForm({
     code: material?.code ?? '', name: material?.name ?? '', categoryId: material?.categoryId ?? db.categories.find((c) => c.isFilament)?.id ?? '',
-    unit: material?.unit ?? 'g', active: material?.active ?? true, brandId: material?.brandId ?? '', manufacturerId: material?.manufacturerId ?? '',
+    // Filamento é sempre em gramas; para os demais insumos o padrão é unidade.
+    unit: material?.unit ?? 'un', active: material?.active ?? true, brandId: material?.brandId ?? '', manufacturerId: material?.manufacturerId ?? '',
     materialType: fil?.materialType ?? 'PLA', color: fil?.color ?? '', colorHex: fil?.colorHex ?? '#0d1925',
     netWeightG: toInputBR(fil?.netWeightG ?? null), spoolWeightG: toInputBR(fil?.spoolWeightG ?? null),
     // Filamento: preço digitado em R$/kg e gravado em R$/g.

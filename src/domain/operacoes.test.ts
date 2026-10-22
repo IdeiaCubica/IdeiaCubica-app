@@ -75,6 +75,60 @@ describe('Compras', () => {
     expect(accountBalance(db, accountId).toString()).toBe('1000');
   });
 
+  it('compra de insumos gerais (etiquetas, embalagens) entra no estoque com custo por unidade', () => {
+    const cat = db.categories.find((c) => c.name === 'Etiquetas')!;
+    const etq = saveMaterial(db, { name: 'Etiqueta 5×3 cm', categoryId: cat.id, unit: 'un', active: true }).id;
+    const cx = saveMaterial(db, { name: 'Caixa 20×15×10', categoryId: db.categories.find((c) => c.name === 'Caixas e embalagens')!.id, unit: 'un', active: true }).id;
+    const p = registerPurchase(db, {
+      date: '2026-02-01', items: [{ materialId: etq, qty: 500, price: '40' }, { materialId: cx, qty: 50, price: '60' }], freight: '10', otherCosts: '0',
+      payment: { mode: 'avista', accountId, installments: 1, firstDue: '2026-02-01', intervalDays: 30 },
+    });
+    // Frete rateado pelo valor: 4,00 nas etiquetas e 6,00 nas caixas
+    expect(db.lots.find((l) => l.id === p.items[0].lotId)!.unitCost).toBe('0.088'); // (40 + 4) / 500
+    expect(db.lots.find((l) => l.id === p.items[1].lotId)!.unitCost).toBe('1.32'); // (60 + 6) / 50
+    expect(lotBalance(db, p.items[1].lotId).physical.toString()).toBe('50');
+  });
+
+  it('compra de impressora: investimento separado, cadastra a impressora com o custo de aquisição e não entra no estoque', () => {
+    const p = registerPurchase(db, {
+      date: '2026-02-01', items: [{ materialId: filamentId, qty: 1000, price: '100' }],
+      equipment: [{ description: 'Bambu Lab A1', qty: 1, price: '4700', printer: { mode: 'nova', name: 'A1 nº 2', manufacturer: 'Bambu Lab', model: 'A1' } }],
+      freight: '96', otherCosts: '0', payment: { mode: 'aprazo', installments: 2, firstDue: '2026-03-01', intervalDays: 30 },
+    });
+    // Frete 96 rateado por valor: 100/4800 → 2,00 no filamento; 94,00 na impressora
+    const eq = p.equipment![0];
+    expect([eq.freight, eq.total]).toEqual(['94', '4794']);
+    expect(db.lots.find((l) => l.id === p.items[0].lotId)!.unitCost).toBe('0.102');
+    const printer = db.printers.find((x) => x.id === eq.printerId)!;
+    expect(printer.acquisitionValue).toBe('4794');
+    expect(db.lots).toHaveLength(1); // impressora não vira lote de estoque
+    const titles = db.titles.filter((t) => t.origin.id === p.id);
+    const byCat = (name: string) => titles.filter((t) => db.finCategories.find((c) => c.id === t.categoryId)!.name === name).map((t) => t.amount);
+    expect(byCat('Compra de insumos')).toEqual(['51', '51']);
+    expect(byCat('Impressoras e equipamentos')).toEqual(['2397', '2397']);
+    expect(p.total).toBe('4896');
+    // Investimento não é despesa do resultado
+    expect(managementResult(db, '2026-02-01', '2026-02-28').fixed.toString()).toBe('0');
+    // Cancelar remove a impressora cadastrada pela compra
+    cancelPurchase(db, p.id, 'teste');
+    expect(db.printers.find((x) => x.id === eq.printerId)).toBeUndefined();
+  });
+
+  it('compra vinculada a impressora existente atualiza o valor de aquisição (e o cancelamento restaura)', () => {
+    const pr = savePrinter(db, { name: 'A1', manufacturer: 'Bambu Lab', model: 'A1', acquisitionValue: null, residualValue: null, usefulLifeHours: 6000,
+      initialHours: 0, energyMode: 'medido', kwhPerHour: '0.095', maintenancePerHour: '0.2', availableHoursPerMonth: 300, active: true });
+    const p = registerPurchase(db, { date: '2026-02-01', items: [], equipment: [{ description: 'A1', qty: 1, price: '4769.10', printer: { mode: 'existente', printerId: pr.id } }],
+      freight: '0', otherCosts: '0', payment: { mode: 'avista', accountId, installments: 1, firstDue: '2026-02-01', intervalDays: 30 } });
+    expect(pr.acquisitionValue).toBe('4769.1');
+    expect(accountBalance(db, accountId).toString()).toBe('-3769.1');
+    expect(() => registerPurchase(db, { date: '2026-02-01', items: [], equipment: [{ description: 'x', qty: 2, price: '10', printer: { mode: 'existente', printerId: pr.id } }],
+      freight: '0', otherCosts: '0', payment: { mode: 'avista', accountId, installments: 1, firstDue: '2026-02-01', intervalDays: 30 } })).toThrow(/quantidade 1/);
+    const t = db.titles.find((x) => x.origin.id === p.id)!;
+    reverseSettlement(db, t.id, t.settlements[0].id, 'teste');
+    cancelPurchase(db, p.id, 'teste');
+    expect(pr.acquisitionValue).toBeNull();
+  });
+
   it('cancelamento de compra exige estorno do pagamento e gera devolução rastreável', () => {
     const p = buyCash();
     expect(() => cancelPurchase(db, p.id, 'erro')).toThrow(/Estorne/);

@@ -393,3 +393,9 @@ details.params-details[open] > summary { border-bottom: 1px solid var(--border);
 .kb-arrows { display: flex; flex-direction: column; justify-content: center; gap: 2px; padding: 6px 4px; border-left: 1px solid rgb(13 25 37 / 0.08); }
 .kb-arrows .btn { padding: 4px 8px; min-height: 0; }
 @media (max-width: 1100px) { .kanban { grid-template-columns: repeat(4, minmax(250px, 80vw)); } }
+
+/* ---------------- Compras ---------------- */
+.seg { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.link-btn { all: unset; cursor: pointer; color: var(--ic-tecnologia); font-weight: 600; }
+.link-btn:hover { text-decoration: underline; }
+.link-btn:focus-visible { outline: 2px solid var(--ic-tecnologia); outline-offset: 2px; border-radius: 4px; }

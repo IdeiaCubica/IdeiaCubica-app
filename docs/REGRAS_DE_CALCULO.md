@@ -11,6 +11,11 @@ financeiros; custos unitários (R$/g) mantêm precisão total.
 - **Rateio** de frete/outros entre itens de uma compra: proporcional ao valor da mercadoria; o resíduo de centavos vai ao último item
   (a soma sempre fecha). Sem valor de mercadoria, rateio igualitário.
 - O custo fica gravado no lote e **nunca é alterado**.
+- Vale para qualquer insumo (filamento em g; etiquetas, caixas etc. na unidade cadastrada). Ex.: 500 etiquetas por R$ 40
+  com R$ 0,08 de frete atribuído = R$ 40,08 ÷ 500 = **R$ 0,08016/un**.
+- **Equipamentos** (impressora, ferramenta durável) participam do rateio de frete, mas não geram lote nem estoque:
+  custo total = mercadoria + frete + outros atribuídos, lançado como investimento ("Impressoras e equipamentos"), fora do
+  resultado do mês. Impressora vinculada recebe esse custo total como **valor de aquisição** (base da depreciação por hora).
 
 ### Política de preço do filamento no orçamento (`quotes.ts → materialCostPolicy`)
 

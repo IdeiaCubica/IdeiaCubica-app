@@ -2,6 +2,18 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.3.0 — 21/10/2026
+
+### Compras da empresa
+- O módulo Compras agora registra **todas as compras**: insumos de qualquer categoria (filamento, etiquetas, embalagens,
+  cola, lixas…) e **equipamentos** (impressora, ferramentas duráveis).
+- Insumos vão para o estoque com custo por unidade; dá para **cadastrar um insumo novo dentro da própria compra**.
+- Equipamento é **investimento**: não entra no estoque nem como despesa do mês. Impressora pode ser cadastrada pela compra
+  (o custo total, com frete rateado, vira o valor de aquisição) ou atualizar o valor de uma impressora já cadastrada.
+- Frete e outros custos são rateados por valor entre todos os itens; o financeiro separa os títulos em “Compra de insumos”
+  e “Impressoras e equipamentos”. Cancelar a compra desfaz estoque, títulos e a impressora (se não tiver uso).
+- Novo insumo que não é filamento já começa na unidade “un”.
+
 ## v1.2.0 — 21/10/2026
 
 ### Frete por orçamento

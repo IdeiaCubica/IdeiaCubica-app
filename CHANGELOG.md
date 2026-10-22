@@ -2,6 +2,12 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.0.1 — 21/10/2026
+
+### Ajustes visuais
+- Logo maior na barra superior e na tela de login: novo arquivo do símbolo oficial recortado no contorno
+  (`public/brand/simbolo_recortado_fundo_escuro.svg`), sem a margem interna que o deixava pequeno.
+
 ## v1.0.0 — 20/10/2026
 
 Primeira versão publicada (Supabase + Vercel).

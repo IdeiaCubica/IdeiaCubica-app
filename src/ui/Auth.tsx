@@ -21,7 +21,7 @@ function Shell({ children }: { children: ReactNode }) {
     <div className="auth-page">
       <div className="auth-card card">
         <div className="auth-brand">
-          <img src="/brand/09_icone_simbolo_fundo_escuro.svg" alt="" />
+          <img src="/brand/simbolo_recortado_fundo_escuro.svg" alt="" />
           <div><b>ideia cúbica</b><span>GESTÃO 3D</span></div>
         </div>
         <div className="card-body stack">{children}</div>

@@ -72,7 +72,7 @@ export function App() {
     <>
       <header className="topbar">
         <a className="brand" href="#/painel">
-          <img src="/brand/09_icone_simbolo_fundo_escuro.svg" alt="" />
+          <img src="/brand/simbolo_recortado_fundo_escuro.svg" alt="" />
           <div><b>ideia cúbica</b><span>GESTÃO 3D</span></div>
         </a>
         <div className="storage" title={repo.description}>

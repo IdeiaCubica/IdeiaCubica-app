@@ -50,7 +50,7 @@
   --shadow-card: 0 1px 2px rgb(13 25 37 / 0.06), 0 2px 6px rgb(13 25 37 / 0.07);
   --shadow-overlay: 0 14px 40px rgb(13 25 37 / 0.22);
 
-  --topbar-h: 76px;
+  --topbar-h: 88px;
   --control-h: 46px;
 }
 
@@ -72,9 +72,9 @@ a { color: var(--ic-tecnologia); }
 /* ---------- Shell ---------- */
 .topbar { position: sticky; top: 0; z-index: 30; background: var(--ic-escuro); border-bottom: 3px solid var(--ic-ideia); height: var(--topbar-h); display: flex; align-items: center; gap: 16px; padding: 0 28px; }
 .topbar .brand { display: flex; align-items: center; gap: 14px; color: #fff; text-decoration: none; }
-.topbar .brand img { height: 52px; width: 52px; border-radius: 12px; }
-.topbar .brand b { font-size: 27px; font-weight: 600; letter-spacing: -0.8px; line-height: 1.1; }
-.topbar .brand span { display: block; font-size: 11px; font-weight: 700; letter-spacing: 0.5em; color: var(--ic-ideia); margin-top: 1px; }
+.topbar .brand img { height: 62px; width: auto; }
+.topbar .brand b { font-size: 32px; font-weight: 600; letter-spacing: -1px; line-height: 1.05; }
+.topbar .brand span { display: block; font-size: 12px; font-weight: 700; letter-spacing: 0.5em; color: var(--ic-ideia); margin-top: 3px; }
 .topbar .storage { margin-left: auto; color: var(--n-300); font-size: 14px; display: flex; align-items: center; gap: 8px; text-align: right; }
 .topbar .storage i { width: 10px; height: 10px; border-radius: 50%; background: var(--ic-ideia); display: inline-block; flex-shrink: 0; }
 .topbar .storage i.cloud { background: #3ecf8e; }
@@ -85,10 +85,10 @@ a { color: var(--ic-tecnologia); }
 /* ---------- Login ---------- */
 .auth-page { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px 16px; background: var(--ic-escuro); background-image: radial-gradient(circle at 20% 10%, rgb(252 180 20 / 0.12), transparent 40%); }
 .auth-card { width: 100%; max-width: 440px; overflow: hidden; }
-.auth-brand { display: flex; align-items: center; gap: 14px; padding: 24px 26px; background: var(--ic-escuro); border-bottom: 3px solid var(--ic-ideia); color: #fff; }
-.auth-brand img { width: 52px; height: 52px; border-radius: 12px; }
-.auth-brand b { font-size: 27px; font-weight: 600; letter-spacing: -0.8px; display: block; line-height: 1.1; }
-.auth-brand span { font-size: 11px; font-weight: 700; letter-spacing: 0.5em; color: var(--ic-ideia); }
+.auth-brand { display: flex; align-items: center; justify-content: center; gap: 18px; padding: 30px 26px; background: var(--ic-escuro); border-bottom: 3px solid var(--ic-ideia); color: #fff; }
+.auth-brand img { height: 92px; width: auto; }
+.auth-brand b { font-size: 38px; font-weight: 600; letter-spacing: -1.2px; display: block; line-height: 1.05; }
+.auth-brand span { display: block; font-size: 13px; font-weight: 700; letter-spacing: 0.5em; color: var(--ic-ideia); margin-top: 4px; }
 .auth-card form .btn { width: 100%; }
 
 .layout { display: flex; min-height: calc(100vh - var(--topbar-h)); }
@@ -330,11 +330,13 @@ details.params-details[open] > summary { border-bottom: 1px solid var(--border);
   main { padding: 32px 32px 80px; }
 }
 @media (max-width: 860px) {
-  :root { --topbar-h: 64px; }
+  :root { --topbar-h: 72px; }
   h1 { font-size: 28px; }
   .topbar { padding: 0 16px; }
-  .topbar .brand img { height: 42px; width: 42px; }
-  .topbar .brand b { font-size: 22px; }
+  .topbar .brand img { height: 52px; width: auto; }
+  .topbar .brand b { font-size: 25px; }
+  .auth-brand img { height: 72px; }
+  .auth-brand b { font-size: 30px; }
   .layout { flex-direction: column; }
   .sidenav { width: auto; padding: 8px 12px; border-right: 0; border-bottom: 1px solid var(--border); overflow-x: auto; }
   .sidenav nav { flex-direction: row; position: static; }

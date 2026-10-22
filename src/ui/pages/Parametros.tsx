@@ -138,10 +138,10 @@ function Gerais() {
       </div>
 
       <div className="card">
-        <div className="card-head"><div><h2>Envios (frete)</h2><p className="muted small">Origem e embalagem padrão usadas para calcular o frete no orçamento.</p></div></div>
+        <div className="card-head"><div><h2>Envios (frete)</h2><p className="muted small">Padrões que preenchem cada novo orçamento. Em cada orçamento você pode trocar o CEP de saída e a caixa da peça.</p></div></div>
         <div className="card-body stack">
-          <AddressFields value={origin} onChange={setOrigin} title="Endereço de origem dos envios" />
-          <p className="section-title">Embalagem padrão</p>
+          <AddressFields value={origin} onChange={setOrigin} title="Endereço padrão de saída" />
+          <p className="section-title">Caixa padrão (sugestão para novos orçamentos)</p>
           <div className="grid g4">
             <NumField label="Comprimento" suffix="cm" value={f.boxLength} onChange={set('boxLength')} />
             <NumField label="Largura" suffix="cm" value={f.boxWidth} onChange={set('boxWidth')} />

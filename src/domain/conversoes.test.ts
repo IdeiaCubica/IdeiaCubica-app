@@ -61,6 +61,22 @@ describe('Pacote para frete', () => {
     expect(r.piecesG).toBe(136.5);
     expect(r.pkg).toEqual({ weightKg: 0.217, lengthCm: 20, widthCm: 15, heightCm: 10 });
   });
+  it('cada orçamento tem a sua caixa e CEP de saída; novo orçamento parte do padrão', () => {
+    const db = createEmptyDB();
+    db.settings.shippingBox = { lengthCm: 20, widthCm: 15, heightCm: 10, packagingWeightG: 80 };
+    db.settings.companyAddress = { cep: '01001-000' };
+    db.materials.push({ id: 'f', unit: 'g' } as never);
+    const input = emptyQuoteInput(db.settings);
+    expect(input.shipping).toEqual({ originCep: '01001000', destCep: null, lengthCm: 20, widthCm: 15, heightCm: 10, packagingWeightG: 80 });
+    input.materials = [{ materialId: 'f', qtyPerUnit: 300 }];
+    input.shipping = { ...input.shipping!, lengthCm: 30, widthCm: 30, heightCm: 25, packagingWeightG: 150 };
+    expect(quotePackage(db, input).pkg).toEqual({ weightKg: 0.45, lengthCm: 30, widthCm: 30, heightCm: 25 });
+    // Mudar o padrão depois não altera a caixa já escolhida no orçamento
+    db.settings.shippingBox = { lengthCm: 10, widthCm: 10, heightCm: 10, packagingWeightG: 20 };
+    expect(quotePackage(db, input).pkg!.lengthCm).toBe(30);
+    // Orçamento antigo, sem caixa própria, usa o padrão atual
+    expect(quotePackage(db, { ...input, shipping: undefined }).pkg!.lengthCm).toBe(10);
+  });
   it('aponta o que falta', () => {
     const r = quotePackage(createEmptyDB(), { quantity: 1, materials: [] });
     expect(r.pkg).toBeNull();

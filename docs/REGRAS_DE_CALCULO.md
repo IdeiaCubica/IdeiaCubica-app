@@ -126,7 +126,8 @@ Exemplo (sem taxas): custo R$ 50, markup 100% → preço R$ 100, lucro R$ 50, ma
 ## 6a. Frete — `shipping.ts`
 
 - Peso do pacote = Σ peso de filamento por peça × quantidade + peso da embalagem, em kg arredondado para cima (3 casas),
-  com as medidas da caixa padrão. É estimativa (suportes removidos pesam menos). “Empresa paga” lança o valor cotado como
+  com as medidas da caixa **do orçamento** (novo orçamento copia a caixa e o CEP de saída padrão; orçamentos anteriores à v1.2
+  usam o padrão atual). É estimativa (suportes removidos pesam menos). “Empresa paga” lança o valor cotado como
   frete pago pela empresa no custo do pedido.
 
 ## 7. Financeiro — `finance.ts` e `sales.ts`

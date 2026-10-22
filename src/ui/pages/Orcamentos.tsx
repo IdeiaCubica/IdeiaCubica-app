@@ -1,7 +1,7 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useStore } from '../store';
 import { navigate } from '../App';
-import type { DB, Quote, QuoteExtraLine, QuoteInput, QuoteStatus, RoundingRule } from '../../domain/types';
+import type { DB, Quote, QuoteExtraLine, QuoteInput, QuoteShipping, QuoteStatus, RoundingRule } from '../../domain/types';
 import { emptyQuoteInput, evaluateQuote, latestVersion, materialCostPolicy, perHour, resolveParams, saveQuote, setQuoteStatus, type QuoteEvaluation } from '../../domain/quotes';
 import { isLockedComponent, laborTotals, type CompStatus, type CostComponent } from '../../domain/costing';
 import { ROUNDING_LABEL } from '../../domain/pricing';
@@ -14,7 +14,8 @@ import { parseStl } from '../../io/stl';
 import { compressImage } from '../image';
 import { Alert, Badge, Combobox, DecField, Empty, Field, InlineDec, PageHead, SelectField, TextField, TimeField, useConfirm, type Tone } from '../components/ui';
 import { perGramToPerKg } from '../../domain/conversions';
-import { quotePackage } from '../../domain/shipping';
+import { quotePackage, quoteShipping, shippingDefaults } from '../../domain/shipping';
+import { lookupCep } from '../../io/cep';
 import { fmtCep, isValidCep } from '../../domain/address';
 import { quoteFreight, type FreightOption } from '../../io/api';
 import { PartyForm, priceLabel } from './Cadastros';
@@ -340,16 +341,28 @@ function ParamsSection({ db, input, patch }: { db: DB; input: QuoteInput; patch:
 function FreightSection({ db, input, patch, customerId }: { db: DB; input: QuoteInput; patch: (p: Partial<QuoteInput>) => void; customerId: string }) {
   const { toast } = useStore();
   const customer = db.parties.find((p) => p.id === customerId);
-  const [to, setTo] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [options, setOptions] = useState<FreightOption[] | null>(null);
-  const destCep = (to || customer?.addressParts?.cep || '').replace(/\D/g, '');
-  const origin = db.settings.companyAddress?.cep?.replace(/\D/g, '') ?? '';
+  const ship = quoteShipping(db, input);
+  const setShip = (p: Partial<QuoteShipping>) => { setOptions(null); patch({ shipping: { ...ship, ...p } }); };
+  const customerCep = (customer?.addressParts?.cep ?? '').replace(/\D/g, '');
+  const destCep = (ship.destCep || customerCep).replace(/\D/g, '');
+  const origin = (ship.originCep ?? '').replace(/\D/g, '');
+  const defaults = shippingDefaults(db.settings);
+  const isDefault = (['originCep', 'lengthCm', 'widthCm', 'heightCm', 'packagingWeightG'] as const).every((k) => (ship[k] ?? null) === (defaults[k] ?? null));
+  const [originCity, setOriginCity] = useState<string | null>(null);
+  useEffect(() => {
+    setOriginCity(null);
+    if (!isValidCep(origin)) return;
+    let alive = true;
+    lookupCep(origin).then((a) => { if (alive) setOriginCity(a.city && a.state ? `${a.city}/${a.state}` : null); }).catch(() => undefined);
+    return () => { alive = false; };
+  }, [origin]);
   const { pkg, missing, piecesG } = quotePackage(db, input);
   const calc = async () => {
     setError(null); setOptions(null);
-    if (!isValidCep(origin)) return setError('Cadastre o CEP de origem em Parâmetros de Custos → Gerais → Envios.');
+    if (!isValidCep(origin)) return setError('Informe o CEP de saída (8 dígitos). O padrão fica em Parâmetros de Custos → Gerais → Envios.');
     if (!isValidCep(destCep)) return setError('Informe um CEP de destino válido (8 dígitos) ou cadastre o CEP do cliente.');
     if (!pkg) return setError(`Falta informar: ${missing.join(', ')}.`);
     setLoading(true);
@@ -365,16 +378,31 @@ function FreightSection({ db, input, patch, customerId }: { db: DB; input: Quote
     toast('success', `Frete ${o.name} (${fmtBRL(o.price)}) incluído no custo como “Frete pago pela empresa”.`);
   };
   return (
-    <Section title="5. Frete (SuperFrete)" subtitle="Cotação com o CEP do cliente, a caixa padrão e o peso das peças. Opcional.">
-      <div className="grid g3">
-        <Field label="CEP de destino" hint={customer?.addressParts?.cep && !to ? `Do cadastro de ${customer.name}` : 'Digite para cotar outro destino'}>
-          <input inputMode="numeric" value={to || (customer?.addressParts?.cep ? fmtCep(customer.addressParts.cep) : '')} placeholder="00000-000" aria-label="CEP de destino"
-            onChange={(e) => setTo(fmtCep(e.target.value))} />
+    <Section title="5. Frete (SuperFrete)" subtitle="Caixa desta peça, CEP de saída e de destino. Tudo vem do padrão e pode ser alterado só neste orçamento. Opcional.">
+      <div className="grid g2">
+        <Field label="CEP de saída" hint={!isValidCep(origin) ? <a href="#/parametros/gerais">Cadastre o endereço padrão de saída em Parâmetros → Envios</a>
+          : ship.originCep === defaults.originCep ? `Padrão da empresa${originCity ? ` · ${originCity}` : ''}` : `Alterado neste orçamento${originCity ? ` · ${originCity}` : ''}`}>
+          <input inputMode="numeric" value={fmtCep(ship.originCep ?? '')} placeholder="00000-000" aria-label="CEP de saída"
+            onChange={(e) => setShip({ originCep: e.target.value.replace(/\D/g, '').slice(0, 8) || null })} />
         </Field>
-        <Field label="Pacote estimado" hint={pkg ? `${fmtNum(piecesG)} g de peças + embalagem` : `Falta: ${missing.join(', ')}`}>
-          <div className={`readonly-value ${pkg ? '' : 'missing'}`}>{pkg ? `${fmtNum(pkg.weightKg, 3)} kg · ${pkg.lengthCm}×${pkg.widthCm}×${pkg.heightCm} cm` : 'incompleto'}</div>
+        <Field label="CEP de destino" hint={!ship.destCep && customerCep ? `Do cadastro de ${customer!.name}` : ship.destCep ? 'Digitado neste orçamento' : 'Cadastre o CEP do cliente ou digite aqui'}>
+          <input inputMode="numeric" value={fmtCep(ship.destCep || customerCep)} placeholder="00000-000" aria-label="CEP de destino"
+            onChange={(e) => setShip({ destCep: e.target.value.replace(/\D/g, '').slice(0, 8) || null })} />
+        </Field>
+      </div>
+      <p className="section-title">Caixa desta peça</p>
+      <div className="grid g4">
+        <DecField label="Comprimento" suffix="cm" value={ship.lengthCm} onChange={(v) => setShip({ lengthCm: v === null ? null : Number(v) })} />
+        <DecField label="Largura" suffix="cm" value={ship.widthCm} onChange={(v) => setShip({ widthCm: v === null ? null : Number(v) })} />
+        <DecField label="Altura" suffix="cm" value={ship.heightCm} onChange={(v) => setShip({ heightCm: v === null ? null : Number(v) })} />
+        <DecField label="Peso da embalagem" suffix="g" value={ship.packagingWeightG} onChange={(v) => setShip({ packagingWeightG: v === null ? null : Number(v) })} />
+      </div>
+      <div className="grid g3" style={{ alignItems: 'end' }}>
+        <Field label="Pacote para cotação" hint={pkg ? `${fmtNum(piecesG)} g de peças + ${fmtNum(ship.packagingWeightG ?? 0)} g de embalagem` : `Falta: ${missing.join(', ')}`}>
+          <div className={`readonly-value ${pkg ? '' : 'missing'}`}>{pkg ? `${fmtNum(pkg.weightKg, 3)} kg · ${fmtNum(pkg.lengthCm)}×${fmtNum(pkg.widthCm)}×${fmtNum(pkg.heightCm)} cm` : 'incompleto'}</div>
         </Field>
         <Field label=" "><button type="button" className="btn secondary" onClick={calc} disabled={loading}>{loading ? 'Cotando…' : 'Calcular frete'}</button></Field>
+        <Field label=" ">{!isDefault && <button type="button" className="btn ghost" onClick={() => setShip({ ...defaults, destCep: ship.destCep })}>Voltar ao padrão (saída e caixa)</button>}</Field>
       </div>
       {error && <Alert tone="warning">{error}</Alert>}
       {options && options.length > 0 && (

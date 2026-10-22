@@ -266,7 +266,7 @@ export interface Settings {
   /** Endereço de origem dos envios (CEP usado no cálculo de frete). */
   companyAddress?: AddressParts;
   /** Embalagem padrão para cotação de frete. */
-  shippingBox?: { lengthCm: number | null; widthCm: number | null; heightCm: number | null; packagingWeightG: number | null };
+  shippingBox?: ShippingBox;
 }
 
 /* ------------------------------------------------------------------ */
@@ -349,6 +349,8 @@ export interface QuoteInput {
   failureSource: 'historico' | 'manual';
   extras: QuoteExtraLine[];
   freightSubsidyPerOrder: DecStr | null;
+  /** Envio deste orçamento: caixa da peça e CEPs. Novo orçamento parte do padrão de Parâmetros → Envios. */
+  shipping?: QuoteShipping;
   development: { mode: 'nenhum' | 'diluir' | 'cobrar'; hours: number; licenseCost: DecStr | null; expectedUnits: number | null };
   channelId?: ID;
   /** Markup desejado sobre o custo total (%). */
@@ -396,6 +398,15 @@ export interface QuoteVersion {
 }
 
 export type QuoteStatus = 'rascunho' | 'enviado' | 'aprovado' | 'recusado' | 'convertido';
+export interface ShippingBox { lengthCm: number | null; widthCm: number | null; heightCm: number | null; packagingWeightG: number | null }
+
+export interface QuoteShipping extends ShippingBox {
+  /** CEP de saída (8 dígitos). */
+  originCep: string | null;
+  /** CEP de destino; vazio = CEP do cadastro do cliente. */
+  destCep: string | null;
+}
+
 export interface Quote {
   id: ID;
   number: string;

@@ -2,6 +2,14 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.2.0 — 21/10/2026
+
+### Frete por orçamento
+- Cada orçamento tem a **sua caixa** (comprimento, largura, altura e peso da embalagem) e o seu **CEP de saída**, salvos na versão do orçamento.
+- Novo orçamento já vem com o endereço padrão de saída e a caixa padrão de Parâmetros de Custos → Gerais → Envios; dá para
+  alterar só naquele orçamento e voltar ao padrão com um clique. O CEP de destino vem do cliente e também pode ser trocado.
+- O endereço de saída fica só nos dados da empresa (Supabase, protegido por login), nunca no código público.
+
 ## v1.1.1 — 21/10/2026
 
 ### Removido

@@ -13,6 +13,7 @@ import { computeCosts, type CostResult } from './costing';
 import { computePricing, type PricingResult } from './pricing';
 import { depreciationPerHour, overheadRate } from './catalog';
 import { lotLabel } from './inventory';
+import { shippingDefaults } from './shipping';
 
 /** Novo orçamento já preenchido com os padrões de Parâmetros de Custos (todos alteráveis no orçamento). */
 export function emptyQuoteInput(settings: Settings): QuoteInput {
@@ -30,6 +31,7 @@ export function emptyQuoteInput(settings: Settings): QuoteInput {
     failureSource: 'manual',
     extras: [],
     freightSubsidyPerOrder: null,
+    shipping: shippingDefaults(settings),
     development: { mode: 'nenhum', hours: 0, licenseCost: null, expectedUnits: null },
     channelId: settings.defaultChannelId ?? undefined,
     markupPct: settings.defaultMarkupPct ?? null,

@@ -183,16 +183,39 @@ export interface ReorderInfo {
   physical: Decimal;
   reserved: Decimal;
   available: Decimal;
+  /** Consumo previsto de ordens de produção abertas que AINDA NÃO reservaram material. */
+  plannedDemand: Decimal;
+  /** Disponível depois de atender as ordens abertas = disponível − demanda planejada. */
+  projected: Decimal;
   avgDailyUse: Decimal | null;
   /** Ponto de pedido = estoque mínimo + segurança + consumo médio × prazo. */
   reorderPoint: Decimal | null;
   suggestedQty: Decimal | null;
-  status: 'ok' | 'repor' | 'sem_parametros';
+  /** falta = não há material para as ordens abertas; repor = abaixo do ponto de pedido. */
+  status: 'ok' | 'repor' | 'falta' | 'sem_parametros';
   note: string;
+}
+
+/**
+ * Demanda das ordens que ainda não reservaram (planejadas / aguardando material).
+ * Ordens prontas ou em produção já estão no "reservado"; somá-las aqui contaria em dobro.
+ */
+export function unreservedDemand(db: DB, materialId: ID): Decimal {
+  let total = ZERO;
+  for (const o of db.orders) {
+    if (o.status !== 'planejada' && o.status !== 'aguardando_material') continue;
+    for (const m of o.plannedMaterials) {
+      const mid = m.materialId || db.lots.find((l) => l.id === m.lotId)?.materialId;
+      if (mid === materialId) total = total.plus(D(m.qty));
+    }
+  }
+  return total;
 }
 
 export function reorderAnalysis(db: DB, material: Material, windowDays = 90, today = todayISO()): ReorderInfo {
   const bal = materialBalance(db, material.id);
+  const plannedDemand = unreservedDemand(db, material.id);
+  const projected = bal.available.minus(plannedDemand);
   const since = addDays(today, -windowDays);
   const used = db.movements
     .filter((m) => m.materialId === material.id && (m.type === 'consumo' || m.type === 'perda') && m.date >= since && m.date <= today)
@@ -202,23 +225,35 @@ export function reorderAnalysis(db: DB, material: Material, windowDays = 90, tod
   const min = material.minStock ?? null;
   const safety = material.safetyStock ?? 0;
   const lead = material.leadTimeDays ?? null;
+  const base = { material, physical: bal.physical, reserved: bal.reserved, available: bal.available, plannedDemand, projected, avgDailyUse };
 
   if (min === null && (lead === null || !hasHistory)) {
-    return { material, ...bal, avgDailyUse, reorderPoint: null, suggestedQty: null, status: 'sem_parametros',
-      note: 'Defina estoque mínimo ou prazo de reposição para receber sugestões.' };
+    // Sem parâmetros de reposição, ainda sinaliza quando falta material para ordens abertas.
+    if (projected.isNegative()) {
+      return { ...base, reorderPoint: null, suggestedQty: projected.abs().toDecimalPlaces(2, Decimal.ROUND_UP), status: 'falta',
+        note: 'Material insuficiente para as ordens de produção abertas. Defina o estoque mínimo para receber também alertas preventivos.' };
+    }
+    return { ...base, reorderPoint: null, suggestedQty: null, status: 'sem_parametros',
+      note: 'Defina estoque mínimo ou prazo de reposição (em Cadastros → Materiais) para receber sugestões.' };
   }
   const leadUse = avgDailyUse && lead !== null ? avgDailyUse.times(lead) : ZERO;
   const reorderPoint = D(min ?? 0).plus(safety).plus(leadUse);
-  // Usa o DISPONÍVEL (já desconta reservas para produções planejadas).
-  const need = reorderPoint.minus(bal.available);
+  // Compara com o PROJETADO: disponível (já sem reservas) menos o que as ordens abertas vão consumir.
+  const need = reorderPoint.minus(projected);
   const notes: string[] = [];
-  if (!hasHistory) notes.push('Sem histórico de consumo nos últimos 90 dias; sugestão baseada apenas no mínimo.');
+  if (plannedDemand.gt(0)) notes.push(`Inclui ${plannedDemand.toString()} ${material.unit} previstos em ordens ainda não reservadas.`);
+  if (!hasHistory) notes.push('Sem histórico de consumo nos últimos 90 dias; sugestão baseada no mínimo.');
   if (lead === null) notes.push('Prazo de reposição não informado.');
-  notes.push('Não há módulo de pedidos de compra em aberto nesta versão: compras são registradas no recebimento.');
   return {
-    material, ...bal, avgDailyUse, reorderPoint,
+    ...base, reorderPoint,
     suggestedQty: need.gt(0) ? need.toDecimalPlaces(2, Decimal.ROUND_UP) : ZERO,
-    status: need.gt(0) ? 'repor' : 'ok',
+    status: projected.isNegative() ? 'falta' : need.gt(0) ? 'repor' : 'ok',
     note: notes.join(' '),
   };
+}
+
+/** Materiais ativos que precisam de compra (falta para ordens ou abaixo do ponto de pedido). */
+export function purchaseAlerts(db: DB): ReorderInfo[] {
+  return db.materials.filter((m) => m.active).map((m) => reorderAnalysis(db, m)).filter((r) => r.status === 'falta' || r.status === 'repor')
+    .sort((a, b) => (a.status === b.status ? 0 : a.status === 'falta' ? -1 : 1));
 }

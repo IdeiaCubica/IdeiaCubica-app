@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { createEmptyDB, migrate } from './schema';
 import { deleteNamed, saveMaterial, saveNamed, saveParty } from './catalog';
 import { fmtDocument, isValidCnpj, isValidCpf } from './core';
+import { fromViaCep } from './address';
 
 describe('CPF e CNPJ', () => {
   it('valida dígitos verificadores', () => {
@@ -25,14 +26,26 @@ describe('Clientes', () => {
     document: '529.982.247-25', sourceId: db.leadSources[0].id, notes: '',
   });
 
-  it('exige nome completo, endereço, telefone, CPF/CNPJ e fonte de captação', () => {
+  it('só o nome é obrigatório (cliente sem CPF, endereço ou telefone é aceito)', () => {
     const db = createEmptyDB();
-    for (const missing of ['address', 'phone', 'document', 'sourceId'] as const) {
-      expect(() => saveParty(db, { ...full(db), [missing]: '' })).toThrow();
-    }
+    expect(() => saveParty(db, { kind: 'cliente', name: '' })).toThrow(/nome/);
+    expect(saveParty(db, { kind: 'cliente', name: 'Cliente sem documento' }).document).toBeFalsy();
     const p = saveParty(db, full(db));
     expect(p.document).toBe('52998224725');
     expect(p.phone).toBe('11987654321');
+  });
+  it('endereço por partes gera a linha formatada e valida o CEP', () => {
+    const db = createEmptyDB();
+    const p = saveParty(db, { kind: 'cliente', name: 'Ana', addressParts: { cep: '01001-000', street: 'Praça da Sé', number: '100', district: 'Sé', city: 'São Paulo', state: 'sp' } });
+    expect(p.address).toBe('Praça da Sé, 100 — Sé — São Paulo/SP — CEP 01001-000');
+    expect(p.addressParts!.cep).toBe('01001000');
+    expect(() => saveParty(db, { kind: 'cliente', name: 'Bia', addressParts: { cep: '123' } })).toThrow(/CEP/);
+  });
+  it('converte a resposta do ViaCEP e reconhece CEP inexistente', () => {
+    expect(fromViaCep({ cep: '01001-000', logradouro: 'Praça da Sé', bairro: 'Sé', localidade: 'São Paulo', uf: 'SP' }))
+      .toEqual({ cep: '01001000', street: 'Praça da Sé', district: 'Sé', city: 'São Paulo', state: 'SP' });
+    expect(fromViaCep({ erro: true })).toBeNull();
+    expect(fromViaCep({ erro: 'true' })).toBeNull();
   });
   it('rejeita CPF inválido, telefone curto e CPF duplicado', () => {
     const db = createEmptyDB();

@@ -9,6 +9,11 @@ import { BusinessError, fmtDate, todayISO } from '../../domain/core';
 import { D, fmtBRL, fmtNum, fmtPct, toInputBR } from '../../domain/money';
 import { Alert, Badge, Check, DataTable, DateField, DecField, Empty, Kpi, Modal, NumField, PageHead, SelectField, Tabs, TextArea, TextField, dec, num, useForm } from '../components/ui';
 import { NamedListManager } from './Cadastros';
+import { wattsToKwhPerHour } from '../../domain/conversions';
+import { generalRecommendations, printerRecommendations, type RecSource, type Recommendation } from '../../domain/recommendations';
+import { isValidCep } from '../../domain/address';
+import { AddressFields } from '../components/AddressFields';
+import type { AddressParts } from '../../domain/types';
 
 type Tab = 'gerais' | 'impressoras' | 'canais' | 'indiretas' | 'fontes';
 
@@ -34,15 +39,38 @@ export function Parametros({ param }: { param?: string }) {
 
 /* ---------------- Parâmetros gerais ---------------- */
 function Gerais() {
-  const { db, run } = useStore();
+  const { db, run, toast } = useStore();
   const s = db.settings;
-  const [f, set] = useForm({
+  const [f, set, setF] = useForm({
     companyName: s.companyName, energyTariff: toInputBR(s.energyTariff), laborHourCost: toInputBR(s.laborHourCost),
     productiveHoursPerMonth: toInputBR(s.productiveHoursPerMonth), defaultMarkupPct: toInputBR(s.defaultMarkupPct ?? null), defaultRounding: s.defaultRounding,
     defaultPrinterId: s.defaultPrinterId ?? '', defaultChannelId: s.defaultChannelId ?? '', defaultFailureRatePct: toInputBR(s.defaultFailureRatePct ?? null),
     defaultLaborOrderMin: toInputBR(s.defaultLaborOrderMin ?? null), defaultLaborUnitMin: toInputBR(s.defaultLaborUnitMin ?? null),
+    boxLength: toInputBR(s.shippingBox?.lengthCm ?? null), boxWidth: toInputBR(s.shippingBox?.widthCm ?? null), boxHeight: toInputBR(s.shippingBox?.heightCm ?? null),
+    boxWeight: toInputBR(s.shippingBox?.packagingWeightG ?? null),
   });
+  const [origin, setOrigin] = useState<AddressParts>(s.companyAddress ?? {});
   const oh = overheadRate(db);
+  /** Preenche só os campos vazios do formulário com as sugestões (o usuário ainda precisa salvar). */
+  const fillEmpty = () => {
+    const next = { ...f } as Record<string, string>;
+    let n = 0;
+    for (const r of generalRecommendations()) {
+      if (r.key === 'defaultRounding') { if (f.defaultRounding === 'nenhum') { next.defaultRounding = r.value; n++; } continue; }
+      if (r.key in next && !next[r.key]?.trim()) { next[r.key] = r.value.replace('.', ','); n++; }
+    }
+    setF(next as typeof f);
+    toast(n ? 'info' : 'warning', n ? `${n} campo(s) preenchido(s) com as sugestões. Revise e clique em "Salvar parâmetros".` : 'Nenhum campo vazio para preencher.');
+  };
+  const createA1 = () => run((d) => {
+    const rec = Object.fromEntries(printerRecommendations().map((r) => [r.key, r.value]));
+    const p = savePrinter(d, { name: 'Bambu Lab A1', manufacturer: 'Bambu Lab', model: 'A1', acquisitionValue: rec.acquisitionValue, residualValue: rec.residualValue,
+      usefulLifeHours: Number(rec.usefulLifeHours), initialHours: 0, energyMode: 'estimado', kwhPerHour: rec.kwhPerHour, maintenancePerHour: rec.maintenancePerHour,
+      availableHoursPerMonth: Number(rec.availableHoursPerMonth), active: true, notes: 'Cadastrada com os valores sugeridos; calibre energia e manutenção com dados reais.' });
+    if (!d.settings.defaultPrinterId) d.settings.defaultPrinterId = p.id;
+    return p;
+  }, 'Bambu Lab A1 cadastrada com os valores sugeridos.').then((r) => { if (r.ok && !f.defaultPrinterId) set('defaultPrinterId')(r.value.id); });
+  const hasA1 = db.printers.some((p) => /a1/i.test(p.model) && !/mini/i.test(p.model));
   const save = () => run((d) => {
     const h = num(f.productiveHoursPerMonth);
     if (h !== null && h <= 0) throw new BusinessError('Horas produtivas devem ser maiores que zero.');
@@ -52,10 +80,13 @@ function Gerais() {
     if (fr !== null && (D(fr).lt(0) || D(fr).gte(90))) throw new BusinessError('Taxa de falha deve estar entre 0 e 90%.');
     const lo = num(f.defaultLaborOrderMin), lu = num(f.defaultLaborUnitMin);
     if ((lo ?? 0) < 0 || (lu ?? 0) < 0) throw new BusinessError('Tempos de mão de obra não podem ser negativos.');
+    const box = { lengthCm: num(f.boxLength), widthCm: num(f.boxWidth), heightCm: num(f.boxHeight), packagingWeightG: num(f.boxWeight) };
+    if (Object.values(box).some((v) => v !== null && v <= 0)) throw new BusinessError('Medidas e peso da embalagem devem ser maiores que zero.');
+    if (origin.cep && !isValidCep(origin.cep)) throw new BusinessError('CEP de origem deve ter 8 dígitos.');
     d.settings = { ...d.settings, companyName: f.companyName.trim() || 'Ideia Cúbica', energyTariff: dec(f.energyTariff), laborHourCost: dec(f.laborHourCost),
       productiveHoursPerMonth: h, defaultMarkupPct: m, defaultRounding: f.defaultRounding as RoundingRule,
       defaultPrinterId: f.defaultPrinterId || null, defaultChannelId: f.defaultChannelId || null, defaultFailureRatePct: fr,
-      defaultLaborOrderMin: lo, defaultLaborUnitMin: lu };
+      defaultLaborOrderMin: lo, defaultLaborUnitMin: lu, companyAddress: origin, shippingBox: box };
   }, 'Parâmetros salvos. Novos orçamentos usarão estes valores; os já salvos mantêm os da época.');
   return (
     <div className="stack">
@@ -87,8 +118,61 @@ function Gerais() {
           <TextField label="Nome da empresa" value={f.companyName} onChange={set('companyName')} />
         </div>
       </div>
+
+      <div className="card rec-card">
+        <div className="card-head">
+          <div><h2>Recomendação para começar</h2><p className="muted small">Pontos de partida para a operação com a Bambu Lab A1 (R$ 4.769,10). Ajuste com os seus dados reais — o sistema não aplica nada sozinho.</p></div>
+          <div className="row">
+            <button className="btn secondary" onClick={fillEmpty}>Preencher campos vazios</button>
+            {!hasA1 && <button className="btn primary" onClick={createA1}>Cadastrar a A1 com estes valores</button>}
+          </div>
+        </div>
+        <div className="card-body stack">
+          <RecTable title="Parâmetros gerais e padrões do orçamento" rows={generalRecommendations()} />
+          <RecTable title="Impressora Bambu Lab A1 (cadastro em Impressoras)" rows={printerRecommendations()} />
+          <Alert tone="info" title="Como ler">
+            <b>informado</b> = dado seu · <b>fabricante</b> = publicação da Bambu Lab · <b>estimativa</b> = ponto de partida para calibrar.
+            Exemplo com esses valores: uma peça de 40 g de PLA a R$ 100/kg e 2 h de impressão custa cerca de R$ 4,00 de filamento + R$ 0,18 de energia + R$ 1,27 de depreciação + R$ 0,40 de manutenção, mais mão de obra e rateio.
+          </Alert>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-head"><div><h2>Envios (frete)</h2><p className="muted small">Origem e embalagem padrão usadas para calcular o frete no orçamento.</p></div></div>
+        <div className="card-body stack">
+          <AddressFields value={origin} onChange={setOrigin} title="Endereço de origem dos envios" />
+          <p className="section-title">Embalagem padrão</p>
+          <div className="grid g4">
+            <NumField label="Comprimento" suffix="cm" value={f.boxLength} onChange={set('boxLength')} />
+            <NumField label="Largura" suffix="cm" value={f.boxWidth} onChange={set('boxWidth')} />
+            <NumField label="Altura" suffix="cm" value={f.boxHeight} onChange={set('boxHeight')} />
+            <NumField label="Peso da embalagem" suffix="g" value={f.boxWeight} onChange={set('boxWeight')} hint="Caixa + proteção; somado ao peso das peças." />
+          </div>
+        </div>
+      </div>
+
       <Alert tone="info" title="Tributos">Alíquotas não são presumidas: configure-as por canal de venda conforme o regime da empresa e valide com seu contador.</Alert>
       <div className="row"><button className="btn primary" onClick={save}>Salvar parâmetros</button></div>
+    </div>
+  );
+}
+
+const SOURCE_TONE: Record<RecSource, 'success' | 'info' | 'warning'> = { informado: 'success', fabricante: 'info', estimativa: 'warning' };
+function RecTable({ title, rows }: { title: string; rows: Recommendation[] }) {
+  return (
+    <div>
+      <p className="section-title">{title}</p>
+      <div className="card"><table className="tbl">
+        <thead><tr><th>Parâmetro</th><th className="num">Sugestão</th><th>Origem</th><th>Por quê</th></tr></thead>
+        <tbody>{rows.map((r) => (
+          <tr key={r.key}>
+            <td><b>{r.label}</b></td>
+            <td className="num nowrap"><b>{r.key === 'defaultRounding' ? ROUNDING_LABEL.final90 : `${r.unit === 'R$' ? 'R$ ' : ''}${fmtNum(r.value, 4)}${r.unit && r.unit !== 'R$' ? ` ${r.unit}` : ''}`}</b></td>
+            <td><Badge tone={SOURCE_TONE[r.source]}>{r.source}</Badge></td>
+            <td className="small">{r.why}</td>
+          </tr>
+        ))}</tbody>
+      </table></div>
     </div>
   );
 }
@@ -240,7 +324,7 @@ function PrinterForm({ item, onClose, onSave }: { item?: Printer; onClose: () =>
         <p className="section-title">Energia</p>
         <div className="grid g4">
           <SelectField label="Origem do consumo" value={f.energyMode} onChange={(v) => set('energyMode')(v as Printer['energyMode'])} options={[{ value: 'medido', label: 'Medido (tomada medidora)' }, { value: 'estimado', label: 'Estimado (potência média)' }]} />
-          {f.energyMode === 'estimado' && <NumField label="Potência média real" suffix="W" value={f.avgW} onChange={(v) => { set('avgW')(v); const w = num(v); if (w !== null) set('kwhPerHour')(D(w).div(1000).toString()); }} hint="Não use a potência máxima da fonte" />}
+          {f.energyMode === 'estimado' && <NumField label="Potência média real" suffix="W" value={f.avgW} onChange={(v) => { set('avgW')(v); const w = num(v); if (w !== null) set('kwhPerHour')(wattsToKwhPerHour(w).toString()); }} hint="Não use a potência máxima da fonte" />}
           <DecField label="Consumo médio" suffix="kWh/h" value={f.kwhPerHour} onChange={set('kwhPerHour')} hint={f.energyMode === 'medido' ? 'kWh medidos ÷ horas de impressão' : 'Calculado da potência média'} />
         </div>
         <p className="section-title">Manutenção e capacidade</p>

@@ -2,12 +2,12 @@ import { useStore } from '../store';
 import { navigate } from '../App';
 import { depreciationPerHour } from '../../domain/catalog';
 import { cashBalance, openTotals } from '../../domain/finance';
-import { inventoryValue, reorderAnalysis } from '../../domain/inventory';
+import { inventoryValue, purchaseAlerts } from '../../domain/inventory';
 import { managementResult } from '../../domain/sales';
 import { latestVersion, materialCostPolicy } from '../../domain/quotes';
 import { ORDER_STATUS_LABEL } from '../../domain/production';
 import { todayISO } from '../../domain/core';
-import { fmtBRL, fmtPct } from '../../domain/money';
+import { fmtBRL, fmtNum, fmtPct } from '../../domain/money';
 import { Alert, Badge, Kpi, PageHead } from '../components/ui';
 import { QUOTE_STATUS } from './Orcamentos';
 
@@ -29,7 +29,8 @@ export function Painel() {
   const ym = today.slice(0, 7);
   const res = managementResult(db, `${ym}-01`, `${ym}-31`);
   const open = openTotals(db, today);
-  const reorder = db.materials.filter((m) => m.active).map((m) => reorderAnalysis(db, m)).filter((r) => r.status === 'repor');
+  const reorder = purchaseAlerts(db);
+  const shortage = reorder.filter((r) => r.status === 'falta');
   const activeOrders = db.orders.filter((o) => !['concluida', 'cancelada'].includes(o.status));
   const recentQuotes = [...db.quotes].reverse().slice(0, 5);
 
@@ -64,7 +65,8 @@ export function Painel() {
           <Kpi label="Estoque (custo)" value={fmtBRL(inventoryValue(db))} />
         </div>
         {(open.overdueIn.gt(0) || open.overdueOut.gt(0)) && <Alert tone="warning" title="Títulos vencidos">Há contas vencidas. <a href="#/financeiro/titulos">Ver contas a pagar e receber</a></Alert>}
-        {reorder.length > 0 && <Alert tone="warning" title={`Reposição sugerida (${reorder.length})`}>{reorder.map((r) => r.material.name).join(', ')}. <a href="#/estoque">Ver estoque</a></Alert>}
+        {shortage.length > 0 && <Alert tone="error" title={`Comprar já: falta material para ordens abertas (${shortage.length})`}>{shortage.map((r) => `${r.material.name} (faltam ${fmtNum(r.suggestedQty)} ${r.material.unit})`).join(', ')}. <a href="#/estoque/reposicao">Ver reposição</a></Alert>}
+        {reorder.length > shortage.length && <Alert tone="warning" title={`Abaixo do ponto de pedido (${reorder.length - shortage.length})`}>{reorder.filter((r) => r.status === 'repor').map((r) => r.material.name).join(', ')}. <a href="#/estoque/reposicao">Ver reposição</a></Alert>}
         <div className="grid g2">
           <div className="card">
             <div className="card-head"><h2>Produção em andamento</h2><a href="#/producao/ordens" className="small">ver todas</a></div>

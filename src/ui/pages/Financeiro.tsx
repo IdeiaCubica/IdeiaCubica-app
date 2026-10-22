@@ -3,6 +3,7 @@ import { useStore } from '../store';
 import { navigate } from '../App';
 import type { FinTitle, PaymentTerms, Sale } from '../../domain/types';
 import { accountBalance, cancelTitle, cashBalance, cashFlowByMonth, cashNeed, createManualTitle, expensesByCategory, investedCapital, openTotals, reverseSettlement, settleTitle, titleOpen, titlePaid } from '../../domain/finance';
+import { finishedGoodBalance } from '../../domain/production';
 import { breakEven, cancelSale, managementResult, registerSale, resolveSaleCost, resultByProject, saleEconomics, saleGross } from '../../domain/sales';
 import { channelRates } from '../../domain/pricing';
 import { latestVersion } from '../../domain/quotes';
@@ -286,11 +287,31 @@ function Vendas({ onNew }: { onNew: () => void }) {
   );
 }
 
-function SaleForm({ onClose }: { onClose: () => void }) {
+export function SaleForm({ onClose, preset }: { onClose: () => void; preset?: { finishedGoodId?: string; orderId?: string } }) {
   const { db, run } = useStore();
-  const [f, set, setF] = useForm({ date: todayISO(), description: '', projectId: '', customerId: '', quoteId: '', orderId: '', qty: '1', unitPrice: '', discount: '', freightCharged: '', freightCost: '',
-    channelId: db.channels.find((c) => c.active)?.id ?? '', feesWithheld: true, manualUnitCost: '', notes: '' });
+  const [f, set, setF] = useForm(() => {
+    const base = { date: todayISO(), description: '', projectId: '', customerId: '', quoteId: '', orderId: '', finishedGoodId: '', qty: '1', unitPrice: '', discount: '', freightCharged: '', freightCost: '',
+      channelId: db.channels.find((c) => c.active)?.id ?? '', feesWithheld: true, manualUnitCost: '', notes: '' };
+    const fg = db.finishedGoods.find((x) => x.id === preset?.finishedGoodId);
+    if (fg) return { ...base, finishedGoodId: fg.id, description: fg.description, projectId: fg.projectId ?? '', unitPrice: fg.suggestedPrice ? fg.suggestedPrice.replace('.', ',') : '' };
+    const o = db.orders.find((x) => x.id === preset?.orderId);
+    if (o) {
+      const q = db.quotes.find((x) => x.id === o.quoteId);
+      const price = q ? latestVersion(q).summary.unitPrice : null;
+      return { ...base, orderId: o.id, quoteId: q?.id ?? '', description: o.description, projectId: o.projectId ?? '', customerId: o.customerId ?? q?.customerId ?? '',
+        qty: String(o.actual?.qtyApproved ?? o.qtyPlanned), unitPrice: price ? price.replace('.', ',') : '', channelId: q ? latestVersion(q).input.channelId ?? base.channelId : base.channelId };
+    }
+    return base;
+  });
   const terms = useTerms(f.date);
+  const fgOptions = db.finishedGoods.map((g) => ({ g, available: finishedGoodBalance(db, g.id).available }))
+    .filter((x) => x.available > 0 || x.g.id === f.finishedGoodId)
+    .map(({ g, available }) => ({ value: g.id, label: `${g.code} · ${g.description} · ${available} disponível(is)` }));
+  const pickFinished = (id: string) => {
+    const g = db.finishedGoods.find((x) => x.id === id);
+    setF((s) => g ? { ...s, finishedGoodId: id, orderId: '', quoteId: '', description: g.description, projectId: g.projectId ?? s.projectId,
+      unitPrice: g.suggestedPrice ? g.suggestedPrice.replace('.', ',') : s.unitPrice } : { ...s, finishedGoodId: '' });
+  };
   const pickQuote = (id: string) => {
     const q = db.quotes.find((x) => x.id === id);
     if (!q) { setF((s) => ({ ...s, quoteId: '' })); return; }
@@ -307,7 +328,7 @@ function SaleForm({ onClose }: { onClose: () => void }) {
     const ch = channelRates(db.channels.find((c) => c.id === f.channelId) ?? null);
     const fees = ch ? cents(gross.times(ch.rates).plus(ch.fixedFee)) : ZERO;
     let cost: ReturnType<typeof resolveSaleCost> = { unitCost: null, status: 'pendente' };
-    try { cost = resolveSaleCost(db, { orderId: f.orderId || undefined, quoteId: f.quoteId || undefined, manualUnitCost: dec(f.manualUnitCost) }); } catch { /* ignora na prévia */ }
+    try { cost = resolveSaleCost(db, { finishedGoodId: f.finishedGoodId || undefined, orderId: f.orderId || undefined, quoteId: f.quoteId || undefined, manualUnitCost: dec(f.manualUnitCost) }); } catch { /* ignora na prévia */ }
     const freightNet = (parseBR(f.freightCharged) ?? ZERO).minus(parseBR(f.freightCost) ?? ZERO);
     const receivable = gross.plus(parseBR(f.freightCharged) ?? 0).minus(f.feesWithheld ? fees : 0);
     const cogs = cost.unitCost ? cents(cost.unitCost.times(qty)) : null;
@@ -315,7 +336,7 @@ function SaleForm({ onClose }: { onClose: () => void }) {
   }, [f, db]);
   const submit = () => run((d) => registerSale(d, {
     date: f.date, description: f.description, projectId: f.projectId || undefined, customerId: f.customerId || undefined, quoteId: f.quoteId || undefined, orderId: f.orderId || undefined,
-    qty: num(f.qty) ?? 0, unitPrice: dec(f.unitPrice) ?? '0', discount: dec(f.discount) ?? '0', freightCharged: dec(f.freightCharged) ?? '0', freightCost: dec(f.freightCost) ?? '0',
+    finishedGoodId: f.finishedGoodId || undefined, qty: num(f.qty) ?? 0, unitPrice: dec(f.unitPrice) ?? '0', discount: dec(f.discount) ?? '0', freightCharged: dec(f.freightCharged) ?? '0', freightCost: dec(f.freightCost) ?? '0',
     channelId: f.channelId || undefined, feesWithheld: f.feesWithheld, manualUnitCost: dec(f.manualUnitCost), payment: terms.toTerms(f.date), notes: f.notes,
   }), 'Venda registrada e financeiro atualizado.').then((r) => r.ok && onClose());
   const done = db.orders.filter((o) => o.status === 'concluida');
@@ -325,7 +346,8 @@ function SaleForm({ onClose }: { onClose: () => void }) {
       <div className="stack">
         <div className="grid g3">
           <SelectField label="A partir do orçamento" value={f.quoteId} onChange={pickQuote} placeholder="— nenhum —" options={db.quotes.filter((q) => q.status !== 'recusado').map((q) => ({ value: q.id, label: `${q.number} · ${q.name}` }))} hint="Preenche produto, quantidade, preço e canal" />
-          <SelectField label="Ordem de produção (custo realizado)" value={f.orderId} onChange={set('orderId')} placeholder="— nenhuma —" options={done.map((o) => ({ value: o.id, label: `${o.number} · ${o.description}` }))} />
+          <SelectField label="Ordem de produção (custo realizado)" value={f.orderId} onChange={(v) => setF((s) => ({ ...s, orderId: v, finishedGoodId: v ? '' : s.finishedGoodId }))} placeholder="— nenhuma —" options={done.map((o) => ({ value: o.id, label: `${o.number} · ${o.description}` }))} />
+          <SelectField label="Peça pronta do estoque" value={f.finishedGoodId} onChange={pickFinished} placeholder="— nenhuma —" options={fgOptions} hint="Baixa o saldo de pronta-entrega" />
           <DateField label="Data da venda" required value={f.date} onChange={set('date')} />
           <TextField label="Produto / descrição" required value={f.description} onChange={set('description')} />
           <SelectField label="Projeto" value={f.projectId} onChange={set('projectId')} placeholder="—" options={db.projects.map((p) => ({ value: p.id, label: p.name }))} hint="Agrupa o resultado por produto" />
@@ -338,7 +360,7 @@ function SaleForm({ onClose }: { onClose: () => void }) {
           <NumField label="Frete pago pela empresa" suffix="R$" value={f.freightCost} onChange={set('freightCost')} hint="Gera conta a pagar" />
         </div>
         <Check label="Encargos retidos pelo canal (marketplace/gateway repassa o valor líquido)" checked={f.feesWithheld} onChange={set('feesWithheld')} />
-        {!f.quoteId && !f.orderId && <NumField label="Custo unitário de fabricação (estimado)" suffix="R$" value={f.manualUnitCost} onChange={set('manualUnitCost')} hint="Sem orçamento/OP vinculados, informe o custo para calcular a margem. Vazio = margem pendente." />}
+        {!f.quoteId && !f.orderId && !f.finishedGoodId && <NumField label="Custo unitário de fabricação (estimado)" suffix="R$" value={f.manualUnitCost} onChange={set('manualUnitCost')} hint="Sem orçamento/OP vinculados, informe o custo para calcular a margem. Vazio = margem pendente." />}
         {preview && (
           <div className="card"><div className="card-body">
             <dl className="dl">
@@ -353,7 +375,7 @@ function SaleForm({ onClose }: { onClose: () => void }) {
         <p className="section-title">Recebimento</p>
         {terms.fields(true)}
         <TextArea label="Observações" value={f.notes} onChange={set('notes')} />
-        <p className="small muted">Estoque de produtos acabados ainda não é controlado nesta versão: a venda não movimenta estoque de peças prontas.</p>
+        <p className="small muted">Ao escolher uma peça pronta do estoque, a venda baixa o saldo de pronta-entrega (cancelar a venda devolve as peças ao saldo).</p>
       </div>
     </Modal>
   );

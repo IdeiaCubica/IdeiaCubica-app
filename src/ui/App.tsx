@@ -10,6 +10,8 @@ import { Producao } from './pages/Producao';
 import { Financeiro } from './pages/Financeiro';
 import { Parametros } from './pages/Parametros';
 import { Configuracoes } from './pages/Configuracoes';
+import { Tendencias } from './pages/Tendencias';
+import { purchaseAlerts } from '../domain/inventory';
 
 /** Roteamento por hash (#/pagina/parametro): sem dependências, recarregar mantém a tela. */
 export function navigate(path: string) { window.location.hash = '#/' + path; }
@@ -46,7 +48,7 @@ const LEGACY: Record<string, string> = {
 };
 
 export function App() {
-  const { repo, persistent } = useStore();
+  const { db, repo, persistent } = useStore();
   const { email, signOut } = useAuth();
   const [page = 'painel', param] = useRoute();
   const legacy = LEGACY[param ? `${page}/${param}` : page] ?? LEGACY[page];
@@ -57,15 +59,23 @@ export function App() {
     case 'compras': content = <Compras />; break;
     case 'cadastros': content = <Cadastros param={param} />; break;
     case 'parametros': content = <Parametros param={param} />; break;
-    case 'estoque': content = <Estoque />; break;
+    case 'estoque': content = <Estoque param={param} />; break;
     case 'producao': content = <Producao param={param} />; break;
     case 'financeiro': content = <Financeiro param={param} />; break;
     case 'config': content = <Configuracoes param={param} />; break;
+    case 'tendencias': content = <Tendencias />; break;
     default: content = <Painel />;
   }
+  const alerts = purchaseAlerts(db);
+  const shortage = alerts.some((a) => a.status === 'falta');
+  const badges: Record<string, ReactNode> = {
+    estoque: alerts.length > 0 && (
+      <span className={`nav-badge${shortage ? ' err' : ''}`} title={`${alerts.length} material(is) para comprar`}>{alerts.length}</span>
+    ),
+  };
   const navBtn = (id: string, label: string, icon: string) => (
     <button key={id} className={page === id || (page === '' && id === 'painel') ? 'on' : ''} onClick={() => navigate(id)} aria-current={page === id ? 'page' : undefined}>
-      <Icon d={icon} />{label}
+      <Icon d={icon} />{label}{badges[id]}
     </button>
   );
   return (
@@ -88,6 +98,7 @@ export function App() {
           <nav aria-label="Módulos">
             {NAV.map((n) => navBtn(n.id, n.label, n.icon))}
             <div className="sep" />
+            {navBtn('tendencias', 'Tendências de produção', 'M3 17l6-6 4 4 8-8M14 7h7v7')}
             {navBtn('parametros', 'Parâmetros de Custos', 'M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6')}
             {navBtn('config', 'Configurações', 'M12 15a3 3 0 100-6 3 3 0 000 6zM19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z')}
           </nav>

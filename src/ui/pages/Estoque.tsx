@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useStore } from '../store';
+import { navigate } from '../App';
 import type { Lot, MovementType } from '../../domain/types';
 import { adjustInventory, inventoryValue, lotBalance, registerInitialStock, registerLoss, reorderAnalysis } from '../../domain/inventory';
 import { fmtDate, todayISO } from '../../domain/core';
@@ -16,12 +17,17 @@ export const MOV_LABEL: Record<MovementType, { label: string; sign: 1 | -1 | 0; 
   reserva: { label: 'Reserva', sign: 0, tone: 'neutral' }, liberacao: { label: 'Liberação de reserva', sign: 0, tone: 'neutral' },
 };
 
-export function Estoque() {
+const STATUS_ORDER = { falta: 0, repor: 1, sem_parametros: 2, ok: 3 } as const;
+
+export function Estoque({ param }: { param?: string }) {
   const { db } = useStore();
-  const [tab, setTab] = useState<Tab>('lotes');
+  const [tab, setTabState] = useState<Tab>(param === 'reposicao' || param === 'movimentos' ? param : 'lotes');
+  const setTab = (t: Tab) => { setTabState(t); navigate(t === 'lotes' ? 'estoque' : `estoque/${t}`); };
+  useEffect(() => { if (param === 'reposicao' || param === 'movimentos') setTabState(param); else if (!param) setTabState('lotes'); }, [param]);
   const [initial, setInitial] = useState(false);
   const reorder = db.materials.filter((m) => m.active).map((m) => reorderAnalysis(db, m));
-  const toBuy = reorder.filter((r) => r.status === 'repor').length;
+  const toBuy = reorder.filter((r) => r.status === 'repor' || r.status === 'falta').length;
+  const missing = reorder.filter((r) => r.status === 'falta');
   const withBalance = db.lots.filter((l) => lotBalance(db, l.id).physical.gt(0)).length;
   return (
     <>
@@ -39,6 +45,9 @@ export function Estoque() {
       {tab === 'movimentos' && <Movimentos />}
       {tab === 'reposicao' && (
         <div className="card">
+          {missing.length > 0 && <div className="card-body"><Alert tone="error" title="Falta material para ordens de produção abertas">
+            {missing.map((r) => `${r.material.name}: faltam ${fmtNum(r.projected.abs())} ${r.material.unit}`).join(' · ')}
+          </Alert></div>}
           <DataTable rows={reorder} rowKey={(r) => r.material.id}
             empty={<Empty title="Nenhum material ativo" />}
             initialSort={{ key: 's', dir: 1 }}
@@ -47,12 +56,22 @@ export function Estoque() {
               { key: 'p', header: 'Físico', num: true, render: (r) => `${fmtNum(r.physical)} ${r.material.unit}` },
               { key: 'r', header: 'Reservado', num: true, render: (r) => fmtNum(r.reserved) },
               { key: 'a', header: 'Disponível', num: true, render: (r) => fmtNum(r.available) },
+              { key: 'd', header: 'Ordens a reservar', num: true, render: (r) => r.plannedDemand.gt(0) ? fmtNum(r.plannedDemand) : '—' },
+              { key: 'pj', header: 'Projetado', num: true, sort: (r) => r.projected.toNumber(), render: (r) => <span className={r.projected.isNegative() ? 'err-text' : ''}>{fmtNum(r.projected)}</span> },
               { key: 'c', header: 'Consumo médio/dia', num: true, render: (r) => r.avgDailyUse ? fmtNum(r.avgDailyUse, 1) : <span className="muted">sem histórico</span> },
               { key: 'pp', header: 'Ponto de pedido', num: true, render: (r) => r.reorderPoint ? fmtNum(r.reorderPoint) : '—' },
               { key: 'sq', header: 'Sugestão de compra', num: true, render: (r) => r.suggestedQty?.gt(0) ? <b>{fmtNum(r.suggestedQty)} {r.material.unit}</b> : '—' },
-              { key: 's', header: 'Situação', sort: (r) => (r.status === 'repor' ? 0 : r.status === 'ok' ? 2 : 1), render: (r) => r.status === 'repor' ? <Badge tone="error">repor</Badge> : r.status === 'ok' ? <Badge tone="success">ok</Badge> : <Badge title={r.note}>sem parâmetros</Badge> },
+              { key: 's', header: 'Situação', sort: (r) => STATUS_ORDER[r.status], render: (r) =>
+                r.status === 'falta' ? <Badge tone="error" title={r.note}>comprar já</Badge>
+                : r.status === 'repor' ? <Badge tone="warning" title={r.note}>repor</Badge>
+                : r.status === 'ok' ? <Badge tone="success">ok</Badge> : <Badge title={r.note}>sem parâmetros</Badge> },
             ]} />
-          <div className="card-body"><p className="small muted">Ponto de pedido = estoque mínimo + segurança + consumo médio diário (90 dias) × prazo de reposição. A comparação usa o <b>disponível</b>, já descontando reservas de produções planejadas. Esta versão não possui pedidos de compra em trânsito: compras são registradas no recebimento.</p></div>
+          <div className="card-body"><p className="small muted">
+            <b>Projetado</b> = disponível (físico − reservado) − material previsto em ordens de produção ainda não reservadas (pedidos e peças para estoque).
+            {' '}<b>Comprar já</b>: o projetado ficou negativo — falta material para as ordens abertas. <b>Repor</b>: o projetado está abaixo do ponto de pedido
+            (estoque mínimo + segurança + consumo médio diário dos últimos 90 dias × prazo de reposição). Defina mínimo e prazo em Cadastros → Materiais.
+            Compras são registradas no recebimento.
+          </p></div>
         </div>
       )}
       {initial && <InitialStockForm onClose={() => setInitial(false)} />}

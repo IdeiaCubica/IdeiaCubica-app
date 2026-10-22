@@ -8,7 +8,7 @@
  *     concluir duas vezes ou clicar repetidamente não baixa o material de novo.
  *   - Cancelar libera as reservas; OP concluída não pode ser cancelada.
  */
-import type { CostParams, DB, ID, OrderStatus, ProductionOrder, Project, QuoteInput } from './types';
+import type { CostParams, DB, FinishedGood, ID, OrderStatus, ProductionOrder, Project, QuoteInput } from './types';
 import { D, Decimal, ZERO, sum } from './money';
 import { BusinessError, assert, audit, byId, newId, nextCode, nowISO, requireNonNegative, requireText, toLocalDate, todayISO } from './core';
 import { addMovement, lotBalance, releaseAll, reserve } from './inventory';
@@ -69,18 +69,29 @@ function candidateLots(db: DB, line: ProductionOrder['plannedMaterials'][number]
   return db.lots.filter((l) => l.materialId === line.materialId).sort((a, b) => (a.date + a.code).localeCompare(b.date + b.code));
 }
 
-export function createOrderFromQuote(db: DB, quoteId: ID, opts: { printerId?: ID; responsible?: string; notes?: string } = {}): ProductionOrder {
+export const QUEUE_STATUSES: OrderStatus[] = ['planejada', 'aguardando_material', 'pronta'];
+
+/** Próxima posição no fim da fila. */
+function nextSequence(db: DB): number {
+  return db.orders.reduce((max, o) => Math.max(max, o.sequence ?? 0), 0) + 1;
+}
+
+export function createOrderFromQuote(db: DB, quoteId: ID, opts: {
+  printerId?: ID; responsible?: string; notes?: string; purpose?: 'pedido' | 'estoque'; dueDate?: string;
+} = {}): ProductionOrder {
   const q = byId(db.quotes, quoteId, 'Orçamento');
   assert(q.status !== 'convertido', 'Este orçamento já foi convertido em ordem de produção.');
   assert(q.status !== 'recusado', 'Orçamento recusado não pode gerar produção.');
   const v = latestVersion(q);
   assert(v.input.materials.length > 0, 'O orçamento não possui materiais selecionados.');
+  const purpose = opts.purpose ?? (q.customerId ? 'pedido' : 'estoque');
   const order: ProductionOrder = {
     id: newId(), number: nextCode(db, 'order', 'OP'), projectId: q.projectId, quoteId: q.id, quoteVersion: v.version,
     description: q.name, printerId: opts.printerId ?? v.input.printerId, qtyPlanned: v.input.quantity,
     plannedMaterials: plannedFromInput(db, v.input),
     plannedHours: v.input.printHoursPerUnit !== null ? D(v.input.printHoursPerUnit).times(v.input.quantity).toNumber() : null,
     status: 'planejada', responsible: opts.responsible, notes: opts.notes, createdAt: nowISO(),
+    purpose, customerId: purpose === 'pedido' ? q.customerId : undefined, dueDate: opts.dueDate || undefined, sequence: nextSequence(db),
   };
   db.orders.push(order);
   q.status = 'convertido';
@@ -89,20 +100,88 @@ export function createOrderFromQuote(db: DB, quoteId: ID, opts: { printerId?: ID
 }
 
 export function createManualOrder(db: DB, input: {
-  description: string; projectId?: ID; printerId?: ID; qtyPlanned: number; plannedMaterials: { lotId: ID; qty: number }[];
+  description: string; projectId?: ID; printerId?: ID; qtyPlanned: number;
+  /** Com lote: reserva daquele lote. Só com material: lotes por ordem de entrada. */
+  plannedMaterials: { materialId?: ID; lotId?: ID; qty: number }[];
   plannedHours: number | null; responsible?: string; notes?: string;
+  purpose?: 'pedido' | 'estoque'; customerId?: ID; dueDate?: string;
 }): ProductionOrder {
   const description = requireText(input.description, 'a descrição da ordem');
   assert(Number.isInteger(input.qtyPlanned) && input.qtyPlanned > 0, 'Quantidade planejada inválida.');
+  if (input.plannedHours !== null) requireNonNegative(input.plannedHours, 'Horas previstas');
   const planned = input.plannedMaterials.map((m) => {
-    const lot = byId(db.lots, m.lotId, 'Lote');
     assert(m.qty > 0, 'Quantidade de material inválida.');
-    return { materialId: lot.materialId, lotId: lot.id, qty: m.qty };
+    if (m.lotId) {
+      const lot = byId(db.lots, m.lotId, 'Lote');
+      return { materialId: lot.materialId, lotId: lot.id, qty: m.qty };
+    }
+    const mat = byId(db.materials, m.materialId ?? '', 'Material');
+    return { materialId: mat.id, qty: m.qty };
   });
-  const order: ProductionOrder = { ...input, plannedMaterials: planned, description, id: newId(), number: nextCode(db, 'order', 'OP'), status: 'planejada', createdAt: nowISO() };
+  const purpose = input.purpose ?? 'estoque';
+  if (input.customerId) byId(db.parties, input.customerId, 'Cliente');
+  const order: ProductionOrder = {
+    ...input, plannedMaterials: planned, description, id: newId(), number: nextCode(db, 'order', 'OP'), status: 'planejada', createdAt: nowISO(),
+    purpose, customerId: purpose === 'pedido' ? input.customerId : undefined, dueDate: input.dueDate || undefined, sequence: nextSequence(db),
+  };
   db.orders.push(order);
-  audit(db, 'Ordem de produção criada', `${order.number} (manual)`);
+  audit(db, 'Ordem de produção criada', `${order.number} (manual, ${purpose === 'pedido' ? 'pedido' : 'para estoque'})`);
   return order;
+}
+
+/** Fila de produção (planejadas, aguardando material e prontas), na ordem definida pelo usuário. */
+export function productionQueue(db: DB): ProductionOrder[] {
+  return db.orders.filter((o) => QUEUE_STATUSES.includes(o.status))
+    .sort((a, b) => (a.sequence ?? Number.MAX_SAFE_INTEGER) - (b.sequence ?? Number.MAX_SAFE_INTEGER) || a.createdAt.localeCompare(b.createdAt));
+}
+
+/**
+ * Falta de material considerando a ORDEM da fila: o disponível de cada material
+ * é consumido pelas OPs ainda não reservadas, da primeira para a última.
+ * Retorna, por OP, quanto falta de cada material.
+ */
+export function queueShortages(db: DB): Map<ID, { materialId: ID; shortage: Decimal }[]> {
+  const remaining = new Map<ID, Decimal>();
+  const avail = (materialId: ID) => {
+    if (!remaining.has(materialId)) {
+      remaining.set(materialId, db.lots.filter((l) => l.materialId === materialId).reduce((a, l) => a.plus(lotBalance(db, l.id).available), ZERO));
+    }
+    return remaining.get(materialId)!;
+  };
+  const out = new Map<ID, { materialId: ID; shortage: Decimal }[]>();
+  for (const o of productionQueue(db)) {
+    if (o.status === 'pronta') continue; // já reservada
+    const short: { materialId: ID; shortage: Decimal }[] = [];
+    for (const m of o.plannedMaterials) {
+      const left = avail(m.materialId).minus(m.qty);
+      remaining.set(m.materialId, left);
+      if (left.isNegative()) short.push({ materialId: m.materialId, shortage: Decimal.min(D(m.qty), left.abs()) });
+    }
+    if (short.length) out.set(o.id, short);
+  }
+  return out;
+}
+
+/** Move a OP para a posição `index` (0 = primeira) da fila e renumera a sequência. */
+export function moveInQueue(db: DB, orderId: ID, index: number) {
+  const queue = productionQueue(db);
+  const from = queue.findIndex((o) => o.id === orderId);
+  assert(from >= 0, 'Somente ordens na fila (ainda não iniciadas) podem ser reordenadas.');
+  const [o] = queue.splice(from, 1);
+  queue.splice(Math.max(0, Math.min(index, queue.length)), 0, o);
+  queue.forEach((x, i) => { x.sequence = i + 1; });
+}
+
+export function updateOrderPlanning(db: DB, orderId: ID, input: { purpose: 'pedido' | 'estoque'; customerId?: ID; dueDate?: string; printerId?: ID; notes?: string }) {
+  const o = byId(db.orders, orderId, 'Ordem');
+  assert(o.status !== 'concluida' && o.status !== 'cancelada', 'Ordem encerrada não pode ser alterada.');
+  if (input.customerId) byId(db.parties, input.customerId, 'Cliente');
+  o.purpose = input.purpose;
+  o.customerId = input.purpose === 'pedido' ? input.customerId : undefined;
+  o.dueDate = input.dueDate || undefined;
+  o.printerId = input.printerId || undefined;
+  o.notes = input.notes;
+  audit(db, 'Planejamento da OP alterado', o.number);
 }
 
 /** Verifica disponibilidade por linha prevista (reservas desta própria OP contam como disponíveis para ela). */
@@ -174,6 +253,8 @@ export interface CompleteInput {
   laborMinutes: number | null;
   failures: { description: string; lotId?: ID; qtyLost: number; hoursLost: number }[];
   notes?: string;
+  /** Onde as peças prontas ficam guardadas (OP para estoque). */
+  location?: string;
 }
 
 export function completeOrder(db: DB, orderId: ID, input: CompleteInput) {
@@ -203,7 +284,74 @@ export function completeOrder(db: DB, orderId: ID, input: CompleteInput) {
   o.actual = { materials: input.materials.filter((m) => m.qty > 0), hours: input.hours, qtyApproved: input.qtyApproved, qtyRejected: input.qtyRejected, laborMinutes: input.laborMinutes, failures, notes: input.notes };
   o.status = 'concluida';
   o.finishedAt = nowISO();
+  if (o.purpose === 'estoque' && input.qtyApproved > 0) addFinishedGoodFromOrder(db, o, input.location);
   audit(db, 'Produção concluída', `${o.number}: ${input.qtyApproved} aprovadas, ${input.qtyRejected} rejeitadas`);
+}
+
+/* ---------------- Peças prontas (pronta-entrega) ---------------- */
+function addFinishedGoodFromOrder(db: DB, o: ProductionOrder, location?: string) {
+  const cmp = compareOrder(db, o);
+  const unit = cmp.real?.unit ?? null;
+  const q = o.quoteId ? db.quotes.find((x) => x.id === o.quoteId) : undefined;
+  const price = q ? latestVersion(q).summary.unitPrice : null;
+  const fg: FinishedGood = {
+    id: newId(), code: nextCode(db, 'finished', 'PC'), description: o.description, orderId: o.id, projectId: o.projectId, quoteId: o.quoteId,
+    qtyProduced: o.actual!.qtyApproved, unitCost: unit ? unit.toDecimalPlaces(4).toString() : null,
+    costStatus: unit ? (cmp.real!.laborEstimated ? 'estimado' : 'realizado') : 'pendente',
+    suggestedPrice: price ?? null, producedAt: toLocalDate(o.finishedAt!), location: location?.trim() || undefined,
+    image: q?.image ?? null, adjustments: [], createdAt: nowISO(),
+  };
+  db.finishedGoods.push(fg);
+  o.finishedGoodId = fg.id;
+  audit(db, 'Peças prontas em estoque', `${fg.code}: ${fg.qtyProduced} un. de ${o.number}`);
+}
+
+/** Cadastra peças prontas já existentes (produzidas antes do sistema). */
+export function registerFinishedGood(db: DB, input: {
+  description: string; projectId?: ID; qty: number; unitCost: string | null; suggestedPrice?: string | null; producedAt: string; location?: string; notes?: string;
+}): FinishedGood {
+  const description = requireText(input.description, 'a descrição da peça');
+  assert(Number.isInteger(input.qty) && input.qty > 0, 'Quantidade deve ser um inteiro maior que zero.');
+  assert(/^\d{4}-\d{2}-\d{2}$/.test(input.producedAt), 'Informe a data de produção.');
+  const cost = input.unitCost ? D(input.unitCost) : null;
+  if (cost) assert(!cost.isNegative(), 'Custo não pode ser negativo.');
+  const fg: FinishedGood = {
+    id: newId(), code: nextCode(db, 'finished', 'PC'), description, projectId: input.projectId, qtyProduced: input.qty,
+    unitCost: cost ? cost.toString() : null, costStatus: cost ? 'estimado' : 'pendente', suggestedPrice: input.suggestedPrice || null,
+    producedAt: input.producedAt, location: input.location?.trim() || undefined, notes: input.notes, adjustments: [], createdAt: nowISO(),
+  };
+  db.finishedGoods.push(fg);
+  audit(db, 'Peças prontas cadastradas', `${fg.code}: ${fg.qtyProduced} un.`);
+  return fg;
+}
+
+export function finishedGoodBalance(db: DB, fgId: ID) {
+  const fg = byId(db.finishedGoods, fgId, 'Peça pronta');
+  const sold = db.sales.filter((s) => s.finishedGoodId === fgId && s.status === 'ativa').reduce((a, s) => a + s.qty, 0);
+  const adjusted = fg.adjustments.reduce((a, x) => a + x.qty, 0);
+  return { produced: fg.qtyProduced, sold, adjusted, available: fg.qtyProduced - sold - adjusted };
+}
+
+/** Baixa manual (avaria, brinde, uso próprio). */
+export function writeOffFinishedGood(db: DB, fgId: ID, qty: number, reason: string, date = todayISO()) {
+  const fg = byId(db.finishedGoods, fgId, 'Peça pronta');
+  assert(Number.isInteger(qty) && qty > 0, 'Quantidade deve ser um inteiro maior que zero.');
+  const why = requireText(reason, 'o motivo da baixa');
+  assert(qty <= finishedGoodBalance(db, fgId).available, 'Quantidade maior que o saldo disponível.');
+  fg.adjustments.push({ id: newId(), date, qty, reason: why });
+  audit(db, 'Baixa de peças prontas', `${fg.code}: ${qty} un. — ${why}`);
+}
+
+/** Dias desde a produção (para ver há quanto tempo a peça está parada). */
+export function daysInStock(fg: Pick<FinishedGood, 'producedAt'>, today = todayISO()): number {
+  return Math.max(0, Math.round((Date.parse(today + 'T00:00:00Z') - Date.parse(fg.producedAt + 'T00:00:00Z')) / 86_400_000));
+}
+
+/** Situação do pedido de cliente: em fila, produzindo, pronto para entregar ou entregue (venda registrada). */
+export function orderDelivery(db: DB, o: ProductionOrder): 'fila' | 'producao' | 'pronto' | 'entregue' | 'cancelado' {
+  if (o.status === 'cancelada') return 'cancelado';
+  if (o.status !== 'concluida') return QUEUE_STATUSES.includes(o.status) ? 'fila' : 'producao';
+  return db.sales.some((s) => s.orderId === o.id && s.status === 'ativa') ? 'entregue' : 'pronto';
 }
 
 export function cancelOrder(db: DB, orderId: ID, reason: string) {

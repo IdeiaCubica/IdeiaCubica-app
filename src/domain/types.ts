@@ -39,7 +39,9 @@ export interface Party {
   kind: PartyKind;
   /** Nome completo (cliente) ou razão social/nome (fornecedor). */
   name: string;
+  /** Endereço formatado em uma linha (gerado a partir de addressParts quando existir). */
   address?: string;
+  addressParts?: AddressParts;
   phone?: string;
   /** CPF ou CNPJ (somente dígitos ou formatado). */
   document?: string;
@@ -48,6 +50,16 @@ export interface Party {
   /** Campo livre da v0.1, mantido para cadastros antigos. */
   contact?: string;
   notes?: string;
+}
+
+export interface AddressParts {
+  cep?: string;
+  street?: string;
+  number?: string;
+  complement?: string;
+  district?: string;
+  city?: string;
+  state?: string;
 }
 
 /** Item de lista simples e configurável (marcas, fabricantes, fontes de captação). */
@@ -251,6 +263,10 @@ export interface Settings {
   defaultFailureRatePct?: DecStr | null;
   defaultLaborOrderMin?: number | null;
   defaultLaborUnitMin?: number | null;
+  /** Endereço de origem dos envios (CEP usado no cálculo de frete). */
+  companyAddress?: AddressParts;
+  /** Embalagem padrão para cotação de frete. */
+  shippingBox?: { lengthCm: number | null; widthCm: number | null; heightCm: number | null; packagingWeightG: number | null };
 }
 
 /* ------------------------------------------------------------------ */
@@ -436,6 +452,71 @@ export interface ProductionOrder {
   };
   cancelReason?: string;
   notes?: string;
+  /** pedido = encomenda de um cliente; estoque = peças para pronta-entrega. Ausente (dados antigos) = pedido. */
+  purpose?: 'pedido' | 'estoque';
+  customerId?: ID;
+  /** Data prometida ao cliente. */
+  dueDate?: ISODate;
+  /** Posição na fila de produção (menor = primeiro). */
+  sequence?: number;
+  /** Lote de peças prontas gerado ao concluir uma OP de estoque. */
+  finishedGoodId?: ID;
+}
+
+/**
+ * Peças prontas em estoque para venda (pronta-entrega). Saldo = produzidas −
+ * vendidas (vendas ativas com finishedGoodId) − baixas manuais.
+ */
+export interface FinishedGood {
+  id: ID;
+  code: string;
+  description: string;
+  orderId?: ID;
+  projectId?: ID;
+  quoteId?: ID;
+  qtyProduced: number;
+  /** Custo unitário de fabricação (snapshot na conclusão). */
+  unitCost: DecStr | null;
+  costStatus: 'realizado' | 'estimado' | 'pendente';
+  /** Preço sugerido (valor ao cliente do orçamento), se houver. */
+  suggestedPrice?: DecStr | null;
+  producedAt: ISODate;
+  location?: string;
+  image?: string | null;
+  adjustments: { id: ID; date: ISODate; qty: number; reason: string }[];
+  notes?: string;
+  createdAt: ISODateTime;
+}
+
+/* ------------------------------------------------------------------ */
+/* Tendências de produção                                              */
+/* ------------------------------------------------------------------ */
+export interface TrendIdea {
+  title: string;
+  category: string;
+  why: string;
+  audience?: string;
+  /** Faixa de preço praticada no Brasil, em R$. */
+  priceMin?: number | null;
+  priceMax?: number | null;
+  /** Estimativas para impressão em PLA numa Bambu Lab A1. */
+  estWeightG?: number | null;
+  estPrintHours?: number | null;
+  material?: string;
+  difficulty?: 'baixa' | 'media' | 'alta';
+  licenseNote?: string;
+  sources: { title: string; url: string }[];
+}
+
+export interface TrendReport {
+  id: ID;
+  date: ISODate;
+  generatedAt: ISODateTime;
+  model: string;
+  summary: string;
+  ideas: TrendIdea[];
+  /** Avisos do servidor (ex.: modelo alternativo usado). */
+  notice?: string;
 }
 
 /* ------------------------------------------------------------------ */
@@ -506,6 +587,8 @@ export interface Sale {
   projectId?: ID;
   quoteId?: ID;
   orderId?: ID;
+  /** Venda de peças prontas do estoque (baixa o saldo do lote de peças). */
+  finishedGoodId?: ID;
   description: string;
   qty: number;
   unitPrice: DecStr;
@@ -554,6 +637,8 @@ export interface DB {
   projects: Project[];
   quotes: Quote[];
   orders: ProductionOrder[];
+  finishedGoods: FinishedGood[];
+  trends: TrendReport[];
   accounts: Account[];
   finCategories: FinCategory[];
   titles: FinTitle[];

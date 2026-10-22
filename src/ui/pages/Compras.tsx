@@ -6,6 +6,7 @@ import { allocate, cancelPurchase, registerPurchase, unitAcquisitionCost, type P
 import { titleOpen } from '../../domain/finance';
 import { addDays, compatibleUnits, convertQty, fmtDate, todayISO } from '../../domain/core';
 import { D, fmtBRL, fmtNum, parseBR, sum } from '../../domain/money';
+import { perGramToPerKg } from '../../domain/conversions';
 import { Alert, Badge, Combobox, DataTable, DateField, Empty, Modal, NumField, PageHead, SelectField, TextArea, TextField, dec, num, useConfirm, useForm } from '../components/ui';
 
 export function Compras() {
@@ -107,7 +108,7 @@ function PurchaseForm({ onClose }: { onClose: () => void }) {
                 <TextField label="Lote do fabricante" value={it.batchNumber} onChange={(v) => setItem(i, { batchNumber: v })} />
               </div>
               <div className="row" style={{ marginTop: 12, justifyContent: 'space-between' }}>
-                <span className="small muted">{m?.filament?.netWeightG ? `1 carretel = ${fmtNum(m.filament.netWeightG)} g · ` : ''}{pv ? <>Custo de aquisição: <b style={{ color: 'var(--text)' }}>{fmtBRL(pv.unitCost, 4)}/{pv.unit}</b>{pv.unit === 'g' && <> ({fmtBRL(pv.unitCost.times(1000))}/kg)</>} · frete atribuído {fmtBRL(pv.freight)}</> : 'Informe quantidade e valor para ver o custo unitário.'}</span>
+                <span className="small muted">{m?.filament?.netWeightG ? `1 carretel = ${fmtNum(m.filament.netWeightG)} g · ` : ''}{pv ? <>Custo de aquisição: <b style={{ color: 'var(--text)' }}>{fmtBRL(pv.unitCost, 4)}/{pv.unit}</b>{pv.unit === 'g' && <> ({fmtBRL(perGramToPerKg(pv.unitCost))}/kg)</>} · frete atribuído {fmtBRL(pv.freight)}</> : 'Informe quantidade e valor para ver o custo unitário.'}</span>
                 {items.length > 1 && <button className="btn ghost sm" onClick={() => setItems((r) => r.filter((_, k) => k !== i))}>Remover item</button>}
               </div>
             </div>

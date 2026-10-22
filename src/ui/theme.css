@@ -98,6 +98,8 @@ a { color: var(--ic-tecnologia); }
 .sidenav button:hover { background: rgb(13 25 37 / 0.05); color: var(--text); }
 .sidenav button.on { background: var(--surface); color: var(--text); font-weight: 600; border-left-color: var(--ic-ideia); box-shadow: var(--shadow-card); }
 .sidenav button:focus-visible { outline: 2px solid var(--ic-tecnologia); outline-offset: 2px; }
+.nav-badge { margin-left: auto; min-width: 24px; height: 24px; padding: 0 7px; box-sizing: border-box; border-radius: 12px; background: #b7791f; color: #fff; font-size: 13px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+.nav-badge.err { background: #c53030; }
 .sidenav .sep { height: 1px; background: var(--border); margin: 14px 4px; }
 .sidenav svg { width: 24px; height: 24px; flex-shrink: 0; }
 main { flex: 1; min-width: 0; padding: 40px 48px 96px; max-width: 1600px; }
@@ -160,6 +162,13 @@ select.btn { padding-right: 14px; }
 .field .suffix { position: relative; }
 .field .suffix input { padding-right: 64px; }
 .field .suffix span { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 14px; pointer-events: none; }
+.address-fields { display: flex; flex-direction: column; gap: 12px; }
+.span-2 { grid-column: span 2; }
+.err-text { color: var(--error); }
+.ok-text { color: var(--success); }
+@media (max-width: 860px) { .span-2 { grid-column: auto; } }
+.time-field { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.time-field .suffix input { padding-right: 52px; }
 .check { display: flex; align-items: center; gap: 10px; font-size: 16px; cursor: pointer; }
 .check input { width: 20px; height: 20px; accent-color: var(--ic-tecnologia); }
 fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
@@ -356,3 +365,37 @@ details.params-details[open] > summary { border-bottom: 1px solid var(--border);
   details.params-details > summary { padding: 16px 20px; }
   .client-price .inline-dec input { width: 170px; font-size: 26px; }
 }
+
+/* ---------------- Kanban de produção ---------------- */
+.kanban { display: grid; grid-template-columns: repeat(4, minmax(240px, 1fr)); gap: 14px; align-items: start; overflow-x: auto; padding-bottom: 6px; }
+.kb-col { background: rgb(13 25 37 / 0.04); border: 2px dashed transparent; border-radius: var(--r-card, 14px); padding: 12px; min-height: 260px; }
+.kb-col.over { border-color: var(--ic-tecnologia); background: rgb(0 120 200 / 0.06); }
+.kb-col header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.kb-col h3 { margin: 0; font-size: 17px; }
+.kb-col > p { margin: 4px 0 10px; }
+.kb-count { min-width: 26px; height: 26px; border-radius: 13px; background: var(--surface); box-shadow: var(--shadow-card); display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; }
+.kb-list { display: flex; flex-direction: column; gap: 10px; }
+.kb-empty { color: var(--n-600); font-size: 14px; text-align: center; padding: 18px 8px; border: 1px dashed var(--n-300, #ccd); border-radius: 10px; }
+.kb-card { background: var(--surface); border-radius: 12px; box-shadow: var(--shadow-card); display: flex; align-items: stretch; cursor: grab; border: 1px solid transparent; }
+.kb-card:hover { border-color: var(--ic-tecnologia); }
+.kb-card.dragging { opacity: 0.45; }
+.kb-open { all: unset; cursor: pointer; flex: 1; padding: 12px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.kb-open:focus-visible { outline: 2px solid var(--ic-tecnologia); outline-offset: -2px; border-radius: 12px; }
+.kb-top { display: flex; align-items: center; gap: 8px; }
+.kb-top .badge, .kb-top [class*="badge"] { margin-left: auto; }
+.kb-pos { font-weight: 800; color: var(--ic-ideia); font-size: 15px; }
+.kb-body { display: flex; gap: 10px; align-items: flex-start; }
+.kb-body b { display: block; line-height: 1.25; }
+.kb-thumb { width: 48px; height: 48px; object-fit: cover; border-radius: 8px; flex: none; background: var(--n-100, #eef); }
+.kb-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--n-600); }
+.kb-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.kb-tags:empty { display: none; }
+.kb-arrows { display: flex; flex-direction: column; justify-content: center; gap: 2px; padding: 6px 4px; border-left: 1px solid rgb(13 25 37 / 0.08); }
+.kb-arrows .btn { padding: 4px 8px; min-height: 0; }
+@media (max-width: 1100px) { .kanban { grid-template-columns: repeat(4, minmax(250px, 80vw)); } }
+
+/* ---------------- Tendências ---------------- */
+.trend-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
+.trend-card h3 { font-size: 18px; line-height: 1.25; }
+.trend-card .dl { margin: 0; }
+@media (max-width: 480px) { .trend-grid { grid-template-columns: 1fr; } }

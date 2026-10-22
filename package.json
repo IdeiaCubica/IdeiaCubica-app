@@ -1,7 +1,7 @@
 {
   "name": "ideiacubica-app",
   "private": true,
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Ideia Cúbica — gestão, orçamentação e produção de impressão 3D",
   "type": "module",
   "engines": {
@@ -20,10 +20,12 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "1.1.0",
     "@supabase/supabase-js": "2.45.4",
     "decimal.js": "10.4.3",
     "react": "18.3.1",
-    "react-dom": "18.3.1"
+    "react-dom": "18.3.1",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/node": "22.10.2",

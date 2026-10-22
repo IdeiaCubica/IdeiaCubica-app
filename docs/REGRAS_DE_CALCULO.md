@@ -1,4 +1,4 @@
-# Regras de cálculo — v0.1
+# Regras de cálculo — v1.1
 
 Todas as fórmulas estão implementadas uma única vez em `src/domain/` e cobertas por testes (`*.test.ts`).
 Valores monetários usam aritmética decimal (decimal.js), arredondamento a centavos *meio para cima* apenas nos totais
@@ -97,8 +97,16 @@ Exemplo (sem taxas): custo R$ 50, markup 100% → preço R$ 100, lucro R$ 50, ma
 - Bloqueios: saldo físico negativo, liberação maior que a reserva, reserva maior que o disponível.
 - Cada movimentação tem **chave de idempotência**: a mesma operação (ex.: consumo da OP X no lote Y) não é aplicada duas vezes.
 - Valor do estoque = Σ físico × custo do lote (custo histórico específico).
+- **Demanda planejada** = Σ material previsto das OPs "Planejada" e "Aguardando material" (ainda sem reserva; as demais já estão no reservado,
+  então não contam duas vezes). **Projetado** = disponível − demanda planejada.
 - **Ponto de pedido** = estoque mínimo + segurança + consumo médio diário (90 dias, consumo + perdas) × prazo de reposição;
-  sugestão = ponto de pedido − **disponível**.
+  sugestão = ponto de pedido − **projetado**. Situação: **comprar já** se projetado < 0 (mesmo sem mínimo cadastrado; sugestão = falta);
+  **repor** se projetado < ponto de pedido.
+- No Kanban, a falta também é calculada **na ordem da fila**: o disponível de cada material é consumido da 1ª para a última OP não reservada.
+
+### Tempo
+- O tempo é digitado em **horas inteiras + minutos** e guardado em horas decimais: h + min ÷ 60 (1 h 20 min = 1,3333 h).
+  Exibição arredonda ao minuto com “vai um” (1,9999 h → 2 h 0 min).
 
 ## 6. Produção — `production.ts`
 
@@ -111,6 +119,21 @@ Exemplo (sem taxas): custo R$ 50, markup 100% → preço R$ 100, lucro R$ 50, ma
   taxa de falha 0 (as falhas reais já estão no consumo) e os parâmetros do orçamento original.
   Custo por peça aprovada = custo realizado ÷ peças aprovadas. Sem mão de obra real informada, usa a do orçamento (marcado estimado).
 - Taxa de falha histórica = peças rejeitadas ÷ (aprovadas + rejeitadas) nas OPs concluídas (filtrável por impressora).
+- **Peças prontas** (OP do tipo Estoque): ao concluir, cria um lote de peças com quantidade = aprovadas, custo unitário = custo realizado
+  por peça aprovada (4 casas) e data de produção = data da conclusão. Saldo = produzidas − vendidas (vendas ativas) − baixas.
+  Dias parado = hoje − data de produção. A venda usa o custo do lote (snapshot) e não pode exceder o saldo; cancelar a venda devolve o saldo.
+
+## 6a. Frete — `shipping.ts`
+
+- Peso do pacote = Σ peso de filamento por peça × quantidade + peso da embalagem, em kg arredondado para cima (3 casas),
+  com as medidas da caixa padrão. É estimativa (suportes removidos pesam menos). “Empresa paga” lança o valor cotado como
+  frete pago pela empresa no custo do pedido.
+
+## 6b. Tendências — `trends.ts`
+
+- Cada ideia é avaliada com o mesmo motor do orçamento: 1 peça, peso e tempo estimados pela pesquisa, filamento escolhido,
+  impressora padrão, primeiro canal ativo, markup e taxa de falha padrão. Preço de mercado = média da faixa encontrada;
+  lucro = resultado da análise a esse preço; lucro por hora = lucro ÷ horas de máquina (com falhas).
 
 ## 7. Financeiro — `finance.ts` e `sales.ts`
 

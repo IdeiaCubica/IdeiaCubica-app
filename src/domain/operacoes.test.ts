@@ -4,11 +4,13 @@ import { createEmptyDB } from './schema';
 import { saveAccount, saveChannel, saveMaterial, savePrinter } from './catalog';
 import { cancelPurchase, registerPurchase } from './purchases';
 import { accountBalance, openTotals, reverseSettlement, settleTitle, titleOpen } from './finance';
-import { adjustInventory, lotBalance, reorderAnalysis, reserve, releaseAll, addMovement } from './inventory';
+import { adjustInventory, lotBalance, purchaseAlerts, reorderAnalysis, reserve, releaseAll, addMovement } from './inventory';
 import { emptyQuoteInput, materialCostPolicy, saveQuote } from './quotes';
-import { cancelOrder, compareOrder, completeOrder, createOrderFromQuote, reserveOrderMaterials, startOrder } from './production';
+import { cancelOrder, compareOrder, completeOrder, createManualOrder, createOrderFromQuote, daysInStock, finishedGoodBalance, moveInQueue, orderDelivery, productionQueue, queueShortages, reserveOrderMaterials, startOrder, writeOffFinishedGood } from './production';
 import { managementResult, registerSale } from './sales';
 import type { DB } from './types';
+import { estimateIdea, saveTrendReport } from './trends';
+import { D } from './money';
 
 let db: DB;
 let accountId: string;
@@ -115,6 +117,26 @@ describe('Estoque', () => {
     adjustInventory(db, { lotId, countedQty: 950, reason: 'pesagem' });
     expect(lotBalance(db, lotId).physical.toString()).toBe('950');
   });
+  it('sinaliza compra pela demanda de ordens abertas ainda não reservadas, sem contar em dobro', () => {
+    const lotId = buyCash().items[0].lotId;
+    const mat = db.materials[0];
+    // OP planejada que precisa de 1.200 g (mais que os 1.000 g em estoque)
+    db.orders.push({ id: 'op-a', status: 'planejada', plannedMaterials: [{ materialId: mat.id, qty: 1200 }] } as unknown as DB['orders'][number]);
+    let r = reorderAnalysis(db, mat, 90, '2026-02-02');
+    expect(r.plannedDemand.toString()).toBe('1200');
+    expect(r.status).toBe('falta');
+    expect(r.suggestedQty!.toString()).toBe('200');
+    expect(purchaseAlerts(db)).toHaveLength(1);
+    // Ordem com 300 g já reservada: entra no "reservado" e NÃO na demanda planejada
+    db.orders[0].plannedMaterials[0].qty = 300;
+    reserve(db, lotId, 300, 'op-a');
+    db.orders[0].status = 'pronta';
+    r = reorderAnalysis(db, mat, 90, '2026-02-02');
+    expect(r.plannedDemand.toString()).toBe('0');
+    expect(r.available.toString()).toBe('700');
+    expect(r.projected.toString()).toBe('700');
+  });
+
   it('reposição considera reservas (disponível), não só saldo', () => {
     const lotId = buyCash().items[0].lotId;
     db.materials[0].minStock = 500;
@@ -211,6 +233,87 @@ describe('Produção e vendas', () => {
     expect(lotBalance(db, lotId).reserved.toString()).toBe('900');
     cancelOrder(db, op.id, 'cliente desistiu');
     expect(op.status).toBe('cancelada');
+  });
+
+  it('fila de produção: nova OP vai para o fim e pode ser reordenada', () => {
+    const { q, printer } = setupQuote();
+    const a = createOrderFromQuote(db, q.id);
+    const b = createManualOrder(db, { description: 'Vaso', qtyPlanned: 2, plannedMaterials: [{ materialId: filamentId, qty: 100 }], plannedHours: 3, printerId: printer.id });
+    const c = createManualOrder(db, { description: 'Suporte', qtyPlanned: 1, plannedMaterials: [{ materialId: filamentId, qty: 50 }], plannedHours: 1 });
+    expect(productionQueue(db).map((o) => o.id)).toEqual([a.id, b.id, c.id]);
+    moveInQueue(db, c.id, 0);
+    expect(productionQueue(db).map((o) => o.id)).toEqual([c.id, a.id, b.id]);
+    moveInQueue(db, c.id, 99);
+    expect(productionQueue(db).map((o) => o.sequence)).toEqual([1, 2, 3]);
+    startOrder(db, a.id);
+    expect(productionQueue(db).map((o) => o.id)).toEqual([b.id, c.id]);
+    expect(() => moveInQueue(db, a.id, 0)).toThrow(/fila/);
+    // OP manual sem lote fixo reserva por material
+    expect(b.plannedMaterials[0].lotId).toBeUndefined();
+    // Falta acumulada na ordem da fila: 1.000 g − 200 (a, reservada) = 800; b usa 100, c usa 50 → sem falta
+    expect(queueShortages(db).size).toBe(0);
+    createManualOrder(db, { description: 'Grande', qtyPlanned: 1, plannedMaterials: [{ materialId: filamentId, qty: 700 }], plannedHours: 9 });
+    const s = [...queueShortages(db).values()];
+    expect(s).toHaveLength(1);
+    expect(s[0][0].shortage.toString()).toBe('50');
+    expect(b.purpose).toBe('estoque');
+  });
+
+  it('OP para estoque gera peças prontas com custo real; venda baixa o saldo e respeita o disponível', () => {
+    const { lotId, printer, ch } = setupQuote();
+    const op = createManualOrder(db, { description: 'Dragão articulado', qtyPlanned: 5, plannedMaterials: [{ lotId, qty: 100 }], plannedHours: 5, printerId: printer.id, purpose: 'estoque' });
+    startOrder(db, op.id);
+    completeOrder(db, op.id, { materials: [{ lotId, qty: 100 }], hours: 5, qtyApproved: 4, qtyRejected: 1, laborMinutes: 40, failures: [], location: 'Prateleira A' });
+    expect(db.finishedGoods).toHaveLength(1);
+    const fg = db.finishedGoods[0];
+    expect(fg.qtyProduced).toBe(4);
+    expect(fg.location).toBe('Prateleira A');
+    expect(fg.costStatus).toBe('realizado');
+    expect(fg.unitCost).toBe(compareOrder(db, op).real!.unit!.toDecimalPlaces(4).toString());
+    expect(op.finishedGoodId).toBe(fg.id);
+
+    const sale = registerSale(db, { date: '2026-02-10', description: fg.description, finishedGoodId: fg.id, qty: 3, unitPrice: '60', discount: '0', freightCharged: '0',
+      freightCost: '0', channelId: ch.id, feesWithheld: true, payment: { mode: 'avista', accountId, installments: 1, firstDue: '2026-02-10', intervalDays: 30 } });
+    expect(sale.unitCost).toBe(fg.unitCost);
+    expect(finishedGoodBalance(db, fg.id).available).toBe(1);
+    expect(() => registerSale(db, { date: '2026-02-11', description: 'x', finishedGoodId: fg.id, qty: 2, unitPrice: '60', discount: '0', freightCharged: '0',
+      freightCost: '0', feesWithheld: true, payment: { mode: 'avista', accountId, installments: 1, firstDue: '2026-02-10', intervalDays: 30 } })).toThrow(/Só há 1/);
+    writeOffFinishedGood(db, fg.id, 1, 'avaria');
+    expect(finishedGoodBalance(db, fg.id).available).toBe(0);
+    expect(daysInStock({ producedAt: '2026-01-01' }, '2026-01-31')).toBe(30);
+  });
+
+  it('OP de pedido não vai para o estoque de peças; entrega é marcada pela venda', () => {
+    const { q, ch } = setupQuote();
+    const op = createOrderFromQuote(db, q.id, { purpose: 'pedido', dueDate: '2026-03-01' });
+    expect(orderDelivery(db, op)).toBe('fila');
+    startOrder(db, op.id);
+    expect(orderDelivery(db, op)).toBe('producao');
+    completeOrder(db, op.id, { materials: [{ lotId: db.lots[0].id, qty: 200 }], hours: 4, qtyApproved: 4, qtyRejected: 0, laborMinutes: null, failures: [] });
+    expect(db.finishedGoods).toHaveLength(0);
+    expect(orderDelivery(db, op)).toBe('pronto');
+    registerSale(db, { date: '2026-02-10', description: 'Chaveiro', orderId: op.id, qty: 4, unitPrice: '25', discount: '0', freightCharged: '0', freightCost: '0',
+      channelId: ch.id, feesWithheld: true, payment: { mode: 'avista', accountId, installments: 1, firstDue: '2026-02-10', intervalDays: 30 } });
+    expect(orderDelivery(db, op)).toBe('entregue');
+  });
+
+  it('tendência: estima custo com o mesmo motor do orçamento e o lucro ao preço de mercado', () => {
+    const { printer, q } = setupQuote();
+    db.settings.defaultPrinterId = printer.id;
+    db.settings.defaultMarkupPct = '40';
+    db.settings.defaultFailureRatePct = '0';
+    const est = estimateIdea(db, { estWeightG: 50, estPrintHours: 1, priceMin: 30, priceMax: 50 }, filamentId);
+    // Mesmo custo unitário do orçamento equivalente (50 g, 1 h, mesmos parâmetros)
+    expect(est.unitCost!.toDecimalPlaces(2).toString()).toBe(D(q.versions[0].summary.unitCost!).toDecimalPlaces(2).toString());
+    expect(est.marketUnit!.toString()).toBe('40');
+    expect(est.market!.revenue.toString()).toBe('40');
+    expect(est.profitPerHour!.toString()).toBe(est.market!.result.toString());
+    expect(estimateIdea(db, { estWeightG: null, estPrintHours: 1, priceMin: null, priceMax: null }, filamentId).pending).toContain('peso estimado');
+    const r1 = saveTrendReport(db, { date: '2026-10-21', model: 'm', summary: 'a', ideas: [] });
+    saveTrendReport(db, { date: '2026-10-21', model: 'm', summary: 'b', ideas: [] });
+    expect(db.trends).toHaveLength(1);
+    expect(db.trends[0].summary).toBe('b');
+    expect(r1.id).not.toBe(db.trends[0].id);
   });
 
   it('venda a prazo gera conta a receber; recebimento liquida', () => {

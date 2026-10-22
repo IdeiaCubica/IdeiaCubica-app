@@ -12,7 +12,7 @@ export const num = (s: string): number | null => { const d = parseBR(s); return 
 /** Texto BR → string decimal | null (valores monetários). */
 export const dec = (s: string): string | null => { const d = parseBR(s); return d ? d.toString() : null; };
 
-export function useForm<T extends object>(initial: T) {
+export function useForm<T extends object>(initial: T | (() => T)) {
   const [v, setV] = useState<T>(initial);
   const set = <K extends keyof T>(k: K) => (value: T[K]) => setV((s) => ({ ...s, [k]: value }));
   return [v, set, setV] as const;

@@ -2,6 +2,7 @@
 import type { Account, Category, DB, ID, Material, NamedItem, Overhead, Party, Printer, SalesChannel } from './types';
 import { D, Decimal, Dn } from './money';
 import { BusinessError, assert, audit, byId, isValidCnpj, isValidCpf, newId, nextCode, nowISO, onlyDigits, requireText } from './core';
+import { formatAddress, isValidCep } from './address';
 
 /* ---------------- Materiais ---------------- */
 export type MaterialInput = Omit<Material, 'id' | 'code' | 'createdAt'> & { code?: string };
@@ -105,12 +106,20 @@ export function saveCategory(db: DB, input: Omit<Category, 'id'>, id?: ID) {
 
 /* ---------------- Fornecedores e clientes ---------------- */
 /**
- * Clientes exigem os dados básicos completos: nome completo, endereço, telefone,
- * CPF/CNPJ válido e fonte de captação. Fornecedores exigem apenas o nome.
+ * Clientes e fornecedores: apenas o NOME é obrigatório (nem todo cliente informa
+ * CPF ou endereço). O que for preenchido é validado: CPF/CNPJ pelos dígitos
+ * verificadores e sem duplicidade, telefone com DDD, CEP com 8 dígitos.
  */
 export function saveParty(db: DB, input: Omit<Party, 'id'>, id?: ID): Party {
-  const name = requireText(input.name, input.kind === 'cliente' ? 'o nome completo do cliente' : 'o nome');
-  const data: Omit<Party, 'id'> = { ...input, name, address: input.address?.trim(), phone: input.phone?.trim(), document: input.document?.trim(), notes: input.notes?.trim() };
+  const name = requireText(input.name, input.kind === 'cliente' ? 'o nome do cliente' : 'o nome');
+  const parts = input.addressParts ? { ...input.addressParts, cep: onlyDigits(input.addressParts.cep) || undefined } : undefined;
+  if (parts?.cep) assert(isValidCep(parts.cep), 'CEP deve ter 8 dígitos.');
+  const hasParts = parts && Object.values(parts).some((v) => (v ?? '').toString().trim());
+  const data: Omit<Party, 'id'> = {
+    ...input, name, addressParts: hasParts ? parts : undefined,
+    address: hasParts ? formatAddress(parts) : input.address?.trim(),
+    phone: input.phone?.trim(), document: input.document?.trim(), notes: input.notes?.trim(),
+  };
   if (data.document) {
     const d = onlyDigits(data.document);
     const ok = d.length === 11 ? isValidCpf(d) : d.length === 14 ? isValidCnpj(d) : false;
@@ -122,12 +131,6 @@ export function saveParty(db: DB, input: Omit<Party, 'id'>, id?: ID): Party {
   if (data.phone) {
     assert(onlyDigits(data.phone).length >= 10, 'Telefone inválido: informe DDD + número.');
     data.phone = onlyDigits(data.phone);
-  }
-  if (input.kind === 'cliente') {
-    requireText(data.address, 'o endereço do cliente');
-    requireText(data.phone, 'o telefone do cliente');
-    requireText(data.document, 'o CPF/CNPJ do cliente');
-    assert(data.sourceId, 'Informe a fonte de captação do cliente.');
   }
   if (data.sourceId) byId(db.leadSources, data.sourceId, 'Fonte de captação');
   if (id) {

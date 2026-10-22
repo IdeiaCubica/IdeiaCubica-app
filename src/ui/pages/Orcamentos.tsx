@@ -12,7 +12,11 @@ import { D, Decimal, fmtBRL, fmtNum, fmtPct } from '../../domain/money';
 import { parse3MF } from '../../io/threeMF';
 import { parseStl } from '../../io/stl';
 import { compressImage } from '../image';
-import { Alert, Badge, Combobox, DecField, Empty, Field, InlineDec, PageHead, SelectField, TextField, useConfirm, type Tone } from '../components/ui';
+import { Alert, Badge, Combobox, DecField, Empty, Field, InlineDec, PageHead, SelectField, TextField, TimeField, useConfirm, type Tone } from '../components/ui';
+import { perGramToPerKg } from '../../domain/conversions';
+import { quotePackage } from '../../domain/shipping';
+import { fmtCep, isValidCep } from '../../domain/address';
+import { quoteFreight, type FreightOption } from '../../io/api';
 import { PartyForm, priceLabel } from './Cadastros';
 
 export const QUOTE_STATUS: Record<QuoteStatus, { label: string; tone: Tone }> = {
@@ -137,10 +141,11 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
   const toOrder = async () => {
     if (!quote) return;
     const ok = await confirm({ title: 'Gerar ordem de produção?', confirmLabel: 'Gerar OP',
-      text: <>A produção usará a <b>versão {quote.versions.length}</b> salva. Alterações não salvas nesta tela não entram. Depois disso o orçamento fica bloqueado para edição.</> });
+      text: <>A produção usará a <b>versão {quote.versions.length}</b> salva. Alterações não salvas nesta tela não entram. Depois disso o orçamento fica bloqueado para edição.
+        <br />{quote.customerId ? 'Com cliente: entra como pedido do cliente.' : 'Sem cliente: entra como produção para estoque (pronta-entrega).'} A OP vai para o fim da fila de produção; você pode mudar isso no quadro.</> });
     if (ok === null) return;
-    const r = await run((d) => createOrderFromQuote(d, quote.id), 'Ordem de produção criada.');
-    if (r.ok) navigate('producao/ordens');
+    const r = await run((d) => createOrderFromQuote(d, quote.id), 'Ordem de produção criada e colocada na fila.');
+    if (r.ok) navigate('producao/quadro');
   };
 
   const onImage = async (file: File) => {
@@ -219,7 +224,7 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
 
           {/* 3. Tempo */}
           <Section title="3. Tempo de produção" subtitle="Tempo de impressão de 1 peça (do fatiador).">
-            <HoursField value={input.printHoursPerUnit} onChange={(v) => patch({ printHoursPerUnit: v })} />
+            <TimeField label="Tempo de impressão de 1 peça" required value={input.printHoursPerUnit} onChange={(v) => patch({ printHoursPerUnit: v })} hint="como aparece no fatiador (ex.: 1 h 20 min)" />
             <div className="grid g2">
               <SelectField label="Impressora" value={input.printerId ?? ''} onChange={(v) => patch({ printerId: v || undefined })} placeholder="— selecione —"
                 options={db.printers.filter((p) => p.active || p.id === input.printerId).map((p) => ({ value: p.id, label: p.name }))}
@@ -232,6 +237,9 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
 
           {/* 4. Parâmetros deste orçamento */}
           <ParamsSection db={db} input={input} patch={patch} />
+
+          {/* 5. Frete */}
+          <FreightSection db={db} input={input} patch={patch} customerId={meta.customerId} />
 
           {!locked && quote && <Section title="Observação desta versão"><TextField label="O que mudou (opcional)" value={meta.note} onChange={(v) => setMeta((m) => ({ ...m, note: v }))} /></Section>}
           {quote && <VersionHistory quote={quote} onLoad={(i) => setInput({ overrides: {}, ...structuredClone(i) })} />}
@@ -288,17 +296,6 @@ function FilamentSection({ db, input, patch }: { db: DB; input: QuoteInput; patc
   );
 }
 
-/* ---------------- Tempo ---------------- */
-function HoursField({ value, onChange }: { value: number | null; onChange: (v: number | null) => void }) {
-  const h = value === null ? null : Math.floor(value);
-  const m = value === null ? null : Math.round((value - Math.floor(value)) * 60 * 100) / 100;
-  return (
-    <div className="grid g2">
-      <DecField label="Horas" suffix="h" value={h} onChange={(v) => onChange(v === null && m === null ? null : Number(v ?? 0) + (m ?? 0) / 60)} />
-      <DecField label="Minutos" suffix="min" value={m} onChange={(v) => onChange(v === null && h === null ? null : (h ?? 0) + Number(v ?? 0) / 60)} />
-    </div>
-  );
-}
 
 /* ---------------- Parâmetros deste orçamento ---------------- */
 function ParamsSection({ db, input, patch }: { db: DB; input: QuoteInput; patch: (p: Partial<QuoteInput>) => void }) {
@@ -336,6 +333,64 @@ function ParamsSection({ db, input, patch }: { db: DB; input: QuoteInput; patch:
         </div>
       </details>
     </div>
+  );
+}
+
+/* ---------------- Frete (SuperFrete) ---------------- */
+function FreightSection({ db, input, patch, customerId }: { db: DB; input: QuoteInput; patch: (p: Partial<QuoteInput>) => void; customerId: string }) {
+  const { toast } = useStore();
+  const customer = db.parties.find((p) => p.id === customerId);
+  const [to, setTo] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [options, setOptions] = useState<FreightOption[] | null>(null);
+  const destCep = (to || customer?.addressParts?.cep || '').replace(/\D/g, '');
+  const origin = db.settings.companyAddress?.cep?.replace(/\D/g, '') ?? '';
+  const { pkg, missing, piecesG } = quotePackage(db, input);
+  const calc = async () => {
+    setError(null); setOptions(null);
+    if (!isValidCep(origin)) return setError('Cadastre o CEP de origem em Parâmetros de Custos → Gerais → Envios.');
+    if (!isValidCep(destCep)) return setError('Informe um CEP de destino válido (8 dígitos) ou cadastre o CEP do cliente.');
+    if (!pkg) return setError(`Falta informar: ${missing.join(', ')}.`);
+    setLoading(true);
+    try {
+      const r = await quoteFreight({ from: origin, to: destCep, package: pkg });
+      setOptions(r.options);
+      if (!r.options.length) setError('A SuperFrete não retornou opções para este trecho.');
+    } catch (e) { setError(e instanceof Error ? e.message : 'Falha ao cotar o frete.'); }
+    finally { setLoading(false); }
+  };
+  const companyPays = (o: FreightOption) => {
+    patch({ freightSubsidyPerOrder: o.price });
+    toast('success', `Frete ${o.name} (${fmtBRL(o.price)}) incluído no custo como “Frete pago pela empresa”.`);
+  };
+  return (
+    <Section title="5. Frete (SuperFrete)" subtitle="Cotação com o CEP do cliente, a caixa padrão e o peso das peças. Opcional.">
+      <div className="grid g3">
+        <Field label="CEP de destino" hint={customer?.addressParts?.cep && !to ? `Do cadastro de ${customer.name}` : 'Digite para cotar outro destino'}>
+          <input inputMode="numeric" value={to || (customer?.addressParts?.cep ? fmtCep(customer.addressParts.cep) : '')} placeholder="00000-000" aria-label="CEP de destino"
+            onChange={(e) => setTo(fmtCep(e.target.value))} />
+        </Field>
+        <Field label="Pacote estimado" hint={pkg ? `${fmtNum(piecesG)} g de peças + embalagem` : `Falta: ${missing.join(', ')}`}>
+          <div className={`readonly-value ${pkg ? '' : 'missing'}`}>{pkg ? `${fmtNum(pkg.weightKg, 3)} kg · ${pkg.lengthCm}×${pkg.widthCm}×${pkg.heightCm} cm` : 'incompleto'}</div>
+        </Field>
+        <Field label=" "><button type="button" className="btn secondary" onClick={calc} disabled={loading}>{loading ? 'Cotando…' : 'Calcular frete'}</button></Field>
+      </div>
+      {error && <Alert tone="warning">{error}</Alert>}
+      {options && options.length > 0 && (
+        <div className="card"><table className="tbl"><thead><tr><th>Serviço</th><th className="num">Preço</th><th>Prazo</th><th /></tr></thead><tbody>
+          {options.map((o) => (
+            <tr key={o.id}>
+              <td><b>{o.name}</b>{o.company && <div className="muted small">{o.company}</div>}</td>
+              <td className="num">{o.error ? '—' : <b>{fmtBRL(o.price)}</b>}</td>
+              <td>{o.error ? <span className="muted small">{o.error}</span> : o.deliveryMin !== null ? (o.deliveryMin === o.deliveryMax ? `${o.deliveryMin} dia(s) úteis` : `${o.deliveryMin} a ${o.deliveryMax} dias úteis`) : '—'}</td>
+              <td>{!o.error && o.price && <button type="button" className="btn ghost sm" onClick={() => companyPays(o)}>Empresa paga</button>}</td>
+            </tr>
+          ))}
+        </tbody></table></div>
+      )}
+      <p className="small muted">Se o <b>cliente paga</b> o frete, informe o valor a ele à parte (não entra no custo da peça). Se a <b>empresa paga</b>, o valor entra no custo do pedido. Valores da SuperFrete no momento da consulta.</p>
+    </Section>
   );
 }
 
@@ -425,7 +480,7 @@ function ResultPanel({ ev, input, patch, locked }: { ev: QuoteEvaluation; input:
         <div className="card-body" style={{ paddingTop: 8 }}>
           <details className="disclosure"><summary>Como cada valor foi calculado</summary>
             <ul className="small" style={{ paddingLeft: 20, margin: 0 }}>
-              {costs.materialLines.map((l, i) => <li key={i}><b>{l.label}:</b> {fmtNum(l.qtyOrder)} {l.unit} × {l.unitCost ? `${fmtBRL(l.unitCost.times(1000))}/kg` : '—'} ({l.source || 'sem preço'}) = {l.cost ? fmtBRL(l.cost) : '—'}</li>)}
+              {costs.materialLines.map((l, i) => <li key={i}><b>{l.label}:</b> {fmtNum(l.qtyOrder)} {l.unit} × {l.unitCost ? `${fmtBRL(perGramToPerKg(l.unitCost))}/kg` : '—'} ({l.source || 'sem preço'}) = {l.cost ? fmtBRL(l.cost) : '—'}</li>)}
               {costs.components.map((c) => <li key={c.key}><b>{c.label}:</b> {c.formula}</li>)}
             </ul>
           </details>

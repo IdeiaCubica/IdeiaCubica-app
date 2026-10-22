@@ -1,12 +1,14 @@
 import { useState } from 'react';
 import { useStore } from '../store';
 import { navigate } from '../App';
-import type { Category, DB, Material, NamedItem, Party, Unit } from '../../domain/types';
+import type { AddressParts, Category, DB, Material, NamedItem, Party, Unit } from '../../domain/types';
+import { AddressFields } from '../components/AddressFields';
 import { deleteNamed, namedUsage, priceHistory, saveCategory, saveMaterial, saveNamed, saveParty, type NamedList } from '../../domain/catalog';
-import { lotBalance, materialBalance } from '../../domain/inventory';
+import { lotBalance, materialBalance, reorderAnalysis } from '../../domain/inventory';
 import { materialCostPolicy } from '../../domain/quotes';
 import { UNIT_LABEL, fmtDate, fmtDocument, fmtPhone } from '../../domain/core';
-import { D, Decimal, fmtBRL, fmtNum, toInputBR } from '../../domain/money';
+import { Decimal, fmtBRL, fmtNum, toInputBR } from '../../domain/money';
+import { perGramToPerKg, perKgToPerGram } from '../../domain/conversions';
 import { Badge, Check, Combobox, DataTable, Empty, Modal, NumField, PageHead, SelectField, Tabs, TextArea, TextField, dec, num, useConfirm, useForm } from '../components/ui';
 
 type Tab = 'materiais' | 'clientes' | 'fornecedores' | 'marcas' | 'fabricantes';
@@ -96,7 +98,7 @@ function RenameModal({ item, title, onClose, onSave }: { item: NamedItem; title:
 /** Preço exibido ao usuário: R$/kg para filamento, R$/unidade nos demais. */
 export function priceLabel(m: Material, unitCost: Decimal.Value | null | undefined) {
   if (unitCost === null || unitCost === undefined) return null;
-  return m.unit === 'g' ? `${fmtBRL(D(unitCost).times(1000))}/kg` : `${fmtBRL(unitCost, 4)}/${m.unit}`;
+  return m.unit === 'g' ? `${fmtBRL(perGramToPerKg(unitCost))}/kg` : `${fmtBRL(unitCost, 4)}/${m.unit}`;
 }
 
 /* ---------------- Materiais ---------------- */
@@ -122,7 +124,12 @@ function Materiais() {
           { key: 'n', header: 'Material', render: (m) => <><b>{m.filament?.colorHex && <i className="swatch" style={{ background: m.filament.colorHex }} />}{m.name}</b><div className="muted small">{materialDesc(db, m)}</div></>, sort: (m) => m.name },
           { key: 'p', header: 'Preço nos orçamentos', num: true, render: (m) => { const pol = materialCostPolicy(db, m.id); return pol.unitCost ? <><b>{priceLabel(m, pol.unitCost)}</b><div className="muted small">{pol.source}</div></> : <Badge tone="warning">sem preço</Badge>; } },
           { key: 'f', header: 'Estoque disponível', num: true, render: (m) => { const b = materialBalance(db, m.id); const low = m.minStock !== null && m.minStock !== undefined && b.available.lt(m.minStock); return <span style={{ color: low ? 'var(--error)' : undefined }}>{fmtNum(b.available)} {m.unit}</span>; } },
-          { key: 's', header: 'Situação', render: (m) => m.active ? <Badge tone="success">ativo</Badge> : <Badge>inativo</Badge> },
+          { key: 's', header: 'Situação', render: (m) => {
+            if (!m.active) return <Badge>inativo</Badge>;
+            const r = reorderAnalysis(db, m);
+            return r.status === 'falta' ? <Badge tone="error" title={r.note}>comprar já</Badge>
+              : r.status === 'repor' ? <Badge tone="warning" title={r.note}>repor</Badge> : <Badge tone="success">ativo</Badge>;
+          } },
         ]} />
       {edit && <MaterialForm material={edit === 'novo' ? undefined : edit} onClose={() => setEdit(null)}
         onSave={(v, id) => run((d) => saveMaterial(d, v, id), 'Material salvo.').then((r) => r.ok && setEdit(null))} />}
@@ -176,7 +183,7 @@ function MaterialForm({ material, onClose, onSave }: { material?: Material; onCl
     materialType: fil?.materialType ?? 'PLA', color: fil?.color ?? '', colorHex: fil?.colorHex ?? '#0d1925',
     netWeightG: toInputBR(fil?.netWeightG ?? null), spoolWeightG: toInputBR(fil?.spoolWeightG ?? null),
     // Filamento: preço digitado em R$/kg e gravado em R$/g.
-    referencePrice: material?.referenceCost ? toInputBR(initialIsFil ? D(material.referenceCost).times(1000) : material.referenceCost, 4) : '',
+    referencePrice: material?.referenceCost ? toInputBR(initialIsFil ? perGramToPerKg(material.referenceCost) : material.referenceCost, 4) : '',
     minStock: toInputBR(material?.minStock ?? null), leadTimeDays: toInputBR(material?.leadTimeDays ?? null), location: material?.location ?? '', notes: material?.notes ?? '',
   });
   const isFil = db.categories.find((c) => c.id === f.categoryId)?.isFilament ?? false;
@@ -187,7 +194,7 @@ function MaterialForm({ material, onClose, onSave }: { material?: Material; onCl
       brandId: f.brandId || undefined, manufacturerId: f.manufacturerId || undefined,
       filament: isFil ? { materialType: f.materialType, color: f.color, colorHex: f.colorHex,
         netWeightG: num(f.netWeightG), spoolWeightG: num(f.spoolWeightG), grossWeightG: material?.filament?.grossWeightG ?? null, diameterMm: material?.filament?.diameterMm ?? null } : undefined,
-      referenceCost: ref === null ? null : isFil ? D(ref).div(1000).toString() : ref,
+      referenceCost: ref === null ? null : isFil ? perKgToPerGram(ref).toString() : ref,
       minStock: num(f.minStock), safetyStock: material?.safetyStock ?? null, leadTimeDays: num(f.leadTimeDays), location: f.location, notes: f.notes,
     }, material?.id);
   };
@@ -274,7 +281,6 @@ function Parties({ kind }: { kind: Party['kind'] }) {
   const isClient = kind === 'cliente';
   const rows = db.parties.filter((p) => p.kind === kind && (!source || p.sourceId === source));
   const sourceName = (id?: string) => db.leadSources.find((s) => s.id === id)?.name;
-  const incomplete = (p: Party) => isClient && (!p.address || !p.phone || !p.document || !p.sourceId);
   const count = (p: Party) => isClient
     ? `${db.quotes.filter((q) => q.customerId === p.id).length} orçamento(s) · ${db.sales.filter((s) => s.customerId === p.id && s.status === 'ativa').length} venda(s)`
     : `${db.purchases.filter((x) => x.supplierId === p.id && x.status === 'ativa').length} compra(s)`;
@@ -285,7 +291,7 @@ function Parties({ kind }: { kind: Party['kind'] }) {
         toolbar={isClient ? <Combobox compact ariaLabel="Filtrar por fonte de captação" value={source} onChange={setSource} placeholder="Todas as fontes" options={db.leadSources.map((s) => ({ value: s.id, label: s.name }))} /> : undefined}
         empty={<Empty title={`Nenhum ${label} cadastrado`} text={isClient ? 'Clientes aparecem nos orçamentos e nas vendas.' : 'Fornecedores aparecem nas compras.'} action={<button className="btn primary" onClick={() => setEdit('novo')}>Cadastrar {label}</button>} />}
         columns={[
-          { key: 'n', header: 'Nome', render: (p) => <><b>{p.name}</b>{incomplete(p) && <div><Badge tone="warning">cadastro incompleto</Badge></div>}</>, sort: (p) => p.name.toLowerCase() },
+          { key: 'n', header: 'Nome', render: (p) => <b>{p.name}</b>, sort: (p) => p.name.toLowerCase() },
           { key: 't', header: 'Telefone', render: (p) => <span className="nowrap">{p.phone ? fmtPhone(p.phone) : p.contact || '—'}</span> },
           { key: 'd', header: 'CPF/CNPJ', render: (p) => <span className="nowrap">{p.document ? fmtDocument(p.document) : '—'}</span> },
           ...(isClient ? [{ key: 'f', header: 'Fonte', render: (p: Party) => sourceName(p.sourceId) ?? '—', sort: (p: Party) => sourceName(p.sourceId) ?? '' }] : []),
@@ -298,27 +304,30 @@ function Parties({ kind }: { kind: Party['kind'] }) {
   );
 }
 
-/** Cadastro de cliente (todos os dados básicos obrigatórios) ou fornecedor (só o nome é obrigatório). */
+/** Cadastro de cliente ou fornecedor — só o nome é obrigatório; endereço com busca por CEP. */
 export function PartyForm({ item, kind, onClose, onSave }: { item?: Party; kind: Party['kind']; onClose: () => void; onSave: (v: Omit<Party, 'id'>, id?: string) => void }) {
   const { db } = useStore();
   const isClient = kind === 'cliente';
   const [f, set] = useForm({
-    name: item?.name ?? '', address: item?.address ?? '', phone: item?.phone ? fmtPhone(item.phone) : (item?.contact ?? ''),
+    name: item?.name ?? '', phone: item?.phone ? fmtPhone(item.phone) : (item?.contact ?? ''),
     document: item?.document ? fmtDocument(item.document) : '', sourceId: item?.sourceId ?? '', notes: item?.notes ?? '',
   });
-  const submit = () => onSave({ kind, name: f.name, address: f.address, phone: f.phone, document: f.document, sourceId: f.sourceId || undefined, notes: f.notes, contact: item?.contact }, item?.id);
+  const [addr, setAddr] = useState<AddressParts>(item?.addressParts ?? {});
+  const legacyAddress = !item?.addressParts && item?.address ? item.address : null;
+  const submit = () => onSave({ kind, name: f.name, addressParts: addr, address: legacyAddress ?? undefined, phone: f.phone, document: f.document, sourceId: f.sourceId || undefined, notes: f.notes, contact: item?.contact }, item?.id);
   return (
-    <Modal wide title={item ? `Editar ${kind}` : isClient ? 'Novo cliente' : 'Novo fornecedor'} subtitle={isClient ? 'Todos os campos com * são obrigatórios.' : undefined} onClose={onClose}
+    <Modal wide title={item ? `Editar ${kind}` : isClient ? 'Novo cliente' : 'Novo fornecedor'} subtitle="Só o nome é obrigatório; preencha o que tiver." onClose={onClose}
       footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={submit}>Salvar</button></>}>
       <div className="stack">
         <div className="grid g2">
           <TextField label={isClient ? 'Nome completo' : 'Nome / razão social'} required value={f.name} onChange={set('name')} autoFocus />
-          <TextField label="Telefone" required={isClient} value={f.phone} onChange={set('phone')} placeholder="(11) 98765-4321" type="tel" />
-          <TextField label="CPF/CNPJ" required={isClient} value={f.document} onChange={set('document')} placeholder="000.000.000-00" hint="Validado pelos dígitos verificadores." />
-          {isClient && <SelectField label="Fonte de captação" required value={f.sourceId} onChange={set('sourceId')} placeholder="— digite para buscar —"
+          <TextField label="Telefone" value={f.phone} onChange={set('phone')} placeholder="(11) 98765-4321" type="tel" />
+          <TextField label="CPF/CNPJ" value={f.document} onChange={set('document')} placeholder="000.000.000-00" hint="Opcional. Se preenchido, é validado." />
+          {isClient && <SelectField label="Fonte de captação" value={f.sourceId} onChange={set('sourceId')} placeholder="— digite para buscar —"
             options={namedOptions(db.leadSources, f.sourceId)} hint={<>Como o cliente chegou até você. <a href="#/parametros/fontes" onClick={onClose}>Gerenciar fontes</a></>} />}
         </div>
-        <TextField label="Endereço" required={isClient} value={f.address} onChange={set('address')} placeholder="Rua, número, bairro, cidade/UF, CEP" />
+        <AddressFields value={addr} onChange={setAddr} />
+        {legacyAddress && <small className="muted">Endereço anterior (texto livre): {legacyAddress}. Ao preencher os campos acima, ele é substituído.</small>}
         <TextArea label="Observações" value={f.notes} onChange={set('notes')} />
       </div>
     </Modal>

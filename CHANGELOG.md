@@ -2,6 +2,15 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.5.2 — 23/10/2026
+
+### Correção: tela parada em “Verificando permissões…”
+- A renovação automática do login podia ficar presa na trava de sessão entre abas do navegador, e a verificação de
+  permissões esperava para sempre. Agora a trava é só da aba, e cada etapa tem limite de tempo.
+- Se o servidor não responder, aparece uma mensagem com **Tentar novamente** e **Sair e entrar novamente**
+  (que limpa o login salvo no navegador mesmo sem resposta do servidor). Depois de 6 segundos esperando, os mesmos atalhos aparecem.
+- O carregamento dos dados também tem limite de tempo e mostra a mensagem de erro em vez de “Carregando…” sem fim.
+
 ## v1.5.1 — 22/10/2026
 
 ### Correção: preço por kg 1.000× maior

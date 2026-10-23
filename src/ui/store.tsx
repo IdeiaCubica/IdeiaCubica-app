@@ -8,6 +8,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { DB } from '../domain/types';
 import { createRepository, requestPersistentStorage, type Repository } from '../data/repository';
+import { withTimeout } from '../data/supabase';
 
 type ToastKind = 'success' | 'error' | 'info' | 'warning';
 interface Toast { id: number; kind: ToastKind; text: string }
@@ -32,7 +33,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const dbRef = useRef<DB | null>(null);
 
   useEffect(() => {
-    repoRef.current.load().then((d) => { dbRef.current = d; setDb(d); }).catch((e) => setLoadError(String(e?.message ?? e)));
+    withTimeout(repoRef.current.load(), 30000, 'O servidor demorou demais para enviar os dados. Verifique a internet e tente novamente.')
+      .then((d) => { dbRef.current = d; setDb(d); }).catch((e) => setLoadError(String(e?.message ?? e)));
     if (repoRef.current.kind === 'local') requestPersistentStorage().then(setPersistent);
   }, []);
 

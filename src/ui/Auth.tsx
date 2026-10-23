@@ -9,7 +9,7 @@
  */
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import type { Session } from '@supabase/supabase-js';
-import { getSupabase, missingSupabaseConfig, usesSupabase } from '../data/supabase';
+import { forceLocalSignOut, getSupabase, missingSupabaseConfig, usesSupabase, withTimeout } from '../data/supabase';
 import { Alert, TextField } from './components/ui';
 
 interface AuthCtx { email: string | null; signOut: () => Promise<void> }
@@ -51,10 +51,14 @@ function SupabaseGate({ children }: { children: ReactNode }) {
   const sb = getSupabase();
   const [session, setSession] = useState<Session | null | undefined>(undefined);
   const [member, setMember] = useState<boolean | null>(null);
+  const [checkError, setCheckError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
   const [recovery, setRecovery] = useState(false);
 
   useEffect(() => {
-    sb.auth.getSession().then(({ data }) => setSession(data.session));
+    withTimeout(sb.auth.getSession(), 15000, 'Sem resposta ao recuperar a sessão.')
+      .then(({ data }) => setSession(data.session))
+      .catch(() => setSession(null));   // sem sessão confiável → tela de login
     const { data: sub } = sb.auth.onAuthStateChange((event, s) => {
       if (event === 'PASSWORD_RECOVERY') setRecovery(true);
       setSession(s);
@@ -62,18 +66,41 @@ function SupabaseGate({ children }: { children: ReactNode }) {
     return () => sub.subscription.unsubscribe();
   }, [sb]);
 
+  // Verifica a liberação uma vez por usuário (não a cada renovação do login), com limite de tempo.
+  const userId = session?.user.id;
   useEffect(() => {
-    if (!session) { setMember(null); return; }
-    sb.from('app_members').select('user_id').eq('user_id', session.user.id).maybeSingle()
-      .then(({ data, error }) => setMember(!error && !!data));
-  }, [session, sb]);
+    if (!userId) { setMember(null); setCheckError(null); return; }
+    let alive = true;
+    setMember(null); setCheckError(null);
+    withTimeout(sb.from('app_members').select('user_id').eq('user_id', userId).maybeSingle(), 15000,
+      'O servidor demorou para responder ao verificar suas permissões.')
+      .then(({ data, error }) => {
+        if (!alive) return;
+        if (error) setCheckError(`Não foi possível verificar suas permissões: ${error.message}`);
+        else setMember(!!data);
+      })
+      .catch((e: unknown) => { if (alive) setCheckError(e instanceof Error ? e.message : 'Falha ao verificar permissões.'); });
+    return () => { alive = false; };
+  }, [userId, sb, attempt]);
 
-  const signOut = async () => { await sb.auth.signOut(); };
+  const signOut = async () => { await forceLocalSignOut(); setSession(null); };
 
   if (session === undefined) return <Shell><p className="muted">Verificando acesso…</p></Shell>;
   if (recovery && session) return <NewPassword onDone={() => setRecovery(false)} />;
   if (!session) return <Login />;
-  if (member === null) return <Shell><p className="muted">Verificando permissões…</p></Shell>;
+  if (checkError) {
+    return (
+      <Shell>
+        <h2>Não conseguimos confirmar o acesso</h2>
+        <Alert tone="warning">{checkError} Verifique a internet e tente de novo. Se continuar, saia e entre novamente.</Alert>
+        <div className="row">
+          <button className="btn primary" onClick={() => setAttempt((n) => n + 1)}>Tentar novamente</button>
+          <button className="btn secondary" onClick={signOut}>Sair e entrar novamente</button>
+        </div>
+      </Shell>
+    );
+  }
+  if (member === null) return <Shell><p className="muted">Verificando permissões…</p><SlowHint onSignOut={signOut} /></Shell>;
   if (!member) {
     return (
       <Shell>
@@ -84,6 +111,22 @@ function SupabaseGate({ children }: { children: ReactNode }) {
     );
   }
   return <Ctx.Provider value={{ email: session.user.email ?? null, signOut }}>{children}</Ctx.Provider>;
+}
+
+/** Depois de alguns segundos esperando, oferece uma saída em vez de deixar a tela parada. */
+function SlowHint({ onSignOut }: { onSignOut: () => void }) {
+  const [slow, setSlow] = useState(false);
+  useEffect(() => { const t = setTimeout(() => setSlow(true), 6000); return () => clearTimeout(t); }, []);
+  if (!slow) return null;
+  return (
+    <div className="stack" style={{ gap: 8 }}>
+      <p className="small muted">Está demorando mais que o normal.</p>
+      <div className="row">
+        <button className="btn secondary sm" onClick={() => window.location.reload()}>Recarregar</button>
+        <button className="btn ghost sm" onClick={onSignOut}>Sair e entrar novamente</button>
+      </div>
+    </div>
+  );
 }
 
 function Login() {

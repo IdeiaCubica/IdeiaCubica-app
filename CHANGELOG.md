@@ -2,6 +2,13 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.5.3 — 23/10/2026
+
+### Proteção do banco contra excesso de requisições
+- O projeto registrou ~26 milhões de leituras dos dados (sistema iniciando repetidamente), o que levou a CPU do Supabase a 100%.
+- Novo **disjuntor** no navegador: se uma aba passar de 120 requisições ao banco em 1 minuto (contando também recargas da página),
+  ela é pausada por 5 minutos com um aviso, em vez de sobrecarregar o banco. O uso normal fica muito abaixo desse limite.
+
 ## v1.5.2 — 23/10/2026
 
 ### Correção: tela parada em “Verificando permissões…”

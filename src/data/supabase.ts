@@ -35,10 +35,54 @@ async function tabLock<R>(_name: string, _acquireTimeout: number, fn: () => Prom
   return run;
 }
 
+/**
+ * Disjuntor de requisições: protege o banco contra repetição descontrolada
+ * (ex.: página recarregando em loop — o projeto chegou a 26 milhões de leituras).
+ * Conta as requisições desta aba numa janela de tempo, inclusive entre recargas
+ * (sessionStorage). Passou do limite → bloqueia e avisa, em vez de sobrecarregar.
+ */
+const BREAKER_KEY = 'ic:req-breaker';
+const WINDOW_MS = 60_000;
+const MAX_PER_WINDOW = 120;   // uso normal: poucas requisições por minuto
+export const BREAKER_EVENT = 'ic:breaker-open';
+
+export function breakerState(): { open: boolean; until: number } {
+  try {
+    const s = JSON.parse(sessionStorage.getItem(BREAKER_KEY) ?? '{}') as { stamps?: number[]; until?: number };
+    return { open: (s.until ?? 0) > Date.now(), until: s.until ?? 0 };
+  } catch { return { open: false, until: 0 }; }
+}
+
+export function resetBreaker() {
+  try { sessionStorage.removeItem(BREAKER_KEY); } catch { /* ignore */ }
+}
+
+function countRequest(): boolean {
+  try {
+    const now = Date.now();
+    const s = JSON.parse(sessionStorage.getItem(BREAKER_KEY) ?? '{}') as { stamps?: number[]; until?: number };
+    if ((s.until ?? 0) > now) return false;
+    const stamps = (s.stamps ?? []).filter((t) => now - t < WINDOW_MS);
+    stamps.push(now);
+    const tripped = stamps.length > MAX_PER_WINDOW;
+    sessionStorage.setItem(BREAKER_KEY, JSON.stringify({ stamps: tripped ? [] : stamps, until: tripped ? now + 5 * 60_000 : 0 }));
+    if (tripped) window.dispatchEvent(new Event(BREAKER_EVENT));
+    return !tripped;
+  } catch { return true; }
+}
+
+const guardedFetch: typeof fetch = (input, init) => {
+  if (!countRequest()) {
+    return Promise.reject(new Error('Proteção do banco: este navegador fez requisições demais em pouco tempo e foi pausado por 5 minutos. Feche as abas repetidas do sistema e tente de novo depois.'));
+  }
+  return fetch(input, init);
+};
+
 export function getSupabase(): SupabaseClient {
   if (missingSupabaseConfig().length) throw new Error('Supabase não configurado: defina VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY.');
   client ??= createClient(supabaseUrl, supabaseAnonKey, {
     auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, lock: tabLock },
+    global: { fetch: guardedFetch },
   });
   return client;
 }

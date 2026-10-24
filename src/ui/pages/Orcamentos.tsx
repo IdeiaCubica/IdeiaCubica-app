@@ -13,7 +13,8 @@ import { createOrdersFromQuote, finishedGoodBalance, finishedGoodDraft, mergeQuo
 import { allocate } from '../../domain/purchases';
 import { saveParty } from '../../domain/catalog';
 import { fmtDate, fmtDateTime, fmtPhone, newId } from '../../domain/core';
-import { Decimal, fmtBRL, fmtNum, fmtPct } from '../../domain/money';
+import { D, Decimal, fmtBRL, fmtNum, fmtPct } from '../../domain/money';
+import { fmtDuration } from '../../domain/conversions';
 import { parse3MF } from '../../io/threeMF';
 import { parseStl } from '../../io/stl';
 import { compressImage } from '../image';
@@ -198,11 +199,30 @@ function QuoteCard({ quote, customer }: { quote: Quote; customer?: string }) {
 /* ================================================================== */
 /* Orçamento (novo ou detalhe)                                         */
 /* ================================================================== */
-function Section({ title, subtitle, children, right }: { title: string; subtitle?: string; children: ReactNode; right?: ReactNode }) {
+/**
+ * Bloco do orçamento. Com `collapsible` (chave), ganha o botão Ocultar/Mostrar; a escolha fica
+ * lembrada neste navegador e, oculto, mostra só o `summary` (o que já foi preenchido).
+ */
+function Section({ title, subtitle, children, right, collapsible, summary }: { title: string; subtitle?: string; children: ReactNode; right?: ReactNode; collapsible?: string; summary?: ReactNode }) {
+  const storeKey = collapsible ? `ic:orc-secao:${collapsible}` : '';
+  const [open, setOpen] = useState(() => {
+    if (!storeKey) return true;
+    try { return localStorage.getItem(storeKey) !== 'oculto'; } catch { return true; }
+  });
+  const toggle = () => setOpen((o) => {
+    try { localStorage.setItem(storeKey, o ? 'oculto' : 'aberto'); } catch { /* armazenamento indisponível */ }
+    return !o;
+  });
   return (
-    <div className="card">
-      <div className="card-head"><div><h2>{title}</h2>{subtitle && <p className="muted small">{subtitle}</p>}</div>{right}</div>
-      <div className="card-body stack">{children}</div>
+    <div className={`card${open ? '' : ' section-collapsed'}`}>
+      <div className="card-head">
+        <div><h2>{title}</h2>{open ? subtitle && <p className="muted small">{subtitle}</p> : summary && <p className="small">{summary}</p>}</div>
+        <div className="row" style={{ gap: 8 }}>
+          {open && right}
+          {collapsible && <button type="button" className="btn ghost sm" aria-expanded={open} onClick={toggle}>{open ? 'Ocultar ▴' : 'Mostrar ▾'}</button>}
+        </div>
+      </div>
+      {open && <div className="card-body stack">{children}</div>}
     </div>
   );
 }
@@ -261,17 +281,24 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
   }, [input, params]);
   // Totais de todas as peças (não recusadas), pela mesma regra.
   const totals = useMemo(() => {
-    let price = new Decimal(0), cost = new Decimal(0), pending = false, count = 0;
-    items.forEach((it) => {
-      if (stateOf(it) === 'recusado') return;
-      count++;
+    let price = new Decimal(0), cost = new Decimal(0), pending = false, count = 0, pieces = 0;
+    const rows: { i: number; name: string; qty: number; unit: Decimal | null; total: Decimal | null; refused: boolean }[] = [];
+    items.forEach((it, i) => {
+      const refused = stateOf(it) === 'recusado';
+      let unit: Decimal | null = null, total: Decimal | null = null;
       try {
         const ev = evaluateQuote(it.input, paramsOf(it));
-        cost = cost.plus(ev.costs.total);
-        if (ev.pricing.analysis) price = price.plus(ev.pricing.analysis.revenue); else pending = true;
-      } catch { pending = true; }
+        unit = ev.pricing.analysis?.effectiveUnitPrice ?? null;
+        total = ev.pricing.analysis?.revenue ?? null;
+        if (!refused) { cost = cost.plus(ev.costs.total); if (!total) pending = true; }
+      } catch { if (!refused) pending = true; }
+      rows.push({ i, name: it.name || `Modelo ${i + 1}`, qty: it.input.quantity, unit, total, refused });
+      if (refused) return;
+      count++;
+      pieces += it.input.quantity;
+      if (total) price = price.plus(total);
     });
-    return { price, cost, pending, count };
+    return { price, cost, pending, count, pieces, rows };
   }, [items, db, refreshCosts, quote]);
   const unsavedAll = unsaved || (refreshCosts && stale.length > 0);
 
@@ -389,10 +416,10 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
 
           {/* 2. Peças */}
           <div className="card">
-            <div className="card-head"><div><h2>2. Peças do orçamento</h2><p className="muted small">Orce várias peças: o cliente pode aprovar algumas e outras não. Clique numa peça para editar.</p></div>
-              <div className="row"><button type="button" className="btn secondary sm" onClick={duplicate}>Duplicar peça</button>
+            <div className="card-head"><div><h2>2. Modelos de peça</h2><p className="muted small">Um modelo para cada peça diferente (ex.: 10 chaveiros + 10 vasos = 2 modelos). O cliente pode aprovar uns e outros não. Clique num modelo para editar.</p></div>
+              <div className="row"><button type="button" className="btn secondary sm" onClick={duplicate}>Duplicar modelo</button>
                 <button type="button" className="btn secondary sm" onClick={() => setAddingStock(true)}>+ Peça do estoque</button>
-                <button type="button" className="btn primary sm" onClick={addItem}>+ Adicionar peça</button></div></div>
+                <button type="button" className="btn primary sm" onClick={addItem}>+ Adicionar modelo</button></div></div>
             <div className="card-body">
               <div className="piece-tabs" role="tablist" aria-label="Peças do orçamento">
                 {items.map((it, i) => {
@@ -402,7 +429,7 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
                   return (
                     <button key={it.itemId ?? `novo-${i}`} type="button" role="tab" aria-selected={i === idx} className={`piece-tab${i === idx ? ' on' : ''}${st === 'recusado' ? ' refused' : ''}`} onClick={() => setActive(i)}>
                       {it.image ? <img src={it.image} alt="" /> : <span className="piece-num">{i + 1}</span>}
-                      <span className="piece-txt"><b>{it.name || `Peça ${i + 1}`}</b><small>{it.input.quantity} un · {price ? fmtBRL(price) : '—'}</small></span>
+                      <span className="piece-txt"><b>{it.name || `Modelo ${i + 1}`}</b><small>{it.input.quantity} peça{it.input.quantity === 1 ? '' : 's'} · {price ? `${fmtBRL(price)} total` : '—'}</small></span>
                       <Badge tone={ITEM_TONE[st]}>{ITEM_STATE_LABEL[st]}</Badge>
                     </button>
                   );
@@ -417,15 +444,16 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
           {cur.finishedGoodId && <Alert tone="info" title="Peça a pronta-entrega">Vem do estoque de peças prontas ({db.finishedGoods.find((g) => g.id === cur.finishedGoodId)?.code}). Ao aprovar, vira “Pedido aprovado” e as peças são separadas; não precisa produzir.</Alert>}
 
           <fieldset disabled={curLocked} className="stack">
-            <Section title={`3. ${cur.name || `Peça ${idx + 1}`}`} right={quote && cur.itemId && !curLocked ? (
+            <Section title={`3. Modelo: ${cur.name || `Peça ${idx + 1}`}`} subtitle="Preencha tudo para 1 peça deste modelo (peso, tempo, custos por peça). A quantidade multiplica e forma o valor total do modelo." right={quote && cur.itemId && !curLocked ? (
               <div className="row">
                 {curState !== 'aprovado' && <button type="button" className="btn secondary sm" onClick={() => setStatus(cur, 'aprovado')}>{cur.finishedGoodId ? 'Pedido aprovado' : 'Cliente aprovou'}</button>}
                 {curState !== 'recusado' && <button type="button" className="btn ghost sm" onClick={() => setStatus(cur, 'recusado')}>Cliente recusou</button>}
                 {curState !== 'aberto' && <button type="button" className="btn ghost sm" onClick={() => setStatus(cur, 'aberto')}>Reabrir</button>}
               </div>) : undefined}>
               <div className="grid g2">
-                <TextField label="Descrição da peça" required value={cur.name} onChange={(v) => patchItem(idx, { name: v })} placeholder="Ex.: Chaveiro personalizado com logo" />
-                <DecField label="Quantidade de peças" required value={input.quantity} onChange={(v) => patch({ quantity: v === null ? 0 : Math.max(0, Math.round(Number(v))) })} suffix="un" />
+                <TextField label="Nome do modelo" required value={cur.name} onChange={(v) => patchItem(idx, { name: v })} placeholder="Ex.: Chaveiro personalizado com logo" />
+                <DecField label="Quantidade deste modelo" required value={input.quantity} onChange={(v) => patch({ quantity: v === null ? 0 : Math.max(0, Math.round(Number(v))) })} suffix="peças"
+                  hint="Quantas peças iguais o cliente quer deste modelo" />
                 <Field label="Link do MakerWorld">
                   <div className="row" style={{ flexWrap: 'nowrap', gap: 8 }}>
                     <input value={input.source.url ?? ''} placeholder="https://makerworld.com/..." aria-label="Link do MakerWorld" style={{ flex: 1 }}
@@ -434,7 +462,7 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
                   </div>
                 </Field>
                 <div className="row" style={{ alignItems: 'end', justifyContent: 'flex-end' }}>
-                  <button type="button" className="btn ghost sm" onClick={removeItem} disabled={items.length === 1}>Remover esta peça</button>
+                  <button type="button" className="btn ghost sm" onClick={removeItem} disabled={items.length === 1}>Remover este modelo</button>
                 </div>
               </div>
               <Field label="Imagem da peça" hint="Opcional. Vai no orçamento do cliente. A imagem é reduzida automaticamente antes de salvar.">
@@ -450,8 +478,10 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
 
             <FilamentSection db={db} input={input} patch={patch} />
 
-            <Section title="Tempo de produção" subtitle="Tempo de impressão de 1 peça (do fatiador).">
-              <TimeField label="Tempo de impressão de 1 peça" required value={input.printHoursPerUnit} onChange={(v) => patch({ printHoursPerUnit: v })} hint="como aparece no fatiador (ex.: 1 h 20 min)" />
+            <Section title="Tempo de produção (1 peça)" subtitle="Tempo de impressão de 1 peça, como aparece no fatiador." collapsible="tempo"
+              summary={input.printHoursPerUnit ? `${fmtDuration(input.printHoursPerUnit)} por peça × ${input.quantity} = ${fmtDuration(input.printHoursPerUnit * input.quantity)} no modelo · ${db.printers.find((p) => p.id === input.printerId)?.name ?? 'sem impressora'}` : <span className="err-text">Falta o tempo de impressão de 1 peça</span>}>
+              <TimeField label="Tempo de impressão de 1 peça" required value={input.printHoursPerUnit} onChange={(v) => patch({ printHoursPerUnit: v })}
+                hint={input.printHoursPerUnit && input.quantity > 1 ? `Modelo inteiro: ${input.quantity} × ${fmtDuration(input.printHoursPerUnit)} = ${fmtDuration(input.printHoursPerUnit * input.quantity)}` : 'como aparece no fatiador (ex.: 1 h 20 min)'} />
               <div className="grid g2">
                 <SelectField label="Impressora" value={input.printerId ?? ''} onChange={(v) => patch({ printerId: v || undefined })} placeholder="— selecione —"
                   options={db.printers.filter((p) => p.active || p.id === input.printerId).map((p) => ({ value: p.id, label: p.name }))}
@@ -476,12 +506,22 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
         <div className="sticky stack">
           <div className="card quote-total-card">
             <div className="card-body">
-              <span className="muted small">Total do orçamento ({totals.count} peça{totals.count === 1 ? '' : 's'}{items.length > totals.count ? `, ${items.length - totals.count} recusada(s)` : ''})</span>
+              <span className="muted small">Total do orçamento ({totals.count} modelo{totals.count === 1 ? '' : 's'} · {totals.pieces} peça{totals.pieces === 1 ? '' : 's'}{items.length > totals.count ? ` · ${items.length - totals.count} recusado(s)` : ''})</span>
               <b className="qt-price">{fmtBRL(totals.price)}</b>
               <span className="small">Custo total {fmtBRL(totals.cost)}{totals.pending ? ' · valores parciais' : ''}</span>
             </div>
+            {items.length > 1 && <table className="tbl quote-models">
+              <thead><tr><th>Modelo</th><th className="num">Qtd.</th><th className="num">1 peça</th><th className="num">Total</th></tr></thead>
+              <tbody>{totals.rows.map((r) => (
+                <tr key={r.i} className={`${r.i === idx ? 'on' : ''}${r.refused ? ' refused' : ''}`} onClick={() => setActive(r.i)} style={{ cursor: 'pointer' }} title="Abrir este modelo">
+                  <td>{r.refused ? <s>{r.name}</s> : r.name}</td><td className="num">{r.qty}</td>
+                  <td className="num">{r.unit ? fmtBRL(r.unit) : '—'}</td><td className="num"><b>{r.total ? fmtBRL(r.total) : '—'}</b></td>
+                </tr>))}
+              </tbody>
+              <tfoot><tr><td>Total</td><td className="num">{totals.pieces}</td><td /><td className="num">{fmtBRL(totals.price)}</td></tr></tfoot>
+            </table>}
           </div>
-          <p className="section-title" style={{ margin: '4px 0 -4px' }}>{cur.name || `Peça ${idx + 1}`}</p>
+          <p className="section-title" style={{ margin: '4px 0 -4px' }}>Detalhes do modelo: {cur.name || `Modelo ${idx + 1}`} · {input.quantity} peça{input.quantity === 1 ? '' : 's'}</p>
           {sanity.length > 0 && <Alert tone="error" title="Confira antes de enviar ao cliente">
             <ul style={{ margin: 0, paddingLeft: 18 }}>{sanity.map((s, i) => <li key={i}>{s}</li>)}</ul>
           </Alert>}
@@ -534,13 +574,13 @@ function FilamentSection({ db, input, patch }: { db: DB; input: QuoteInput; patc
   const add = () => patch({ materials: [...lines, { materialId: mats.find((m) => !lines.some((l) => l.materialId === m.id))?.id ?? mats[0]?.id ?? '', qtyPerUnit: 0 }] });
   if (mats.length === 0 && lines.length === 0) {
     return (
-      <Section title="2. Filamentos utilizados">
+      <Section title="Filamento de 1 peça">
         <Empty title="Nenhum filamento cadastrado" text="Cadastre o filamento com o preço de referência (R$/kg) para poder orçar." action={<a className="btn primary" href="#/cadastros/materiais">Cadastrar filamento</a>} />
       </Section>
     );
   }
   return (
-    <Section title="2. Filamentos utilizados" subtitle="Um filamento por cor/material. O preço é o cadastrado no sistema (última compra ou preço do cadastro).">
+    <Section title="Filamento de 1 peça" subtitle="Peso de UMA peça deste modelo, por cor/material (do fatiador). O preço vem do cadastro (última compra ou preço do cadastro).">
       {lines.map((l, i) => {
         const mat = db.materials.find((m) => m.id === (l.materialId || db.lots.find((x) => x.id === l.lotId)?.materialId));
         const pol = mat ? materialCostPolicy(db, mat.id) : null;
@@ -552,7 +592,8 @@ function FilamentSection({ db, input, patch }: { db: DB; input: QuoteInput; patc
         return (
           <div key={i} className="filament-line">
             <SelectField label={`Filamento ${lines.length > 1 ? i + 1 : ''}`.trim()} value={mat?.id ?? ''} onChange={(v) => setLine(i, { materialId: v, lotId: undefined })} placeholder="— digite para buscar o filamento —" options={options} />
-            <DecField label="Peso da peça" suffix="g" value={l.qtyPerUnit || null} onChange={(v) => setLine(i, { qtyPerUnit: v === null ? 0 : Number(v) })} />
+            <DecField label="Peso de 1 peça" suffix="g" value={l.qtyPerUnit || null} onChange={(v) => setLine(i, { qtyPerUnit: v === null ? 0 : Number(v) })}
+              hint={l.qtyPerUnit && input.quantity > 1 ? `Modelo: ${input.quantity} × ${fmtNum(l.qtyPerUnit)} g = ${fmtNum(l.qtyPerUnit * input.quantity)} g` : undefined} />
             <Field label="Preço do filamento" hint={pol?.unitCost ? pol.source : <a href="#/cadastros/materiais">Cadastre o preço deste filamento</a>}>
               <div className={`readonly-value ${pol?.unitCost ? '' : 'missing'}`} aria-live="polite">{pol?.unitCost && mat ? priceLabel(mat, pol.unitCost) : 'sem preço cadastrado'}</div>
             </Field>
@@ -574,7 +615,7 @@ function ParamsSection({ db, input, patch }: { db: DB; input: QuoteInput; patch:
     <div className="card">
       <details className="params-details">
         <summary>
-          <div><h2>4. Parâmetros deste orçamento</h2><p className="muted small">Vêm de Parâmetros de Custos. Abra para alterar só neste orçamento.</p></div>
+          <div><h2>Parâmetros e outros custos deste modelo</h2><p className="muted small">Markup, canal, mão de obra e custos por peça (embalagem, ímãs…). Vêm de Parâmetros de Custos; abra para alterar só neste modelo.</p></div>
         </summary>
         <div className="card-body stack" style={{ paddingTop: 0 }}>
           <div className="grid g3">
@@ -645,7 +686,8 @@ function DeliveryKitSection({ db, kit, setKit, items }: { db: DB; kit: QuoteDeli
   const current = model ? kitUnitCost(db, model) : null;
   const changed = !!(kit && current && !current.missing.length && !current.total.eq(kit.unitCost));
   return (
-    <Section title="Kit de entrega" subtitle="Acessórios que vão junto com o pedido (saquinho, cartão, adesivo…). O custo entra no preço das peças e não aparece no orçamento do cliente.">
+    <Section title="5. Kit de entrega" collapsible="kit" summary={kit ? `${kit.name} · ${kit.qty} kit(s) · ${fmtBRL(kit.total)} no custo (oculto ao cliente)` : 'Sem kit de entrega'}
+      subtitle="Acessórios que vão junto com o pedido (saquinho, cartão, adesivo…). O custo entra no preço das peças e não aparece no orçamento do cliente.">
       {kits.length === 0 ? <p className="muted small" style={{ margin: 0 }}>Nenhum kit cadastrado. <a href="#/cadastros/kits">Cadastre os modelos de kit em Cadastros → Kits de entrega</a>.</p> : (<>
         <div className="grid g3">
           <SelectField label="Modelo do kit" value={kit?.kitId ?? ''} onChange={(v) => choose(v, kit?.qty ?? 1)} placeholder="— sem kit —"
@@ -719,7 +761,9 @@ function FreightSection({ db, items, shipping, setShipping, setItems, customerId
   };
   const cf = ship.clientFreight;
   return (
-    <Section title="4. Frete do orçamento (SuperFrete)" subtitle={`Todas as ${items.length} peça(s) na mesma caixa. CEPs e caixa vêm do padrão e podem ser alterados só neste orçamento. Opcional.`}>
+    <Section title="4. Frete do orçamento (SuperFrete)" collapsible="frete"
+      summary={cf ? `Cliente paga: ${cf.service} · ${fmtBRL(cf.price)}` : items.some((it) => D(it.input.freightSubsidyPerOrder ?? 0).gt(0)) ? 'Empresa paga o frete (já no custo das peças)' : 'Sem frete calculado (opcional)'}
+      subtitle={`Todos os modelos na mesma caixa. CEPs e caixa vêm do padrão e podem ser alterados só neste orçamento. Opcional.`}>
       <div className="grid g2">
         <Field label="CEP de saída" hint={!isValidCep(origin) ? <a href="#/parametros/gerais">Cadastre o endereço padrão de saída em Parâmetros → Envios</a>
           : ship.originCep === defaults.originCep ? `Padrão da empresa${originCity ? ` · ${originCity}` : ''}` : `Alterado neste orçamento${originCity ? ` · ${originCity}` : ''}`}>
@@ -817,11 +861,11 @@ function ResultPanel({ ev, input, patch, locked }: { ev: QuoteEvaluation; input:
       <div className="card result-total">
         <div className="card-body stack" style={{ gap: 16 }}>
           <div className="big-figures">
-            <div><span>Custo total {q > 1 ? `(${q} peças)` : 'da peça'}</span><b>{fmtBRL(costs.total)}</b>{q > 1 && <small>{fmtBRL(costs.unitTotal)} por peça</small>}</div>
-            <div><span>Custo por hora</span><b>{costPerHour ? fmtBRL(costPerHour) : '—'}</b><small>{costs.machineHours ? `${fmtNum(costs.machineHours, 2)} h de impressão` : 'informe o tempo'}</small></div>
+            <div><span>Custo de 1 peça</span><b>{fmtBRL(costs.unitTotal)}</b><small>{q > 1 ? `modelo (${q} peças): ${fmtBRL(costs.total)}` : 'modelo com 1 peça'}</small></div>
+            <div><span>Custo por hora</span><b>{costPerHour ? fmtBRL(costPerHour) : '—'}</b><small>{costs.machineHours ? `${fmtNum(costs.machineHours, 2)} h de impressão no modelo` : 'informe o tempo'}</small></div>
           </div>
           <div className="client-price">
-            <span>Valor para o cliente {q > 1 ? '(por peça)' : ''}</span>
+            <span>Valor para o cliente — 1 peça</span>
             <div className="row" style={{ gap: 10, flexWrap: 'nowrap' }}>
               <InlineDec prefix="R$" ariaLabel="Valor para o cliente por peça" value={input.manualPriceUnit} onChange={(v) => patch({ manualPriceUnit: v })}
                 placeholder={pricing.recommendedRoundedUnit ? pricing.recommendedRoundedUnit.toFixed(2).replace('.', ',') : '—'} disabled={locked} />
@@ -832,9 +876,9 @@ function ResultPanel({ ev, input, patch, locked }: { ev: QuoteEvaluation; input:
           {a && (
             <>
               <div className="big-figures">
-                <div><span>Total do pedido</span><b>{fmtBRL(a.revenue)}</b>{a.discountPct.gt(0) && <small>com {fmtNum(a.discountPct)}% de desconto</small>}</div>
+                <div><span>Total deste modelo ({q} peça{q === 1 ? '' : 's'})</span><b>{fmtBRL(a.revenue)}</b><small>{q} × {fmtBRL(a.effectiveUnitPrice)}{a.discountPct.gt(0) ? ` (com ${fmtNum(a.discountPct)}% de desconto)` : ''}</small></div>
                 <div><span>R$/h (valor ÷ horas)</span><b>{pricePerHour ? fmtBRL(pricePerHour) : '—'}</b><small>quanto cada hora de máquina fatura</small></div>
-                <div><span>Lucro estimado</span><b style={neg(a.result)}>{fmtBRL(a.result)}</b><small>após custos e taxas ({fmtBRL(a.fees)})</small></div>
+                <div><span>Lucro estimado do modelo</span><b style={neg(a.result)}>{fmtBRL(a.result)}</b><small>{q > 1 ? `${fmtBRL(a.result.div(q))} por peça · ` : ''}após custos e taxas ({fmtBRL(a.fees)})</small></div>
               </div>
               <div className="ratio-pair">
                 <div><span>Markup</span><b style={neg(a.markupPct)}>{fmtPct(a.markupPct)}</b><small>lucro ÷ custo</small></div>
@@ -847,13 +891,13 @@ function ResultPanel({ ev, input, patch, locked }: { ev: QuoteEvaluation; input:
       </div>
 
       <div className="card">
-        <div className="card-head"><div><h2>Composição do custo</h2><p className="muted small">Você pode alterar as rubricas (menos o filamento, que vem do cadastro); apague o campo para voltar ao calculado.{q > 1 ? ` Valores do pedido (${q} peças).` : ''}</p></div></div>
+        <div className="card-head"><div><h2>Composição do custo</h2><p className="muted small">Você pode alterar as rubricas (menos o filamento, que vem do cadastro); apague o campo para voltar ao calculado.{q > 1 ? ` Os valores editáveis são do modelo inteiro (${q} peças); a última coluna mostra quanto fica em 1 peça.` : ''}</p></div></div>
         <table className="tbl rubricas">
-          <thead><tr><th>Rubrica</th><th className="num">Calculado</th><th className="num">Valor usado</th></tr></thead>
+          <thead><tr><th>Rubrica</th><th className="num">Calculado</th><th className="num">{q > 1 ? `Modelo (${q} peças)` : 'Valor usado'}</th>{q > 1 && <th className="num">1 peça</th>}</tr></thead>
           <tbody>
-            {costs.components.map((c) => <RubricaRow key={c.key} c={c} override={overrides[c.key]} onChange={(v) => setOverride(c.key, v)} disabled={locked} />)}
+            {costs.components.map((c) => <RubricaRow key={c.key} c={c} q={q} override={overrides[c.key]} onChange={(v) => setOverride(c.key, v)} disabled={locked} />)}
           </tbody>
-          <tfoot><tr><td>Custo total</td><td /><td className="num">{fmtBRL(costs.total)}</td></tr></tfoot>
+          <tfoot><tr><td>Custo total</td><td /><td className="num">{fmtBRL(costs.total)}</td>{q > 1 && <td className="num">{fmtBRL(costs.unitTotal)}</td>}</tr></tfoot>
         </table>
         <div className="card-body" style={{ paddingTop: 8 }}>
           <details className="disclosure"><summary>Como cada valor foi calculado</summary>
@@ -868,7 +912,7 @@ function ResultPanel({ ev, input, patch, locked }: { ev: QuoteEvaluation; input:
   );
 }
 
-function RubricaRow({ c, override, onChange, disabled }: { c: CostComponent; override?: string; onChange: (v: string | null) => void; disabled: boolean }) {
+function RubricaRow({ c, q, override, onChange, disabled }: { c: CostComponent; q: number; override?: string; onChange: (v: string | null) => void; disabled: boolean }) {
   return (
     <tr title={c.formula}>
       <td><div>{c.label}</div><Badge tone={STATUS_BADGE[c.status].tone}>{STATUS_BADGE[c.status].label}</Badge></td>
@@ -877,6 +921,7 @@ function RubricaRow({ c, override, onChange, disabled }: { c: CostComponent; ove
         ? <span title="O preço do filamento vem do cadastro e não pode ser alterado no orçamento"><b>{c.value ? fmtBRL(c.value) : '—'}</b><div className="small muted">do cadastro</div></span>
         : <InlineDec prefix="R$" ariaLabel={`Valor usado para ${c.label}`} value={override ?? null} onChange={onChange}
           placeholder={c.calculated ? c.calculated.toFixed(2).replace('.', ',') : 'informe'} disabled={disabled} />}</td>
+      {q > 1 && <td className="num muted">{c.value ? fmtBRL(c.value.div(q), 4) : '—'}</td>}
     </tr>
   );
 }

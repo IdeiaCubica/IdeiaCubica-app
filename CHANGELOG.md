@@ -2,6 +2,18 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.6.3 — 24/10/2026
+
+### Orçamento por modelo: preencha 1 peça, a quantidade multiplica
+- A tela fala em **modelos de peça** (ex.: 10 chaveiros + 10 vasos = 2 modelos). Em cada modelo: nome, **quantidade deste modelo**,
+  **peso de 1 peça**, **tempo de 1 peça** e custos por peça; o sistema mostra o total do modelo ao lado (ex.: 10 × 12 g = 120 g; 10 × 30 min = 5 h).
+- Detalhe do modelo com **custo de 1 peça**, **valor de 1 peça**, **total do modelo** (10 × R$ 2,04 = R$ 20,40) e lucro por peça.
+  A composição do custo ganhou a coluna **1 peça** ao lado do total do modelo.
+- Painel lateral com o **resumo do orçamento por modelo** (quantidade, valor de 1 peça e total); clique numa linha para abrir o modelo.
+- **Frete**, **Kit de entrega** e **Tempo de produção** têm botão **Ocultar/Mostrar**; ocultos, mostram um resumo do que foi preenchido.
+  A escolha fica lembrada no navegador.
+- Numeração das seções corrigida (1. Cliente, 2. Modelos, 3. Modelo, 4. Frete, 5. Kit de entrega).
+
 ## v1.6.2 — 24/10/2026
 
 ### Correção: editar o cadastro do filamento não corrigia o preço

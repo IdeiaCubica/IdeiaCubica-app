@@ -415,6 +415,10 @@ details.params-details[open] > summary { border-bottom: 1px solid var(--border);
 .piece-tab .badge, .piece-tab > span:last-child { justify-self: start; }
 .quote-total-card .card-body { display: flex; flex-direction: column; gap: 2px; }
 .quote-total-card .qt-price { font-size: 30px; font-weight: 700; color: var(--ic-realizacao); line-height: 1.15; }
+.quote-total-card .quote-models { font-size: 13px; }
+.quote-total-card .quote-models tr.on td { background: var(--surface-2, rgba(0,0,0,.04)); font-weight: 600; }
+.quote-total-card .quote-models tr.refused td { color: var(--muted, #888); }
+.section-collapsed .card-head { border-bottom: 0; }
 .qc-img { position: relative; }
 .qc-count { position: absolute; right: 8px; bottom: 8px; background: var(--ic-realizacao); color: var(--ic-ideia); font-size: 12px; font-weight: 700; padding: 3px 8px; border-radius: 999px; }
 .danger-text { color: var(--error) !important; }

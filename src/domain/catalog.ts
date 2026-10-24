@@ -44,13 +44,40 @@ export function saveMaterial(db: DB, input: MaterialInput, id?: ID): Material {
   return mat;
 }
 
+/** Onde o insumo é usado (o que impede excluir o cadastro). */
+export function materialUsage(db: DB, id: ID) {
+  const lots = db.lots.filter((l) => l.materialId === id);
+  const lotIds = new Set(lots.map((l) => l.id));
+  const purchases = new Set(lots.map((l) => l.purchaseId).filter(Boolean)).size;
+  const quotes = db.quotes.filter((q) => q.versions.some((v) => v.items.some((it) =>
+    it.input.materials.some((m) => m.materialId === id || (m.lotId && lotIds.has(m.lotId))) || it.input.extras.some((e) => e.lotId && lotIds.has(e.lotId))))).length;
+  const orders = db.orders.filter((o) => o.plannedMaterials.some((m) => m.materialId === id || (m.lotId && lotIds.has(m.lotId)))).length;
+  const kits = db.deliveryKits.filter((k) => k.items.some((it) => it.materialId === id)).length;
+  return { lots: lots.length, purchases, quotes, orders, kits };
+}
+
+/**
+ * Exclui o cadastro de um insumo lançado por engano. Só sem histórico (lotes, orçamentos,
+ * produções, kits); com histórico, o insumo pode ser inativado para sumir das listas.
+ */
+export function deleteMaterial(db: DB, id: ID) {
+  const mat = byId(db.materials, id, 'Material');
+  const u = materialUsage(db, id);
+  const where = [u.lots && `${u.lots} lote(s) no estoque${u.purchases ? ` (${u.purchases} compra(s))` : ''}`, u.quotes && `${u.quotes} orçamento(s)`,
+    u.orders && `${u.orders} produção(ões)`, u.kits && `${u.kits} kit(s) de entrega`].filter(Boolean);
+  if (where.length) {
+    throw new BusinessError(`${mat.name} tem histórico: ${where.join(', ')}. Exclua primeiro as compras/estoque lançados por engano (Compras → Excluir) ou inative o insumo.`);
+  }
+  db.materials = db.materials.filter((m) => m.id !== id);
+  audit(db, 'Material excluído', `${mat.code} ${mat.name}`);
+}
+
 const DEFAULT_SIGLAS: Record<string, string> = {
   filamentos: 'FL', 'sacos plasticos': 'SP', 'caixas e embalagens': 'CX', etiquetas: 'ET', 'fitas adesivas': 'FT',
   'cola e adesivos': 'CL', pinceis: 'PN', lixas: 'LX', 'ferramentas e acessorios': 'FR', 'pecas de reposicao': 'PR', 'outros consumiveis': 'OC',
 };
 const plain = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
 
-/** Sigla sugerida para uma categoria: conhecida, ou as iniciais (sem repetir outra categoria). */
 /** Nome do insumo para listas de seleção, com tipo e cor do filamento (quando o nome ainda não os tem). */
 export function materialLabel(m: Pick<Material, 'name' | 'filament'>) {
   const f = m.filament;
@@ -60,6 +87,7 @@ export function materialLabel(m: Pick<Material, 'name' | 'filament'>) {
   return extra.length ? `${m.name} · ${extra.join(' ')}` : m.name;
 }
 
+/** Sigla sugerida para uma categoria: conhecida, ou as iniciais (sem repetir outra categoria). */
 export function suggestSigla(db: DB, name: string, exceptId?: ID): string {
   const known = DEFAULT_SIGLAS[plain(name)];
   const used = new Set(db.categories.filter((c) => c.id !== exceptId && c.code).map((c) => c.code!));

@@ -355,6 +355,58 @@ export function updatePurchase(db: DB, purchaseId: ID, input: PurchaseInput, rea
   return p;
 }
 
+/** Motivo pelo qual a compra não pode ser excluída (null = pode). */
+export function purchaseDeleteBlock(db: DB, p: Purchase): string | null {
+  const allowed = p.status === 'ativa' ? ['entrada'] : ['entrada', 'devolucao'];
+  for (const it of p.items) {
+    const lot = db.lots.find((l) => l.id === it.lotId);
+    if (db.movements.some((m) => m.lotId === it.lotId && !allowed.includes(m.type))) {
+      return `O lote ${lot?.code ?? ''} já foi usado na produção (ou reservado/ajustado). Use "Editar compra" para corrigir valores e quantidades.`;
+    }
+  }
+  const titles = db.titles.filter((t) => t.origin.kind === 'compra' && t.origin.id === p.id);
+  if (p.status === 'ativa' ? hasUserPayments(db, p) : titles.some((t) => titlePaid(t).gt(0))) {
+    return 'Há pagamento registrado desta compra. Estorne o pagamento em Financeiro → Títulos antes de excluir.';
+  }
+  for (const e of p.equipment ?? []) {
+    if (e.printerCreated && e.printerId && db.printers.some((x) => x.id === e.printerId)) {
+      const used = db.orders.some((o) => o.printerId === e.printerId) || db.quotes.some((q) => q.versions.some((v) => v.items.some((it) => it.input.printerId === e.printerId)));
+      if (used) return 'A impressora cadastrada por esta compra já tem orçamentos ou produções. Não é possível excluir a compra.';
+    }
+  }
+  return null;
+}
+
+/**
+ * Exclui uma compra lançada por engano (para relançar do jeito certo): remove lotes, entradas
+ * no estoque e títulos financeiros, e desfaz o efeito nas impressoras. Diferente do cancelamento,
+ * não deixa registro na lista (fica só na trilha de auditoria e no histórico de versões).
+ */
+export function deletePurchase(db: DB, purchaseId: ID, reason: string) {
+  const p = byId(db.purchases, purchaseId, 'Compra');
+  const why = requireText(reason, 'o motivo da exclusão');
+  const block = purchaseDeleteBlock(db, p);
+  if (block) throw new BusinessError(block);
+  const lotIds = new Set(p.items.map((it) => it.lotId));
+  db.movements = db.movements.filter((m) => !lotIds.has(m.lotId));
+  db.lots = db.lots.filter((l) => !lotIds.has(l.id));
+  db.titles = db.titles.filter((t) => !(t.origin.kind === 'compra' && t.origin.id === p.id));
+  if (p.status === 'ativa') {
+    for (const e of p.equipment ?? []) {
+      const printer = db.printers.find((x) => x.id === e.printerId);
+      if (!printer) continue;
+      if (e.printerCreated) {
+        db.printers = db.printers.filter((x) => x.id !== printer.id);
+        if (db.settings.defaultPrinterId === printer.id) db.settings.defaultPrinterId = undefined;
+      } else if (printer.acquisitionValue === e.total) {
+        printer.acquisitionValue = e.prevAcquisition ?? null;
+      }
+    }
+  }
+  db.purchases = db.purchases.filter((x) => x.id !== p.id);
+  audit(db, 'Compra excluída', `${p.number}: R$ ${D(p.total).toFixed(2)} — ${why}`);
+}
+
 /**
  * Cancelamento com estorno rastreável: só é permitido se nenhum material dos
  * lotes foi movimentado e se não houver pagamentos ativos (estorne-os antes).

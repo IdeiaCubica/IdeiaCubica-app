@@ -3,7 +3,7 @@ import { useStore } from '../store';
 import { navigate } from '../App';
 import type { AddressParts, Category, DB, DeliveryKit, Material, NamedItem, Party, Unit } from '../../domain/types';
 import { AddressFields } from '../components/AddressFields';
-import { deleteNamed, materialLabel, namedUsage, nextMaterialCode, normalizeSigla, priceHistory, saveCategory, saveMaterial, saveNamed, saveParty, suggestSigla, type NamedList } from '../../domain/catalog';
+import { deleteMaterial, deleteNamed, materialLabel, materialUsage, namedUsage, nextMaterialCode, normalizeSigla, priceHistory, saveCategory, saveMaterial, saveNamed, saveParty, suggestSigla, type NamedList } from '../../domain/catalog';
 import { lotBalance, materialBalance, reorderAnalysis } from '../../domain/inventory';
 import { materialCostPolicy } from '../../domain/quotes';
 import { unusualUnitCost } from '../../domain/purchases';
@@ -185,6 +185,7 @@ function Materiais() {
   const { db, run } = useStore();
   const [edit, setEdit] = useState<Material | 'novo' | null>(null);
   const [view, setView] = useState<Material | null>(null);
+  const [copyOf, setCopyOf] = useState<Material | null>(null);
   const [cats, setCats] = useState(false);
   const [cat, setCat] = useState('');
   const rows = db.materials.filter((m) => !cat || m.categoryId === cat);
@@ -212,22 +213,54 @@ function Materiais() {
         ]} />
       {edit && <MaterialForm material={edit === 'novo' ? undefined : edit} onClose={() => setEdit(null)}
         onSave={(v, id) => run((d) => saveMaterial(d, v, id), 'Material salvo.').then((r) => r.ok && setEdit(null))} />}
-      {view && <MaterialDetail material={view} onClose={() => setView(null)} onEdit={() => { setEdit(view); setView(null); }} />}
+      {copyOf && <MaterialForm material={copyOf} copy onClose={() => setCopyOf(null)}
+        onSave={(v) => run((d) => saveMaterial(d, v), 'Material relançado com cadastro novo.').then((r) => r.ok && setCopyOf(null))} />}
+      {view && <MaterialDetail material={view} onClose={() => setView(null)} onEdit={() => { setEdit(view); setView(null); }}
+        onRelaunch={(copy) => { setView(null); setCopyOf(copy); }} />}
       {cats && <CategoriesModal onClose={() => setCats(false)} />}
     </div>
   );
 }
 
-function MaterialDetail({ material, onClose, onEdit }: { material: Material; onClose: () => void; onEdit: () => void }) {
-  const { db } = useStore();
+function MaterialDetail({ material, onClose, onEdit, onRelaunch }: { material: Material; onClose: () => void; onEdit: () => void; onRelaunch: (copy: Material) => void }) {
+  const { db, run } = useStore();
+  const [confirm, confirmEl] = useConfirm();
   const m = db.materials.find((x) => x.id === material.id) ?? material;
   const hist = priceHistory(db, m.id);
   const bal = materialBalance(db, m.id);
   const pol = materialCostPolicy(db, m.id);
+  const u = materialUsage(db, m.id);
+  const deletable = !u.lots && !u.quotes && !u.orders && !u.kits;
+  const usage = [u.lots && `${u.lots} lote(s) no estoque${u.purchases ? ` de ${u.purchases} compra(s)` : ''}`, u.quotes && `${u.quotes} orçamento(s)`, u.orders && `${u.orders} produção(ões)`, u.kits && `${u.kits} kit(s)`].filter(Boolean).join(', ');
+  const remove = async (again: boolean) => {
+    const ok = await confirm({ title: again ? `Excluir "${m.name}" e relançar?` : `Excluir "${m.name}"?`, danger: true, confirmLabel: again ? 'Excluir e relançar' : 'Excluir',
+      text: again ? 'O cadastro é apagado e abre um cadastro novo com os mesmos dados para você corrigir.' : 'O cadastro é apagado (fica só na trilha de auditoria).' });
+    if (ok === null) return;
+    const copy = structuredClone(m);
+    const r = await run((d) => deleteMaterial(d, m.id), 'Material excluído.');
+    if (r.ok) { if (again) onRelaunch(copy); else onClose(); }
+  };
+  const inactivateAndRelaunch = async () => {
+    const ok = await confirm({ title: `Inativar "${m.name}" e relançar?`, confirmLabel: 'Inativar e relançar',
+      text: `Este insumo tem histórico (${usage}), por isso não pode ser apagado. Ele fica inativo (some das listas, o histórico é mantido) e abre um cadastro novo com os mesmos dados. As compras novas devem usar o cadastro novo.` });
+    if (ok === null) return;
+    const copy = structuredClone(m);
+    const r = await run((d) => { const x = d.materials.find((y) => y.id === m.id)!; x.active = false; }, 'Insumo antigo inativado.');
+    if (r.ok) onRelaunch(copy);
+  };
   return (
     <Modal wide title={`${m.code} · ${m.name}`} subtitle={materialDesc(db, m)} onClose={onClose}
-      footer={<><button className="btn ghost" onClick={onClose}>Fechar</button><button className="btn secondary" onClick={() => navigate('estoque')}>Ver no estoque</button><button className="btn primary" onClick={onEdit}>Editar cadastro</button></>}>
+      footer={<><button className="btn ghost" onClick={onClose}>Fechar</button>
+        {deletable ? <>
+          <button className="btn ghost danger-text" onClick={() => remove(false)}>Excluir</button>
+          <button className="btn secondary" onClick={() => remove(true)}>Excluir e relançar</button>
+        </> : <button className="btn secondary" onClick={inactivateAndRelaunch} disabled={!m.active} title={m.active ? undefined : 'Já está inativo'}>Inativar e relançar</button>}
+        <button className="btn secondary" onClick={() => navigate('estoque')}>Ver no estoque</button><button className="btn primary" onClick={onEdit}>Editar cadastro</button></>}>
       <div className="stack">
+        {!deletable && <Alert tone="info" title="Este insumo tem histórico">
+          {usage}. Para apagar o cadastro, primeiro exclua as compras ou estoques lançados por engano (<a href="#/compras" onClick={onClose}>Compras</a> → abrir a compra → <b>Excluir e relançar</b>).
+          Se o problema é só no cadastro (nome, cor, preço de referência), use <b>Editar cadastro</b>.
+        </Alert>}
         <div className="kpis">
           <div className="card kpi accent"><p className="l">Preço nos orçamentos</p><p className="v">{priceLabel(m, pol.unitCost) ?? '—'}</p><p className="h">{pol.source}</p></div>
           <div className="card kpi"><p className="l">Disponível</p><p className="v">{fmtNum(bal.available)} {m.unit}</p><p className="h">{fmtNum(bal.reserved)} reservado</p></div>
@@ -248,17 +281,19 @@ function MaterialDetail({ material, onClose, onEdit }: { material: Material; onC
         </div>
         {m.notes && <p className="muted">{m.notes}</p>}
       </div>
+      {confirmEl}
     </Modal>
   );
 }
 
-export function MaterialForm({ material, onClose, onSave }: { material?: Material; onClose: () => void; onSave: (v: Parameters<typeof saveMaterial>[1], id?: string) => void }) {
+export function MaterialForm({ material, copy, onClose, onSave }: { material?: Material; copy?: boolean; onClose: () => void; onSave: (v: Parameters<typeof saveMaterial>[1], id?: string) => void }) {
   const { db } = useStore();
   const fil = material?.filament;
   // Tudo que é controlado em gramas tem o preço digitado em R$/kg (gravado em R$/g).
   const initialInGrams = material ? material.unit === 'g' : true;
   const [f, set] = useForm({
-    code: material?.code ?? '', name: material?.name ?? '', categoryId: material?.categoryId ?? db.categories.find((c) => c.isFilament)?.id ?? '',
+    // Relançar (copy): mesmos dados num cadastro novo, com código novo.
+    code: copy ? '' : material?.code ?? '', name: material?.name ?? '', categoryId: material?.categoryId ?? db.categories.find((c) => c.isFilament)?.id ?? '',
     // Filamento é sempre em gramas; para os demais insumos o padrão é unidade.
     unit: material?.unit ?? 'un', active: material?.active ?? true, brandId: material?.brandId ?? '', manufacturerId: material?.manufacturerId ?? '',
     materialType: fil?.materialType ?? 'PLA', color: fil?.color ?? '', colorHex: fil?.colorHex ?? '#0d1925',
@@ -280,11 +315,11 @@ export function MaterialForm({ material, onClose, onSave }: { material?: Materia
         netWeightG: num(f.netWeightG), spoolWeightG: num(f.spoolWeightG), grossWeightG: material?.filament?.grossWeightG ?? null, diameterMm: material?.filament?.diameterMm ?? null } : undefined,
       referenceCost: ref === null ? null : inGrams ? perKgToPerGram(ref).toString() : ref,
       minStock: num(f.minStock), safetyStock: material?.safetyStock ?? null, leadTimeDays: num(f.leadTimeDays), location: f.location, notes: f.notes,
-    }, material?.id);
+    }, copy ? undefined : material?.id);
   };
   const unitLabel = isFil ? 'g' : f.unit;
   return (
-    <Modal wide title={material ? 'Editar material' : 'Novo material'} onClose={onClose}
+    <Modal wide title={copy ? 'Relançar material (novo cadastro)' : material ? 'Editar material' : 'Novo material'} subtitle={copy ? 'Dados copiados do cadastro anterior. Corrija o que estava errado e salve: será criado um cadastro novo, com código novo.' : undefined} onClose={onClose}
       footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={submit}>Salvar material</button></>}>
       <div className="stack">
         <div className="grid g3">

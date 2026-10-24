@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useStore } from '../store';
 import type { DB, Material, PaymentTerms, Purchase, Unit } from '../../domain/types';
-import { allocate, cancelPurchase, purchaseEditBlock, purchaseLotUsed, registerPurchase, unitAcquisitionCost, unusualLots, unusualUnitCost, updatePurchase, type PurchaseEquipmentInput, type PurchaseInput, type PurchaseItemInput } from '../../domain/purchases';
+import { allocate, cancelPurchase, deletePurchase, purchaseDeleteBlock, purchaseEditBlock, purchaseLotUsed, registerPurchase, unitAcquisitionCost, unusualLots, unusualUnitCost, updatePurchase, type PurchaseEquipmentInput, type PurchaseInput, type PurchaseItemInput } from '../../domain/purchases';
 import { materialLabel, saveMaterial } from '../../domain/catalog';
 import { MaterialForm } from './Cadastros';
 import { titleOpen } from '../../domain/finance';
@@ -25,6 +25,7 @@ function ComprasLista() {
   const [creating, setCreating] = useState(false);
   const [view, setView] = useState<Purchase | null>(null);
   const [editing, setEditing] = useState<Purchase | null>(null);
+  const [relaunch, setRelaunch] = useState<Purchase | null>(null);
   const supplier = (id?: string) => db.parties.find((p) => p.id === id)?.name ?? '—';
   const itemsLabel = (p: Purchase) => [...p.items.map((it) => { const m = db.materials.find((m) => m.id === it.materialId); return m ? materialLabel(m) : '—'; }), ...(p.equipment ?? []).map((e) => e.description)].join(', ');
   const suspicious = unusualLots(db).filter((x) => x.purchase?.status === 'ativa');
@@ -54,7 +55,9 @@ function ComprasLista() {
       </div>
       {creating && <PurchaseForm onClose={() => setCreating(false)} />}
       {editing && <PurchaseForm purchase={editing} onClose={() => setEditing(null)} />}
-      {view && !editing && <PurchaseDetail purchase={view} onClose={() => setView(null)} onEdit={() => { setEditing(view); setView(null); }} />}
+      {relaunch && <PurchaseForm template={relaunch} onClose={() => setRelaunch(null)} />}
+      {view && !editing && <PurchaseDetail purchase={view} onClose={() => setView(null)} onEdit={() => { setEditing(view); setView(null); }}
+        onDeleted={(copy, again) => { setView(null); if (again) setRelaunch(copy); }} />}
     </div>
   );
 }
@@ -96,24 +99,27 @@ function rowQty(it: ItemRow, m: Material | undefined): { qty: number; unit: Unit
   return { qty: q, unit: it.unit };
 }
 
-function rowsFromPurchase(db: DB, p: Purchase): ItemRow[] {
-  const rows: ItemRow[] = p.items.map((it) => {
+/** Linhas do formulário a partir de uma compra: para editar (mantém lotes) ou para relançar como nova (`asNew`). */
+function rowsFromPurchase(db: DB, p: Purchase, asNew = false): ItemRow[] {
+  const rows: ItemRow[] = p.items.filter((it) => db.materials.some((m) => m.id === it.materialId)).map((it) => {
     const m = db.materials.find((x) => x.id === it.materialId);
     const kg = m?.unit === 'g';
     return { ...newRow('insumo', it.materialId, kg ? 'kg' : (m?.unit ?? 'un')), qty: toInputBR(kg ? it.qty / 1000 : it.qty), price: toInputBR(it.price, 2),
-      batchNumber: it.batchNumber ?? '', lotId: it.lotId, locked: purchaseLotUsed(db, it.lotId) };
+      batchNumber: it.batchNumber ?? '', ...(asNew ? {} : { lotId: it.lotId, locked: purchaseLotUsed(db, it.lotId) }) };
   });
   for (const e of p.equipment ?? []) {
-    rows.push({ ...newRow('equipamento'), description: e.description, qty: String(e.qty), price: toInputBR(e.price, 2), eqId: e.id,
-      eqPrinterLabel: e.printerId ? `${db.printers.find((x) => x.id === e.printerId)?.name ?? 'impressora'} ${e.printerCreated ? '(cadastrada nesta compra)' : '(valor de aquisição atualizado)'}` : undefined });
+    rows.push(asNew ? { ...newRow('equipamento'), description: e.description, qty: String(e.qty), price: toInputBR(e.price, 2) }
+      : { ...newRow('equipamento'), description: e.description, qty: String(e.qty), price: toInputBR(e.price, 2), eqId: e.id,
+        eqPrinterLabel: e.printerId ? `${db.printers.find((x) => x.id === e.printerId)?.name ?? 'impressora'} ${e.printerCreated ? '(cadastrada nesta compra)' : '(valor de aquisição atualizado)'}` : undefined });
   }
   return rows.length ? rows : [newRow('insumo')];
 }
 
-function PurchaseForm({ onClose, purchase }: { onClose: () => void; purchase?: Purchase }) {
+function PurchaseForm({ onClose, purchase, template }: { onClose: () => void; purchase?: Purchase; template?: Purchase }) {
   const { db, run } = useStore();
   const [confirm, confirmEl] = useConfirm();
   const editing = !!purchase;
+  const src = purchase ?? template;
   const block = purchase ? purchaseEditBlock(db, purchase) : null;
   const active = db.materials.filter((m) => m.active || purchase?.items.some((it) => it.materialId === m.id));
   const catName = (id: string) => db.categories.find((c) => c.id === id)?.name ?? 'Sem categoria';
@@ -121,12 +127,12 @@ function PurchaseForm({ onClose, purchase }: { onClose: () => void; purchase?: P
   const materialOptions = [...active].sort((a, b) => catName(a.categoryId).localeCompare(catName(b.categoryId)) || a.name.localeCompare(b.name))
     .map((x) => ({ value: x.id, label: `${catName(x.categoryId)} · ${materialLabel(x)}` }));
   const [f, set] = useForm(() => ({
-    date: purchase?.date ?? todayISO(), supplierId: purchase?.supplierId ?? '', freight: purchase ? toInputBR(purchase.freight, 2) : '',
-    otherCosts: purchase ? toInputBR(purchase.otherCosts, 2) : '', discount: purchase?.discount && D(purchase.discount).gt(0) ? toInputBR(purchase.discount, 2) : '', notes: purchase?.notes ?? '',
+    date: src?.date ?? todayISO(), supplierId: src?.supplierId ?? '', freight: src && D(src.freight).gt(0) ? toInputBR(src.freight, 2) : '',
+    otherCosts: src && D(src.otherCosts).gt(0) ? toInputBR(src.otherCosts, 2) : '', discount: src?.discount && D(src.discount).gt(0) ? toInputBR(src.discount, 2) : '', notes: src?.notes ?? '',
   }));
-  const [items, setItems] = useState<ItemRow[]>(() => purchase ? rowsFromPurchase(db, purchase) : [newRow('insumo')]);
+  const [items, setItems] = useState<ItemRow[]>(() => src ? rowsFromPurchase(db, src, !purchase) : [newRow('insumo')]);
   const [creatingFor, setCreatingFor] = useState<number | null>(null);
-  const pt = purchase?.payment;
+  const pt = src?.payment;
   const [pay, setPay] = useForm(() => ({
     mode: (pt?.mode ?? 'avista') as PaymentTerms['mode'], accountId: pt?.accountId ?? db.accounts.find((a) => a.active)?.id ?? '', method: pt?.method ?? 'PIX',
     installments: String(pt?.installments ?? 1), firstDue: pt?.mode === 'aprazo' ? pt.firstDue : addDays(todayISO(), 30), intervalDays: String(pt?.intervalDays ?? 30),
@@ -188,6 +194,7 @@ function PurchaseForm({ onClose, purchase }: { onClose: () => void; purchase?: P
       footer={<><span className="muted" style={{ marginRight: 'auto' }}>Total: <b>{fmtBRL(preview.total)}</b>{(parseBR(f.discount) ?? D(0)).gt(0) && <> (mercadorias {fmtBRL(preview.goods)} − desconto {fmtBRL(parseBR(f.discount)!)})</>}</span><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={submit} disabled={!!block}>{editing ? 'Salvar correção' : 'Registrar compra'}</button></>}>
       <div className="stack">
         {block && <Alert tone="warning" title="Edição bloqueada">{block}</Alert>}
+        {template && <Alert tone="info" title={`Relançando a compra ${template.number} (excluída)`}>Os dados foram copiados. Corrija o que estava errado — principalmente a <b>quantidade e a unidade</b> (carretel, kg ou g) — e clique em Registrar compra.</Alert>}
         <div className="grid g3">
           <DateField label="Data da compra" required value={f.date} onChange={set('date')} />
           <SelectField label="Fornecedor" value={f.supplierId} onChange={set('supplierId')} placeholder="— não informado —" options={db.parties.filter((p) => p.kind === 'fornecedor').map((p) => ({ value: p.id, label: p.name }))} hint={<a href="#/cadastros/fornecedores" onClick={onClose}>Cadastrar fornecedor</a>} />
@@ -282,12 +289,21 @@ function PurchaseForm({ onClose, purchase }: { onClose: () => void; purchase?: P
   );
 }
 
-function PurchaseDetail({ purchase, onClose, onEdit }: { purchase: Purchase; onClose: () => void; onEdit: () => void }) {
+function PurchaseDetail({ purchase, onClose, onEdit, onDeleted }: { purchase: Purchase; onClose: () => void; onEdit: () => void; onDeleted: (copy: Purchase, relaunch: boolean) => void }) {
   const { db, run } = useStore();
   const [confirm, confirmEl] = useConfirm();
-  const p = db.purchases.find((x) => x.id === purchase.id)!;
+  const p = db.purchases.find((x) => x.id === purchase.id) ?? purchase;
   const titles = db.titles.filter((t) => t.origin.kind === 'compra' && t.origin.id === p.id);
   const block = purchaseEditBlock(db, p);
+  const delBlock = purchaseDeleteBlock(db, p);
+  const remove = async (again: boolean) => {
+    const reason = await confirm({ title: again ? `Excluir ${p.number} e relançar?` : `Excluir a compra ${p.number}?`, danger: true, confirmLabel: again ? 'Excluir e relançar' : 'Excluir compra', reasonLabel: 'Motivo da exclusão',
+      text: `Os lotes, a entrada no estoque e os lançamentos financeiros desta compra serão apagados${p.status === 'ativa' && p.payment.mode === 'avista' ? ' (a saída do caixa à vista também)' : ''}. ${again ? 'Em seguida abre uma nova compra com os mesmos dados, para você corrigir e registrar.' : 'Fica registrado só na trilha de auditoria.'}` });
+    if (!reason) return;
+    const copy = structuredClone(p);
+    const r = await run((d) => deletePurchase(d, p.id, reason), again ? 'Compra excluída. Corrija os dados e registre de novo.' : 'Compra excluída.');
+    if (r.ok) onDeleted(copy, again);
+  };
   const cancel = async () => {
     const reason = await confirm({ title: `Cancelar compra ${p.number}?`, danger: true, confirmLabel: 'Cancelar compra', reasonLabel: 'Motivo do cancelamento',
       text: 'O estoque recebido será estornado (devolução) e os títulos cancelados. O histórico é preservado. Só é possível se o material não foi usado e não houver pagamentos ativos.' });
@@ -295,11 +311,15 @@ function PurchaseDetail({ purchase, onClose, onEdit }: { purchase: Purchase; onC
   };
   return (
     <Modal wide title={`Compra ${p.number}`} subtitle={`${fmtDate(p.date)} · ${db.parties.find((x) => x.id === p.supplierId)?.name ?? 'fornecedor não informado'}${p.editedAt ? ` · editada em ${fmtDate(p.editedAt.slice(0, 10))}` : ''}`} onClose={onClose}
-      footer={<><button className="btn ghost" onClick={onClose}>Fechar</button>{p.status === 'ativa' && <button className="btn danger" onClick={cancel}>Cancelar compra</button>}
+      footer={<><button className="btn ghost" onClick={onClose}>Fechar</button>
+        <button className="btn ghost danger-text" onClick={() => remove(false)} disabled={!!delBlock} title={delBlock ?? 'Apaga a compra lançada por engano'}>Excluir</button>
+        <button className="btn secondary" onClick={() => remove(true)} disabled={!!delBlock} title={delBlock ?? 'Apaga e abre uma nova compra com os mesmos dados'}>Excluir e relançar</button>
+        {p.status === 'ativa' && <button className="btn danger" onClick={cancel}>Cancelar compra</button>}
         {p.status === 'ativa' && <button className="btn primary" onClick={onEdit} disabled={!!block} title={block ?? undefined}>Editar compra</button>}</>}>
       <div className="stack">
         {p.status === 'cancelada' && <Alert tone="error" title="Compra cancelada">{p.cancelReason}</Alert>}
         {p.status === 'ativa' && block && <Alert tone="info" title="Para editar">{block}</Alert>}
+        {delBlock && <p className="small muted" style={{ margin: 0 }}>Exclusão indisponível: {delBlock}</p>}
         {p.items.length > 0 && <><h3>Insumos (estoque)</h3>
         <div className="card"><table className="tbl"><thead><tr><th>Lote</th><th>Insumo</th><th className="num">Qtd.</th><th className="num">Mercadoria</th><th className="num">Frete/outros</th><th className="num">Desconto</th><th className="num">Custo unitário</th></tr></thead><tbody>
           {p.items.map((it) => { const lot = db.lots.find((l) => l.id === it.lotId)!; const m = db.materials.find((x) => x.id === it.materialId); const warn = unusualUnitCost(m, lot.unitCost); return (

@@ -1,8 +1,8 @@
 /** v1.6: kits de entrega, orçamento kit, peças já produzidas, extrato do estoque e edições. */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createEmptyDB } from './schema';
-import { saveAccount, saveChannel, saveMaterial, saveParty, savePrinter, materialLabel } from './catalog';
-import { registerPurchase } from './purchases';
+import { deleteMaterial, materialUsage, saveAccount, saveChannel, saveMaterial, saveParty, savePrinter, materialLabel } from './catalog';
+import { deletePurchase, purchaseDeleteBlock, registerPurchase } from './purchases';
 import { accountBalance, createManualTitle, settleTitle, updateTitle } from './finance';
 import { lotBalance, materialStatement } from './inventory';
 import { emptyQuoteInput, latestVersion, quoteSanity, quoteTotal, resolveParams, evaluateQuote, saveQuote, withKitShares } from './quotes';
@@ -125,6 +125,33 @@ describe('Conferência do orçamento', () => {
     expect(quoteSanity(db, input, params, ev).join(' ')).toMatch(/alto demais/);
     const cheap = { ...input, manualPriceUnit: '0.01' };
     expect(quoteSanity(db, cheap, params, evaluateQuote(cheap, params)).join(' ')).toMatch(/prejuízo/);
+  });
+});
+
+describe('Exclusão e relançamento', () => {
+  it('compra lançada errado é excluída por inteiro (lotes, estoque, caixa) e pode ser relançada', () => {
+    const wrong = registerPurchase(db, { date: '2026-03-01', items: [{ materialId: filamentId, qty: 1, unit: 'g', price: '89.37' }], freight: '2.40', otherCosts: '0', payment: cash() });
+    const balance = accountBalance(db, accountId).toString();
+    deletePurchase(db, wrong.id, 'quantidade em gramas');
+    expect(db.purchases.some((p) => p.id === wrong.id)).toBe(false);
+    expect(db.lots.some((l) => l.purchaseId === wrong.id)).toBe(false);
+    expect(db.titles.some((t) => t.origin.id === wrong.id)).toBe(false);
+    expect(D(accountBalance(db, accountId)).minus(balance).toString()).toBe('91.77'); // saída do caixa desfeita
+    expect(materialStatement(db, filamentId).physical.toString()).toBe('2000');
+    const ok = registerPurchase(db, { date: '2026-03-01', items: [{ materialId: filamentId, qty: 1, unit: 'kg', price: '89.37' }], freight: '2.40', otherCosts: '0', payment: cash() });
+    expect(D(db.lots.find((l) => l.id === ok.items[0].lotId)!.unitCost).times(1000).toString()).toBe('91.77');
+    // Lote já usado: não exclui (usar Editar compra)
+    produceForStockNow(db, { description: 'Peça', qtyPlanned: 1, plannedMaterials: [{ materialId: filamentId, qty: 2500 }], plannedHours: 1 });
+    expect(purchaseDeleteBlock(db, ok)).toMatch(/já foi usado/);
+  });
+
+  it('insumo sem histórico é excluído; com histórico é bloqueado', () => {
+    const cat = db.categories.find((c) => c.name === 'Etiquetas')!;
+    const tmp = saveMaterial(db, { name: 'Etiqueta errada', categoryId: cat.id, unit: 'un', active: true });
+    deleteMaterial(db, tmp.id);
+    expect(db.materials.some((m) => m.id === tmp.id)).toBe(false);
+    expect(() => deleteMaterial(db, filamentId)).toThrow(/histórico/);
+    expect(materialUsage(db, filamentId)).toMatchObject({ lots: 1, purchases: 1 });
   });
 });
 

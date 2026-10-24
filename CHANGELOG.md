@@ -2,6 +2,16 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.6.1 — 24/10/2026
+
+### Exclusão e relançamento de insumos
+- **Compras → abrir a compra → Excluir / Excluir e relançar**: apaga a compra lançada por engano por inteiro (lotes, entrada no
+  estoque, títulos e saída do caixa à vista) e, no relançamento, abre uma nova compra já preenchida com os mesmos dados para corrigir.
+  Só é possível enquanto o material não foi usado e sem pagamento registrado pelo usuário; depois disso use **Editar compra**.
+  Compras canceladas também podem ser excluídas.
+- **Cadastros → Materiais → abrir o insumo**: **Excluir** e **Excluir e relançar** para cadastros sem histórico. Com histórico
+  (compras, orçamentos, produções, kits), **Inativar e relançar**: o antigo fica inativo e abre um cadastro novo com os mesmos dados.
+
 ## v1.6.0 — 24/10/2026
 
 ### Correção: filamento com R$/kg 1.000× maior (ex.: R$ 91.770,00/kg)

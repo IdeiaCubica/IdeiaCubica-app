@@ -4,7 +4,7 @@ import { navigate } from '../App';
 import type { DB, Quote, QuoteExtraLine, QuoteInput, QuoteItemStatus, QuoteShipping, QuoteStatus, QuoteVersion, QuoteVersionItem, RoundingRule } from '../../domain/types';
 import {
   ITEM_STATE_LABEL, deleteQuote, emptyQuoteInput, evaluateQuote, isItemLocked, itemOrder, itemState, latestVersion, materialCostPolicy, perHour, quoteItems, quoteTotal,
-  resolveParams, saveQuote, setItemStatus, setQuoteStatus, type ItemState, type QuoteEvaluation,
+  paramsForItem, saveQuote, setItemStatus, setQuoteStatus, staleItems, type ItemState, type QuoteEvaluation,
 } from '../../domain/quotes';
 import { isLockedComponent, laborTotals, type CompStatus, type CostComponent } from '../../domain/costing';
 import { ROUNDING_LABEL } from '../../domain/pricing';
@@ -196,33 +196,40 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
     || JSON.stringify(shipping) !== JSON.stringify(latestVersion(quote).shipping ?? quoteShipping(db, latestVersion(quote).items[0].input))
     || (meta.customerId || undefined) !== quote.customerId);
 
-  const params = useMemo(() => resolveParams(db, input), [db, input]);
+  // Mesma regra da lista e do documento do cliente: peça salva e não alterada usa o valor salvo.
+  // "Atualizar custos" passa a usar os custos de hoje (e salva como nova versão).
+  const [refreshCosts, setRefreshCosts] = useState(false);
+  const paramsOf = (it: DraftItem) => paramsForItem(db, quote, it.itemId, it.input, refreshCosts);
+  const stale = useMemo(() => (quote ? staleItems(db, quote) : []), [db, quote]);
+  const params = useMemo(() => paramsOf(cur), [db, input, refreshCosts, quote, cur.itemId]);
   const evaluation = useMemo<{ ev?: QuoteEvaluation; error?: string }>(() => {
     try { return { ev: evaluateQuote(input, params) }; } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
   }, [input, params]);
-  // Totais de todas as peças (não recusadas), recalculados com os parâmetros atuais.
+  // Totais de todas as peças (não recusadas), pela mesma regra.
   const totals = useMemo(() => {
     let price = new Decimal(0), cost = new Decimal(0), pending = false, count = 0;
     items.forEach((it) => {
       if (stateOf(it) === 'recusado') return;
       count++;
       try {
-        const ev = evaluateQuote(it.input, resolveParams(db, it.input));
+        const ev = evaluateQuote(it.input, paramsOf(it));
         cost = cost.plus(ev.costs.total);
         if (ev.pricing.analysis) price = price.plus(ev.pricing.analysis.revenue); else pending = true;
       } catch { pending = true; }
     });
     return { price, cost, pending, count };
-  }, [items, db]);
+  }, [items, db, refreshCosts, quote]);
+  const unsavedAll = unsaved || (refreshCosts && stale.length > 0);
 
   if (quoteId && !quote) return <Empty title="Orçamento não encontrado" action={<button className="btn secondary" onClick={() => navigate('orcamentos')}>Voltar</button>} />;
 
-  const save = () => run((d) => saveQuote(d, { quoteId: quote?.id, name: meta.title || undefined, customerId: meta.customerId || undefined, note: meta.note || undefined, projectId: quote?.projectId },
+  const save = () => run((d) => saveQuote(d, { quoteId: quote?.id, name: meta.title || undefined, customerId: meta.customerId || undefined, note: meta.note || (refreshCosts && stale.length ? 'Custos atualizados' : undefined), projectId: quote?.projectId, refreshCosts },
     items.map((it) => ({ itemId: it.itemId, name: it.name, image: it.image, input: it.input, finishedGoodId: it.finishedGoodId })), shipping),
     quote ? 'Orçamento atualizado (nova versão salva; as anteriores ficam no histórico).' : 'Orçamento criado.')
     .then((r) => {
       if (!r.ok) return;
       setMeta((m) => ({ ...m, note: '' }));
+      setRefreshCosts(false);
       if (!quote) navigate(`orcamentos/${r.value.id}`);
       else setItems(draftsOf(r.value));
     });
@@ -287,9 +294,27 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
           {quote && <Badge tone={QUOTE_STATUS[quote.status].tone}>{QUOTE_STATUS[quote.status].label}</Badge>}
           {quote && (quote.status === 'rascunho' || quote.status === 'enviado') && <button className="btn ghost" onClick={() => run((d) => setQuoteStatus(d, quote.id, quote.status === 'enviado' ? 'rascunho' : 'enviado'), 'Situação atualizada.')}>{quote.status === 'enviado' ? 'Voltar para rascunho' : 'Marcar como enviado'}</button>}
           {quote && <button className="btn secondary" onClick={() => setExporting(true)}>Orçamento para o cliente</button>}
-          {quote && <button className="btn navy" onClick={() => (unsaved ? toast('warning', 'Salve as alterações antes de enviar para produção.') : setProducing(true))} disabled={producible.length === 0}>Enviar para produção</button>}
+          {quote && <button className="btn navy" onClick={() => (unsavedAll ? toast('warning', 'Salve as alterações antes de enviar para produção.') : setProducing(true))} disabled={producible.length === 0}>Enviar para produção</button>}
           <button className="btn primary" onClick={save}>{quote ? 'Salvar alterações' : 'Salvar orçamento'}</button>
         </>} />
+
+      {stale.length > 0 && !refreshCosts && (
+        <div style={{ marginBottom: 16 }}>
+          <Alert tone="warning" title="Os custos mudaram desde que este orçamento foi salvo">
+            Os valores mostrados aqui, na lista e no documento do cliente são os <b>salvos</b>. Com os custos de hoje
+            (filamento, parâmetros, impressora) {stale.map((s) => `“${s.it.name}” passaria de ${fmtBRL(s.saved)} para ${fmtBRL(s.current)}`).join('; ')}.{' '}
+            <button type="button" className="link-btn" onClick={() => setRefreshCosts(true)}>Atualizar para os custos de hoje</button>
+          </Alert>
+        </div>
+      )}
+      {refreshCosts && stale.length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          <Alert tone="info" title="Mostrando com os custos de hoje">
+            Clique em <b>Salvar alterações</b> para gravar como nova versão (a anterior fica no histórico). Até salvar, a lista e o documento do cliente continuam com o valor anterior.{' '}
+            <button type="button" className="link-btn" onClick={() => setRefreshCosts(false)}>Voltar aos valores salvos</button>
+          </Alert>
+        </div>
+      )}
 
       <div className="split">
         <div className="stack">
@@ -316,7 +341,7 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
                 {items.map((it, i) => {
                   const st = stateOf(it);
                   let price: Decimal | null = null;
-                  try { price = evaluateQuote(it.input, resolveParams(db, it.input)).pricing.analysis?.revenue ?? null; } catch { price = null; }
+                  try { price = evaluateQuote(it.input, paramsOf(it)).pricing.analysis?.revenue ?? null; } catch { price = null; }
                   return (
                     <button key={it.itemId ?? `novo-${i}`} type="button" role="tab" aria-selected={i === idx} className={`piece-tab${i === idx ? ' on' : ''}${st === 'recusado' ? ' refused' : ''}`} onClick={() => setActive(i)}>
                       {it.image ? <img src={it.image} alt="" /> : <span className="piece-num">{i + 1}</span>}
@@ -405,7 +430,7 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
       </div>
       {newClient && <PartyForm kind="cliente" onClose={() => setNewClient(false)}
         onSave={(v) => run((d) => saveParty(d, v), 'Cliente cadastrado.').then((r) => { if (r.ok) { setMeta((m) => ({ ...m, customerId: r.value.id })); setNewClient(false); } })} />}
-      {exporting && quote && <ClientQuoteExport quote={quote} onClose={() => setExporting(false)} unsaved={unsaved} />}
+      {exporting && quote && <ClientQuoteExport quote={quote} onClose={() => setExporting(false)} unsaved={unsavedAll} />}
       {producing && quote && <ProduceDialog quote={quote} onClose={() => setProducing(false)} />}
       {confirmEl}
     </>

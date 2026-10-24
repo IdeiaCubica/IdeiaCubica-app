@@ -131,11 +131,34 @@ export function summarize(ev: QuoteEvaluation): QuoteSummary {
 
 export interface QuoteItemDraft { itemId?: ID; name: string; image?: string | null; input: QuoteInput; finishedGoodId?: ID }
 
+const sameInput = (a: QuoteInput, b: QuoteInput) => JSON.stringify({ overrides: {}, ...a }) === JSON.stringify({ overrides: {}, ...b });
+
+/**
+ * Parâmetros para exibir/recalcular uma peça. Regra única para todas as telas:
+ * peça salva e não alterada usa o SNAPSHOT da versão salva (o mesmo valor da lista
+ * e do documento do cliente). Só usa os custos atuais se a peça foi alterada ou se
+ * o usuário pediu para atualizar os custos.
+ */
+export function paramsForItem(db: DB, quote: Quote | undefined, itemId: ID | undefined, input: QuoteInput, useCurrentCosts = false): CostParams {
+  const saved = quote && itemId ? quoteItems(quote).find((x) => x.itemId === itemId) : undefined;
+  if (saved && (!useCurrentCosts || isItemLocked(db, quote!, itemId!)) && sameInput(saved.input, input)) return saved.params;
+  return resolveParams(db, input);
+}
+
+/** Peças cujo valor mudaria com os custos de hoje (filamento, parâmetros, impressora…). */
+export function staleItems(db: DB, q: Quote) {
+  return quoteItems(q).filter((it) => !isItemLocked(db, q, it.itemId)).map((it) => {
+    let current: string | null = null;
+    try { current = evaluateQuote(it.input, resolveParams(db, it.input)).pricing.analysis?.revenue.toString() ?? null; } catch { current = null; }
+    return { it, saved: it.summary.orderPrice ?? null, current };
+  }).filter((r) => r.saved !== r.current);
+}
+
 /**
  * Salva uma nova versão do orçamento com todas as peças. Peças que já têm pedido
  * em produção (ou separadas do estoque) ficam travadas: precisam continuar iguais.
  */
-export function saveQuote(db: DB, meta: { quoteId?: ID; name?: string; projectId?: ID; customerId?: ID; note?: string },
+export function saveQuote(db: DB, meta: { quoteId?: ID; name?: string; projectId?: ID; customerId?: ID; note?: string; refreshCosts?: boolean },
   drafts: QuoteItemDraft[], shipping?: QuoteShipping): Quote {
   assert(drafts.length > 0, 'Adicione ao menos uma peça ao orçamento.');
   if (meta.customerId) byId(db.parties, meta.customerId, 'Cliente');
@@ -160,6 +183,11 @@ export function saveQuote(db: DB, meta: { quoteId?: ID; name?: string; projectId
       assert(JSON.stringify(old.input) === JSON.stringify(input) && old.name === name,
         `A peça "${old.name}" já está em produção e não pode ser alterada. Retorne o pedido para o orçamento antes de mudar.`);
       return structuredClone(old);
+    }
+    // Peça não alterada mantém os custos e o valor salvos (não muda de preço sozinha);
+    // só recalcula com os custos atuais se foi alterada ou se o usuário pediu.
+    if (old && !meta.refreshCosts && sameInput(old.input, input)) {
+      return { ...structuredClone(old), name, image: d.image ?? null, finishedGoodId: d.finishedGoodId };
     }
     const params = resolveParams(db, input);
     return { itemId, name, image: d.image ?? null, input: structuredClone(input), params, summary: summarize(evaluateQuote(input, params)), finishedGoodId: d.finishedGoodId };

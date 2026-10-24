@@ -2,6 +2,16 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.5.4 — 24/10/2026
+
+### Correção: valor do orçamento diferente entre as telas
+- A lista e o documento do cliente usavam o valor **salvo** do orçamento, mas a tela do orçamento recalculava com os
+  **custos de hoje** (ex.: Gancho R$ 14,90 na lista e no PDF, R$ 15,90 na tela). Agora todas as telas usam a mesma regra:
+  peça salva e não alterada mostra o valor salvo.
+- Quando os custos mudam depois de salvar (filamento, parâmetros, impressora), a tela avisa quanto a peça passaria a custar
+  e oferece **“Atualizar para os custos de hoje”**, que grava uma nova versão (a anterior fica no histórico).
+- Salvar um orçamento sem mexer numa peça não muda mais o preço dela sozinho.
+
 ## v1.5.3 — 23/10/2026
 
 ### Proteção do banco contra excesso de requisições

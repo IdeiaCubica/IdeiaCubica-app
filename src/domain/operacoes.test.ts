@@ -5,7 +5,7 @@ import { saveAccount, saveChannel, saveMaterial, saveParty, savePrinter } from '
 import { cancelPurchase, registerPurchase } from './purchases';
 import { accountBalance, openTotals, reverseSettlement, settleTitle, titleOpen } from './finance';
 import { adjustInventory, deleteInitialStock, lotBalance, purchaseAlerts, registerInitialStock, reorderAnalysis, reserve, releaseAll, addMovement, unitCostFromTotal, updateInitialStock } from './inventory';
-import { deleteQuote, emptyQuoteInput, itemState, latestVersion, materialCostPolicy, quoteTotal, saveQuote, setItemStatus } from './quotes';
+import { deleteQuote, emptyQuoteInput, evaluateQuote, itemState, latestVersion, materialCostPolicy, paramsForItem, quoteTotal, saveQuote, setItemStatus, staleItems } from './quotes';
 import {
   cancelOrder, compareOrder, completeOrder, createManualOrder, createOrderFromQuote, createOrdersFromQuote, daysInStock, finishedGoodBalance, moveInQueue,
   orderDelivery, productionQueue, queueShortages, quoteFromFinishedGood, reserveOrderMaterials, returnOrderToQuote, startOrder, writeOffFinishedGood,
@@ -428,6 +428,33 @@ describe('Produção e vendas', () => {
     expect(d3.items[0].image).toBeNull();
     expect(d3.freight?.free).toBe(true);
     expect(d3.total.toString()).toBe(D(latestVersion(q3).items[0].summary.orderPrice!).toString());
+  });
+
+  it('valor do orçamento é o mesmo em todas as telas; custos novos só entram quando o usuário atualiza', () => {
+    const { q, lotId } = setupQuote();
+    const it = latestVersion(q).items[0];
+    const savedPrice = it.summary.orderPrice;
+    // Custo do filamento muda depois de salvar (ex.: nova compra mais cara)
+    db.lots.find((l) => l.id === lotId)!.unitCost = '0.50';
+    // Tela do orçamento (peça não alterada) usa o snapshot salvo → mesmo valor da lista e do documento
+    const shown = evaluateQuote(it.input, paramsForItem(db, q, it.itemId, it.input)).pricing.analysis!.revenue.toString();
+    expect(shown).toBe(savedPrice);
+    expect(buildClientQuote(db, q, {}, '2026-10-24').total.toString()).toBe(savedPrice);
+    // O sistema avisa que os custos de hoje dariam outro valor
+    const stale = staleItems(db, q);
+    expect(stale).toHaveLength(1);
+    expect(stale[0].current).not.toBe(savedPrice);
+    // Salvar sem alterar a peça não muda o preço sozinho
+    saveQuote(db, { quoteId: q.id }, [{ itemId: it.itemId, name: it.name, input: it.input }]);
+    expect(latestVersion(q).items[0].summary.orderPrice).toBe(savedPrice);
+    // Atualizar custos (ação do usuário) gera nova versão com o valor novo, em todas as telas
+    saveQuote(db, { quoteId: q.id, refreshCosts: true }, [{ itemId: it.itemId, name: it.name, input: it.input }]);
+    const v3 = latestVersion(q).items[0];
+    expect(v3.summary.orderPrice).toBe(stale[0].current);
+    expect(evaluateQuote(v3.input, paramsForItem(db, q, v3.itemId, v3.input)).pricing.analysis!.revenue.toString()).toBe(v3.summary.orderPrice);
+    expect(buildClientQuote(db, q, {}, '2026-10-24').total.toString()).toBe(v3.summary.orderPrice);
+    expect(staleItems(db, q)).toHaveLength(0);
+    expect(q.versions[0].items[0].summary.orderPrice).toBe(savedPrice);   // histórico preservado
   });
 
   it('orçamento com várias peças: aprova algumas, produz por peça com data de entrega e retorna pedido', () => {

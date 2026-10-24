@@ -20,6 +20,7 @@ export function saveMaterial(db: DB, input: MaterialInput, id?: ID): Material {
     if (v !== null && v !== undefined) assert(v >= 0, `${label} não pode ser negativo.`);
   }
   if (input.referenceCost !== null && input.referenceCost !== undefined) assert(D(input.referenceCost).gte(0), 'O preço de referência não pode ser negativo.');
+  if (input.costSource === 'cadastro') assert(input.referenceCost && D(input.referenceCost).gt(0), 'Para usar o preço do cadastro nos orçamentos, informe o preço.');
   if (input.brandId) byId(db.brands, input.brandId, 'Marca');
   if (input.manufacturerId) byId(db.manufacturers, input.manufacturerId, 'Fabricante');
   const code = (input.code ?? '').trim();

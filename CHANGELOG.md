@@ -2,6 +2,16 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.6.2 — 24/10/2026
+
+### Correção: editar o cadastro do filamento não corrigia o preço
+- Causa: com compra registrada, o orçamento usa o **custo da última compra**; o preço digitado no cadastro era ignorado.
+- Na edição do insumo há a nova seção **Custo das compras deste insumo**: mostra o preço usado hoje nos orçamentos e cada
+  compra/estoque com o custo. **Corrigir** ajusta a quantidade recebida (carretel, kg ou g) e o valor pago; a compra, o estoque
+  e o financeiro são recalculados juntos (o frete continua rateado).
+- Nova opção no cadastro: **“Usar este preço do cadastro nos orçamentos”**, que vale mesmo com compras registradas.
+- Orçamentos já salvos mantêm o valor salvo e mostram o aviso “os custos mudaram” com o botão para atualizar.
+
 ## v1.6.1 — 24/10/2026
 
 ### Exclusão e relançamento de insumos

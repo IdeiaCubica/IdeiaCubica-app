@@ -1,7 +1,7 @@
 {
   "name": "ideiacubica-app",
   "private": true,
-  "version": "1.6.1",
+  "version": "1.6.2",
   "description": "Ideia Cúbica — gestão, orçamentação e produção de impressão 3D",
   "type": "module",
   "engines": {

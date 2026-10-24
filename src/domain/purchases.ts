@@ -20,7 +20,7 @@
 import type { DB, FinTitle, ID, ISODate, Lot, PaymentTerms, Purchase, PurchaseEquipment } from './types';
 import { D, Decimal, ZERO, cents, sum } from './money';
 import { BusinessError, assert, audit, byId, convertQty, isISODate, newId, nextCode, nowISO, requireText } from './core';
-import { addMovement, isUntouchedLot, lotBalance } from './inventory';
+import { addMovement, isUntouchedLot, lotBalance, updateInitialStock } from './inventory';
 import { savePrinter } from './catalog';
 import { categoryByName, cancelTitle, createTitlesFromTerms, titlePaid } from './finance';
 import { SYS_FIN } from './schema';
@@ -353,6 +353,39 @@ export function updatePurchase(db: DB, purchaseId: ID, input: PurchaseInput, rea
   materialize(db, p, input, calc, previous);
   audit(db, 'Compra editada', `${p.number}: R$ ${D(before).toFixed(2)} → R$ ${calc.total.toFixed(2)}${reason ? ` — ${reason}` : ''}`);
   return p;
+}
+
+/** Compra gravada → entrada do formulário (para editar/corrigir mantendo tudo o mais igual). */
+export function purchaseToInput(db: DB, p: Purchase): PurchaseInput {
+  return {
+    date: p.date, supplierId: p.supplierId, freight: p.freight, otherCosts: p.otherCosts, discount: p.discount ?? '0', payment: p.payment, notes: p.notes,
+    items: p.items.map((it) => ({ materialId: it.materialId, qty: it.qty, unit: db.materials.find((m) => m.id === it.materialId)?.unit, price: it.price, batchNumber: it.batchNumber, lotId: it.lotId })),
+    equipment: (p.equipment ?? []).map((e) => ({ id: e.id, description: e.description, qty: e.qty, price: e.price })),
+  };
+}
+
+/**
+ * Corrige um lote a partir do cadastro do insumo: quantidade recebida (na unidade do insumo)
+ * e valor pago pela mercadoria. Lote de compra → edita a compra (rateios e financeiro refeitos);
+ * lote de estoque inicial → corrige o lançamento (se já usado, só o custo).
+ */
+export function correctLot(db: DB, lotId: ID, input: { qty: number; price: string }) {
+  const lot = byId(db.lots, lotId, 'Lote');
+  assert(input.qty > 0, 'Informe a quantidade recebida.');
+  const price = cents(D(input.price || '0'));
+  assert(!price.isNegative(), 'Valor inválido.');
+  if (lot.origin === 'compra' && lot.purchaseId) {
+    const p = byId(db.purchases, lot.purchaseId, 'Compra');
+    const base = purchaseToInput(db, p);
+    base.items = base.items.map((it) => (it.lotId === lot.id ? { ...it, qty: input.qty, price: price.toString() } : it));
+    return updatePurchase(db, p.id, base, `correção do lote ${lot.code} pelo cadastro do insumo`);
+  }
+  const unitCost = price.div(input.qty).toString();
+  if (isUntouchedLot(db, lot.id)) return updateInitialStock(db, lot.id, { qty: input.qty, unitCost, date: lot.date, batchNumber: lot.batchNumber, notes: lot.notes });
+  assert(input.qty === lot.initialQty, `O lote ${lot.code} já foi usado: a quantidade não muda por aqui (use o inventário). Corrija só o valor.`);
+  Object.assign(lot, { unitCost, cost: { goods: price.toString(), freight: '0', other: '0' } });
+  audit(db, 'Custo do estoque inicial corrigido', `${lot.code}: ${unitCost}/un`);
+  return lot;
 }
 
 /** Motivo pelo qual a compra não pode ser excluída (null = pode). */

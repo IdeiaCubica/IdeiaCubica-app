@@ -2,10 +2,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createEmptyDB } from './schema';
 import { deleteMaterial, materialUsage, saveAccount, saveChannel, saveMaterial, saveParty, savePrinter, materialLabel } from './catalog';
-import { deletePurchase, purchaseDeleteBlock, registerPurchase } from './purchases';
+import { correctLot, deletePurchase, purchaseDeleteBlock, registerPurchase } from './purchases';
 import { accountBalance, createManualTitle, settleTitle, updateTitle } from './finance';
 import { lotBalance, materialStatement } from './inventory';
-import { emptyQuoteInput, latestVersion, quoteSanity, quoteTotal, resolveParams, evaluateQuote, saveQuote, withKitShares } from './quotes';
+import { emptyQuoteInput, latestVersion, materialCostPolicy, quoteSanity, quoteTotal, resolveParams, evaluateQuote, saveQuote, withKitShares } from './quotes';
 import { finishedGoodBalance, mergeQuotes, produceForStockNow, quoteFromFinishedGood } from './production';
 import { consumeKit, deleteDeliveryKit, kitUnitCost, quoteKit, saveDeliveryKit } from './deliveryKits';
 import { cancelSale, registerSale, saleEconomics, saleEditBlock, updateSale } from './sales';
@@ -152,6 +152,26 @@ describe('Exclusão e relançamento', () => {
     expect(db.materials.some((m) => m.id === tmp.id)).toBe(false);
     expect(() => deleteMaterial(db, filamentId)).toThrow(/histórico/);
     expect(materialUsage(db, filamentId)).toMatchObject({ lots: 1, purchases: 1 });
+  });
+});
+
+describe('Correção do custo pelo cadastro do insumo', () => {
+  it('corrige o lote da compra (mesmo usado) e o preço nos orçamentos muda junto', () => {
+    const p = registerPurchase(db, { date: '2026-03-01', items: [{ materialId: filamentId, qty: 1, unit: 'g', price: '89.37' }], freight: '2.40', otherCosts: '0', payment: cash() });
+    const lotId = p.items[0].lotId;
+    expect(materialCostPolicy(db, filamentId).unitCost!.times(1000).toString()).toBe('91770');
+    correctLot(db, lotId, { qty: 1000, price: '89.37' });
+    expect(materialCostPolicy(db, filamentId).unitCost!.times(1000).toString()).toBe('91.77'); // frete continua rateado
+    expect(db.titles.filter((t) => t.origin.id === p.id).map((t) => t.amount)).toEqual(['91.77']);
+    expect(lotBalance(db, lotId).physical.toString()).toBe('1000');
+  });
+
+  it('opção "usar o preço do cadastro" vale mesmo com compras registradas', () => {
+    const m = db.materials.find((x) => x.id === filamentId)!;
+    saveMaterial(db, { ...m, referenceCost: '0.09', costSource: 'cadastro' }, m.id);
+    expect(materialCostPolicy(db, filamentId)).toMatchObject({ source: expect.stringMatching(/cadastro/) });
+    expect(materialCostPolicy(db, filamentId).unitCost!.toString()).toBe('0.09');
+    expect(() => saveMaterial(db, { ...m, referenceCost: null, costSource: 'cadastro' }, m.id)).toThrow(/informe o preço/);
   });
 });
 

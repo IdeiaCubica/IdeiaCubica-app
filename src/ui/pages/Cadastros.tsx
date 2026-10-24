@@ -6,10 +6,10 @@ import { AddressFields } from '../components/AddressFields';
 import { deleteMaterial, deleteNamed, materialLabel, materialUsage, namedUsage, nextMaterialCode, normalizeSigla, priceHistory, saveCategory, saveMaterial, saveNamed, saveParty, suggestSigla, type NamedList } from '../../domain/catalog';
 import { lotBalance, materialBalance, reorderAnalysis } from '../../domain/inventory';
 import { materialCostPolicy } from '../../domain/quotes';
-import { unusualUnitCost } from '../../domain/purchases';
+import { correctLot, purchaseEditBlock, unusualUnitCost } from '../../domain/purchases';
 import { deleteDeliveryKit, kitUnitCost, saveDeliveryKit } from '../../domain/deliveryKits';
 import { UNIT_LABEL, fmtDate, fmtDocument, fmtPhone } from '../../domain/core';
-import { Decimal, fmtBRL, fmtNum, parseBR, toInputBR } from '../../domain/money';
+import { D, Decimal, fmtBRL, fmtNum, parseBR, toInputBR } from '../../domain/money';
 import { perGramToPerKg, perKgToPerGram } from '../../domain/conversions';
 import { Alert, Badge, Check, Combobox, DataTable, Empty, Field, Modal, NumField, PageHead, SelectField, Tabs, TextArea, TextField, dec, num, useConfirm, useForm } from '../components/ui';
 
@@ -286,6 +286,66 @@ function MaterialDetail({ material, onClose, onEdit, onRelaunch }: { material: M
   );
 }
 
+/**
+ * Custo de cada compra/estoque do insumo, corrigível aqui mesmo. Com compras registradas,
+ * o orçamento usa o custo da última compra — por isso corrigir só o preço do cadastro não basta.
+ */
+function MaterialLotCosts({ material }: { material: Material }) {
+  const { db, run } = useStore();
+  const lots = db.lots.filter((l) => l.materialId === material.id).sort((a, b) => (b.date + b.code).localeCompare(a.date + a.code));
+  const [edit, setEdit] = useState<{ lotId: string; qty: string; unit: string; price: string } | null>(null);
+  const pol = materialCostPolicy(db, material.id);
+  if (!lots.length) return null;
+  const grams = material.unit === 'g';
+  const perUnit = (v: Decimal.Value) => (grams ? `${fmtBRL(perGramToPerKg(v))}/kg` : `${fmtBRL(v, 4)}/${material.unit}`);
+  const start = (lotId: string) => {
+    const l = lots.find((x) => x.id === lotId)!;
+    const it = db.purchases.find((p) => p.id === l.purchaseId)?.items.find((i) => i.lotId === l.id);
+    const goods = it?.price ?? D(l.unitCost).times(l.initialQty).toDecimalPlaces(2).toString();
+    setEdit({ lotId, qty: toInputBR(grams ? l.initialQty / 1000 : l.initialQty), unit: grams ? 'kg' : material.unit, price: toInputBR(goods, 2) });
+  };
+  const qtyStock = edit ? (num(edit.qty) ?? 0) * (edit.unit === 'kg' ? 1000 : edit.unit === 'carretel' ? (material.filament?.netWeightG ?? 0) : 1) : 0;
+  const prevCost = edit && qtyStock > 0 && parseBR(edit.price) ? parseBR(edit.price)!.div(qtyStock) : null;
+  const save = () => edit && run((d) => correctLot(d, edit.lotId, { qty: qtyStock, price: dec(edit.price) ?? '0' }), 'Custo corrigido: estoque, compra e financeiro recalculados.').then((r) => r.ok && setEdit(null));
+  return (
+    <div className="stack">
+      <p className="section-title">Custo das compras deste insumo</p>
+      <p className="small muted" style={{ margin: 0 }}>Preço usado hoje nos orçamentos: <b>{pol.unitCost ? perUnit(pol.unitCost) : '—'}</b> ({pol.source}).
+        Se o custo de uma compra está errado, corrija aqui (quantidade recebida e valor pago). Orçamentos já salvos mostram o aviso “os custos mudaram” para você atualizar.</p>
+      <div className="card"><table className="tbl"><thead><tr><th>Lote</th><th>Origem</th><th>Data</th><th className="num">Recebido</th><th className="num">Custo</th><th /></tr></thead><tbody>
+        {lots.map((l) => {
+          const p = db.purchases.find((x) => x.id === l.purchaseId);
+          const warn = unusualUnitCost(material, l.unitCost);
+          const block = p ? purchaseEditBlock(db, p) : null;
+          return (
+            <tr key={l.id}>
+              <td className="mono">{l.code}</td>
+              <td>{p ? `Compra ${p.number}` : 'Estoque inicial'}</td>
+              <td>{fmtDate(l.date)}</td>
+              <td className="num">{fmtNum(l.initialQty)} {material.unit}</td>
+              <td className="num"><b className={warn ? 'err-text' : ''}>{perUnit(l.unitCost)}</b>{warn && <div className="small err-text">custo improvável</div>}</td>
+              <td className="right">{block ? <span className="small muted" title={block}>bloqueado</span> : <button type="button" className="btn ghost sm" onClick={() => start(l.id)}>Corrigir</button>}</td>
+            </tr>);
+        })}
+      </tbody></table></div>
+      {edit && <div className="card"><div className="card-body stack">
+        <b>Corrigir lote {lots.find((l) => l.id === edit.lotId)?.code}</b>
+        <div className="grid g3" style={{ alignItems: 'end' }}>
+          <div className="row" style={{ alignItems: 'end', flexWrap: 'nowrap', gap: 8 }}>
+            <NumField label="Quantidade recebida" value={edit.qty} onChange={(v) => setEdit({ ...edit, qty: v })} />
+            {grams && <div className="field" style={{ width: 150, flexShrink: 0 }}><Combobox ariaLabel="Unidade" value={edit.unit} onChange={(v) => v && setEdit({ ...edit, unit: v })}
+              options={[...(material.filament?.netWeightG ? [{ value: 'carretel', label: `carretel (${fmtNum(material.filament.netWeightG)} g)` }] : []), { value: 'kg', label: 'kg (quilos)' }, { value: 'g', label: 'g (gramas)' }]} /></div>}
+          </div>
+          <NumField label="Valor pago pela mercadoria" suffix="R$" value={edit.price} onChange={(v) => setEdit({ ...edit, price: v })} hint="Sem frete (o frete da compra é rateado automaticamente)" />
+          <Field label="Novo custo (sem frete)"><div className="readonly-value">{prevCost ? perUnit(prevCost) : '—'}</div></Field>
+        </div>
+        {prevCost && unusualUnitCost(material, prevCost) && <Alert tone="error" title="Ainda parece errado">{unusualUnitCost(material, prevCost)}</Alert>}
+        <div className="row" style={{ justifyContent: 'flex-end' }}><button type="button" className="btn ghost" onClick={() => setEdit(null)}>Cancelar</button><button type="button" className="btn primary" onClick={save}>Salvar correção do custo</button></div>
+      </div></div>}
+    </div>
+  );
+}
+
 export function MaterialForm({ material, copy, onClose, onSave }: { material?: Material; copy?: boolean; onClose: () => void; onSave: (v: Parameters<typeof saveMaterial>[1], id?: string) => void }) {
   const { db } = useStore();
   const fil = material?.filament;
@@ -300,6 +360,7 @@ export function MaterialForm({ material, copy, onClose, onSave }: { material?: M
     netWeightG: toInputBR(fil?.netWeightG ?? null), spoolWeightG: toInputBR(fil?.spoolWeightG ?? null),
     referencePrice: material?.referenceCost ? toInputBR(initialInGrams ? perGramToPerKg(material.referenceCost) : material.referenceCost, 4) : '',
     minStock: toInputBR(material?.minStock ?? null), leadTimeDays: toInputBR(material?.leadTimeDays ?? null), location: material?.location ?? '', notes: material?.notes ?? '',
+    costSource: (material?.costSource ?? 'compra') as 'compra' | 'cadastro',
   });
   const selCat = db.categories.find((c) => c.id === f.categoryId);
   const isFil = selCat?.isFilament ?? false;
@@ -315,6 +376,7 @@ export function MaterialForm({ material, copy, onClose, onSave }: { material?: M
         netWeightG: num(f.netWeightG), spoolWeightG: num(f.spoolWeightG), grossWeightG: material?.filament?.grossWeightG ?? null, diameterMm: material?.filament?.diameterMm ?? null } : undefined,
       referenceCost: ref === null ? null : inGrams ? perKgToPerGram(ref).toString() : ref,
       minStock: num(f.minStock), safetyStock: material?.safetyStock ?? null, leadTimeDays: num(f.leadTimeDays), location: f.location, notes: f.notes,
+      costSource: copy ? undefined : f.costSource,
     }, copy ? undefined : material?.id);
   };
   const unitLabel = isFil ? 'g' : f.unit;
@@ -337,7 +399,7 @@ export function MaterialForm({ material, copy, onClose, onSave }: { material?: M
             <SelectField label="Tipo de material" required value={f.materialType} onChange={set('materialType')} options={FILAMENT_TYPES.map((t) => ({ value: t, label: t }))} />
             <TextField label="Cor" required value={f.color} onChange={set('color')} />
             <div className="field"><label>Cor (amostra)</label><input type="color" value={f.colorHex} onChange={(e) => set('colorHex')(e.target.value)} /></div>
-            <NumField label="Preço do filamento" suffix="R$/kg" value={f.referencePrice} onChange={set('referencePrice')} hint="Usado nos orçamentos até existir compra registrada; depois vale o custo da última compra." />
+            <NumField label="Preço do filamento" suffix="R$/kg" value={f.referencePrice} onChange={set('referencePrice')} hint={f.costSource === 'cadastro' ? 'Usado em todos os orçamentos (opção marcada abaixo).' : 'Usado nos orçamentos até existir compra registrada; depois vale o custo da última compra (corrija abaixo).'} />
             <NumField label="Peso líquido do carretel" suffix="g" value={f.netWeightG} onChange={set('netWeightG')} />
             <NumField label="Carretel vazio" suffix="g" value={f.spoolWeightG} onChange={set('spoolWeightG')} hint="Permite pesar o carretel no inventário" />
           </div>
@@ -349,6 +411,7 @@ export function MaterialForm({ material, copy, onClose, onSave }: { material?: M
             <TextField label="Localização" value={f.location} onChange={set('location')} />
           </div>
         )}
+        {material && !copy && <Check label={<>Usar <b>este preço do cadastro</b> nos orçamentos (em vez do custo da última compra)</>} checked={f.costSource === 'cadastro'} onChange={(v) => set('costSource')(v ? 'cadastro' : 'compra')} />}
         {refSuspicious && <Alert tone="warning" title="Confira o preço">R$ {f.referencePrice}/kg está fora do normal para material controlado em gramas (em geral R$ 20 a R$ 300/kg). O campo é o preço por <b>quilo</b>.</Alert>}
         <div className="grid g3">
           <NumField label="Estoque mínimo" suffix={unitLabel} value={f.minStock} onChange={set('minStock')} />
@@ -356,6 +419,7 @@ export function MaterialForm({ material, copy, onClose, onSave }: { material?: M
         </div>
         <TextArea label="Observações" value={f.notes} onChange={set('notes')} />
         <Check label="Cadastro ativo" checked={f.active} onChange={set('active')} />
+        {material && !copy && <MaterialLotCosts material={material} />}
       </div>
     </Modal>
   );

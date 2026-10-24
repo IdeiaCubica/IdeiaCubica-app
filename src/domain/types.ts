@@ -100,6 +100,8 @@ export interface Material {
    * Usado no orçamento apenas quando ainda não existe compra/lote do material.
    */
   referenceCost?: DecStr | null;
+  /** De onde vem o preço nos orçamentos: 'compra' (padrão: última compra) ou 'cadastro' (sempre o preço de referência). */
+  costSource?: 'compra' | 'cadastro';
   minStock?: number | null;
   safetyStock?: number | null;
   leadTimeDays?: number | null;

@@ -52,10 +52,12 @@ export function emptyQuoteInput(settings: Settings): QuoteInput {
  *   3. se nenhum existir, fica pendente (o usuário pode digitar o preço no orçamento).
  */
 export function materialCostPolicy(db: DB, materialId: ID): { unitCost: Decimal | null; source: string } {
+  const mat = db.materials.find((m) => m.id === materialId);
+  // Escolha do usuário no cadastro: sempre o preço de referência, mesmo com compras.
+  if (mat?.costSource === 'cadastro' && mat.referenceCost) return { unitCost: new Decimal(mat.referenceCost), source: 'preço do cadastro (escolhido no cadastro)' };
   const lots = db.lots.filter((l) => l.materialId === materialId).sort((a, b) => (a.date + a.code).localeCompare(b.date + b.code));
   const last = lots[lots.length - 1];
   if (last) return { unitCost: new Decimal(last.unitCost), source: `última compra (${last.code})` };
-  const mat = db.materials.find((m) => m.id === materialId);
   if (mat?.referenceCost) return { unitCost: new Decimal(mat.referenceCost), source: 'preço de referência do cadastro' };
   return { unitCost: null, source: 'sem preço' };
 }

@@ -2,7 +2,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createEmptyDB } from './schema';
 import { saveAccount, saveChannel, saveMaterial, saveParty, savePrinter } from './catalog';
-import { cancelPurchase, registerPurchase } from './purchases';
+import { cancelPurchase, purchaseEditBlock, registerPurchase, unusualLots, unusualUnitCost, updatePurchase } from './purchases';
 import { accountBalance, openTotals, reverseSettlement, settleTitle, titleOpen } from './finance';
 import { adjustInventory, deleteInitialStock, lotBalance, purchaseAlerts, registerInitialStock, reorderAnalysis, reserve, releaseAll, addMovement, unitCostFromTotal, updateInitialStock } from './inventory';
 import { deleteQuote, emptyQuoteInput, evaluateQuote, itemState, latestVersion, materialCostPolicy, paramsForItem, quoteTotal, saveQuote, setItemStatus, staleItems } from './quotes';
@@ -145,6 +145,71 @@ describe('Compras', () => {
     expect(lotBalance(db, p.items[0].lotId).physical.toString()).toBe('0');
     expect(db.movements.filter((m) => m.lotId === p.items[0].lotId)).toHaveLength(2); // histórico preservado
     expect(t.status).toBe('cancelado');
+  });
+
+  it('desconto da compra: rateado pelo valor, reduz custo do lote e valor pago; preço do cadastro intacto', () => {
+    const cat = db.categories.find((c) => c.name === 'Etiquetas')!;
+    const etq = saveMaterial(db, { name: 'Etiqueta', categoryId: cat.id, unit: 'un', active: true, referenceCost: '0.50' }).id;
+    const p = registerPurchase(db, {
+      date: '2026-02-01', items: [{ materialId: filamentId, qty: 1, unit: 'kg', price: '89.37' }, { materialId: etq, qty: 100, price: '10.63' }],
+      freight: '0', otherCosts: '0', discount: '10', payment: { mode: 'avista', accountId, installments: 1, firstDue: '2026-02-01', intervalDays: 30 },
+    });
+    expect(p.total).toBe('90');
+    const [l1, l2] = p.items.map((it) => db.lots.find((l) => l.id === it.lotId)!);
+    expect([l1.cost.discount, l2.cost.discount]).toEqual(['8.94', '1.06']); // 10 × 89,37/100 = 8,937 → 8,94; resíduo no último
+    expect(D(l1.unitCost).times(1000).toFixed(2)).toBe('80.43'); // (89,37 − 8,94) / 1000 g → R$ 80,43/kg
+    expect(l2.unitCost).toBe('0.0957');
+    expect(db.materials.find((m) => m.id === etq)!.referenceCost).toBe('0.50');
+    expect(accountBalance(db, accountId).toString()).toBe('910');
+    expect(() => registerPurchase(db, { date: '2026-02-01', items: [{ materialId: etq, qty: 1, price: '5' }], freight: '0', otherCosts: '0', discount: '6',
+      payment: { mode: 'avista', accountId, installments: 1, firstDue: '2026-02-01', intervalDays: 30 } })).toThrow(/desconto/);
+  });
+
+  it('custo improvável: 1 "g" a R$ 89,37 vira R$ 89.370/kg e é sinalizado', () => {
+    const p = registerPurchase(db, { date: '2026-02-01', items: [{ materialId: filamentId, qty: 1, unit: 'g', price: '89.37' }], freight: '0', otherCosts: '0',
+      payment: { mode: 'aprazo', installments: 1, firstDue: '2026-03-01', intervalDays: 30 } });
+    const lot = db.lots.find((l) => l.id === p.items[0].lotId)!;
+    const mat = db.materials.find((m) => m.id === filamentId)!;
+    expect(unusualUnitCost(mat, lot.unitCost)).toMatch(/alto demais/);
+    expect(unusualLots(db)).toHaveLength(1);
+    expect(unusualUnitCost(mat, '0.08937')).toBeNull(); // R$ 89,37/kg
+    expect(unusualUnitCost(mat, '0.005')).toMatch(/baixo demais/);
+    // Corrigindo pela edição da compra: mesma compra, mesmo lote, custo certo e financeiro refeito
+    updatePurchase(db, p.id, { date: '2026-02-01', items: [{ materialId: filamentId, qty: 1, unit: 'kg', price: '89.37', lotId: lot.id }], freight: '0', otherCosts: '0',
+      payment: { mode: 'aprazo', installments: 1, firstDue: '2026-03-01', intervalDays: 30 } });
+    expect(db.lots).toHaveLength(1);
+    expect(lot.initialQty).toBe(1000);
+    expect(lot.unitCost).toBe('0.08937');
+    expect(lotBalance(db, lot.id).physical.toString()).toBe('1000');
+    expect(unusualLots(db)).toHaveLength(0);
+    expect(materialCostPolicy(db, filamentId).unitCost!.times(1000).toString()).toBe('89.37');
+    expect(db.titles.filter((t) => t.origin.id === p.id && t.status !== 'cancelado').map((t) => t.amount)).toEqual(['89.37']);
+  });
+
+  it('edição da compra à vista: refaz a saída de caixa; bloqueada após pagamento do usuário', () => {
+    const p = buyCash();
+    const lotId = p.items[0].lotId;
+    updatePurchase(db, p.id, { date: '2026-02-01', items: [{ materialId: filamentId, qty: 2, unit: 'kg', price: '200', lotId }], freight: '10', otherCosts: '0', discount: '20',
+      payment: { mode: 'avista', accountId, installments: 1, firstDue: '2026-02-01', intervalDays: 30 } });
+    expect(p.number).toBe('CMP-0001');
+    expect(p.total).toBe('190');
+    expect(accountBalance(db, accountId).toString()).toBe('810');
+    expect(db.titles.filter((t) => t.origin.id === p.id)).toHaveLength(1);
+    // Lote usado: não pode trocar o insumo nem ficar abaixo do que saiu
+    addMovement(db, { lotId, type: 'consumo', qty: 1500, ref: { kind: 'op', id: 'x' }, key: 'c1' });
+    const other = saveMaterial(db, { name: 'PETG', categoryId: db.categories.find((c) => c.isFilament)!.id, unit: 'g', active: true, filament: { materialType: 'PETG', color: 'Azul' } }).id;
+    const pay = { mode: 'avista' as const, accountId, installments: 1, firstDue: '2026-02-01', intervalDays: 30 };
+    expect(() => updatePurchase(db, p.id, { date: '2026-02-01', items: [{ materialId: other, qty: 2000, price: '200', lotId }], freight: '0', otherCosts: '0', payment: pay })).toThrow(/trocar o insumo/);
+    expect(() => updatePurchase(db, p.id, { date: '2026-02-01', items: [{ materialId: filamentId, qty: 1000, price: '200', lotId }], freight: '0', otherCosts: '0', payment: pay })).toThrow(/abaixo/);
+    expect(() => updatePurchase(db, p.id, { date: '2026-02-01', items: [{ materialId: other, qty: 1000, price: '200' }], freight: '0', otherCosts: '0', payment: pay })).toThrow(/não pode ser removido/);
+    updatePurchase(db, p.id, { date: '2026-02-01', items: [{ materialId: filamentId, qty: 1600, price: '160', lotId }], freight: '0', otherCosts: '0', payment: pay });
+    expect(lotBalance(db, lotId).physical.toString()).toBe('100');
+    expect(db.lots.find((l) => l.id === lotId)!.unitCost).toBe('0.1');
+    // Compra a prazo com parcela paga: edição bloqueada
+    const q = registerPurchase(db, { date: '2026-02-01', items: [{ materialId: filamentId, qty: 1000, price: '100' }], freight: '0', otherCosts: '0',
+      payment: { mode: 'aprazo', installments: 1, firstDue: '2026-03-01', intervalDays: 30 } });
+    settleTitle(db, { titleId: db.titles.find((t) => t.origin.id === q.id)!.id, date: '2026-03-01', amount: '100', accountId });
+    expect(purchaseEditBlock(db, q)).toMatch(/estorne/);
   });
 });
 

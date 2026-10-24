@@ -1,15 +1,16 @@
 import { useMemo, useState } from 'react';
 import { useStore } from '../store';
 import { navigate } from '../App';
-import type { FinTitle, PaymentTerms, Sale } from '../../domain/types';
-import { accountBalance, cancelTitle, cashBalance, cashFlowByMonth, cashNeed, createManualTitle, expensesByCategory, investedCapital, openTotals, reverseSettlement, settleTitle, titleOpen, titlePaid } from '../../domain/finance';
+import type { FinTitle, PaymentTerms, Quote, Sale } from '../../domain/types';
+import { accountBalance, cancelTitle, cashBalance, cashFlowByMonth, cashNeed, createManualTitle, expensesByCategory, investedCapital, openTotals, reverseSettlement, settleTitle, titleOpen, titlePaid, updateTitle } from '../../domain/finance';
 import { finishedGoodBalance } from '../../domain/production';
-import { breakEven, cancelSale, managementResult, registerSale, resolveSaleCost, resultByProject, saleEconomics, saleGross } from '../../domain/sales';
+import { breakEven, cancelSale, managementResult, registerSale, resolveSaleCost, resultByProject, saleEconomics, saleEditBlock, saleGross, updateSale } from '../../domain/sales';
 import { channelRates } from '../../domain/pricing';
-import { itemState, quoteItem, quoteItemAt, quoteItems } from '../../domain/quotes';
+import { itemState, latestVersion, quoteItem, quoteItemAt, quoteItems } from '../../domain/quotes';
+import { kitUnitCost } from '../../domain/deliveryKits';
 import { addDays, fmtDate, todayISO } from '../../domain/core';
 import { D, ZERO, cents, fmtBRL, fmtPct, parseBR } from '../../domain/money';
-import { Alert, Badge, Check, Combobox, DataTable, DateField, Empty, Kpi, Modal, NumField, PageHead, SelectField, Tabs, TextArea, TextField, dec, num, useConfirm, useForm, type Tone } from '../components/ui';
+import { Alert, Badge, Check, Combobox, DataTable, DateField, Empty, Field, Kpi, Modal, NumField, PageHead, SelectField, Tabs, TextArea, TextField, dec, num, useConfirm, useForm, type Tone } from '../components/ui';
 import { NATURE_LABEL } from './Configuracoes';
 
 type Tab = 'painel' | 'titulos' | 'vendas' | 'resultado';
@@ -182,11 +183,33 @@ function TitleModal({ title, onClose }: { title: FinTitle; onClose: () => void }
     if (reason) run((d) => cancelTitle(d, t.id, reason), 'Título cancelado.');
   };
   const cat = db.finCategories.find((c) => c.id === t.categoryId);
+  const [editing, setEditing] = useState(false);
+  const coreEditable = t.origin.kind === 'manual' && titlePaid(t).isZero();
+  const [e, setE] = useForm(() => ({ description: t.description, dueDate: t.dueDate, partyId: t.partyId ?? '', notes: t.notes ?? '', amount: t.amount.replace('.', ','), competenceDate: t.competenceDate, categoryId: t.categoryId }));
+  const saveEdit = () => run((d) => updateTitle(d, t.id, { description: e.description, dueDate: e.dueDate, partyId: e.partyId || undefined, notes: e.notes || undefined,
+    ...(coreEditable ? { amount: dec(e.amount) ?? '0', competenceDate: e.competenceDate, categoryId: e.categoryId } : {}) }), 'Título corrigido.').then((r) => r.ok && setEditing(false));
   return (
     <Modal wide title={t.description} subtitle={`${t.direction === 'in' ? 'Conta a receber' : 'Conta a pagar'} · ${cat?.name} (${cat ? NATURE_LABEL[cat.nature] : ''})`} onClose={onClose}
-      footer={<><button className="btn ghost" onClick={onClose}>Fechar</button>{t.status !== 'cancelado' && titlePaid(t).isZero() && <button className="btn danger" onClick={cancel}>Cancelar título</button>}</>}>
+      footer={<><button className="btn ghost" onClick={onClose}>Fechar</button>{t.status !== 'cancelado' && titlePaid(t).isZero() && <button className="btn danger" onClick={cancel}>Cancelar título</button>}
+        {t.status !== 'cancelado' && !editing && <button className="btn secondary" onClick={() => setEditing(true)}>Editar</button>}</>}>
       <div className="stack">
         {t.status === 'cancelado' && <Alert tone="error" title="Cancelado">{t.cancelReason}</Alert>}
+        {editing && <div className="card"><div className="card-body stack">
+          <h3 style={{ margin: 0 }}>Corrigir título</h3>
+          <div className="grid g3">
+            <TextField label="Descrição" required value={e.description} onChange={setE('description')} />
+            <DateField label="Vencimento" value={e.dueDate} onChange={setE('dueDate')} />
+            <SelectField label={t.direction === 'in' ? 'Cliente' : 'Fornecedor'} value={e.partyId} onChange={setE('partyId')} placeholder="—" options={db.parties.map((p) => ({ value: p.id, label: p.name }))} />
+            {coreEditable && <>
+              <NumField label="Valor" suffix="R$" value={e.amount} onChange={setE('amount')} />
+              <DateField label="Competência" value={e.competenceDate} onChange={setE('competenceDate')} />
+              <SelectField label="Categoria" value={e.categoryId} onChange={setE('categoryId')} options={db.finCategories.filter((c) => c.direction === t.direction && (!c.system || c.id === t.categoryId)).map((c) => ({ value: c.id, label: c.name }))} />
+            </>}
+          </div>
+          <TextArea label="Observações" value={e.notes} onChange={setE('notes')} />
+          {!coreEditable && <p className="small muted" style={{ margin: 0 }}>{t.origin.kind === 'manual' ? 'Valor, competência e categoria: estorne o pagamento antes de alterar.' : `Valor e datas vêm da ${t.origin.kind}: edite a ${t.origin.kind} de origem para mudar.`}</p>}
+          <div className="row" style={{ justifyContent: 'flex-end' }}><button className="btn ghost" onClick={() => setEditing(false)}>Descartar</button><button className="btn primary" onClick={saveEdit}>Salvar correção</button></div>
+        </div></div>}
         <dl className="dl">
           <dt>Valor</dt><dd>{fmtBRL(t.amount)}</dd><dt>Competência</dt><dd>{fmtDate(t.competenceDate)}</dd><dt>Vencimento</dt><dd>{fmtDate(t.dueDate)}</dd>
           <dt>Pago/recebido</dt><dd>{fmtBRL(titlePaid(t))}</dd><dt>Em aberto</dt><dd><b>{fmtBRL(open)}</b></dd>
@@ -217,9 +240,10 @@ function TitleModal({ title, onClose }: { title: FinTitle; onClose: () => void }
 }
 
 /* ---------------- Condições de pagamento (compartilhado) ---------------- */
-function useTerms(defaultDate: string) {
+function useTerms(defaultDate: string, initial?: PaymentTerms) {
   const { db } = useStore();
-  const [p, set] = useForm({ mode: 'avista' as PaymentTerms['mode'], accountId: db.accounts.find((a) => a.active)?.id ?? '', method: 'PIX', installments: '1', firstDue: addDays(defaultDate, 30), intervalDays: '30' });
+  const [p, set] = useForm(() => ({ mode: (initial?.mode ?? 'avista') as PaymentTerms['mode'], accountId: initial?.accountId ?? db.accounts.find((a) => a.active)?.id ?? '', method: initial?.method ?? 'PIX',
+    installments: String(initial?.installments ?? 1), firstDue: initial?.mode === 'aprazo' ? initial.firstDue : addDays(defaultDate, 30), intervalDays: String(initial?.intervalDays ?? 30) }));
   const toTerms = (date: string): PaymentTerms => p.mode === 'avista'
     ? { mode: 'avista', accountId: p.accountId || undefined, method: p.method, installments: 1, firstDue: date, intervalDays: 30 }
     : { mode: 'aprazo', method: p.method, installments: num(p.installments) ?? 0, firstDue: p.firstDue, intervalDays: num(p.intervalDays) ?? 0 };
@@ -264,13 +288,14 @@ function ManualForm({ onClose }: { onClose: () => void }) {
 function Vendas({ onNew }: { onNew: () => void }) {
   const { db, run } = useStore();
   const [confirm, confirmEl] = useConfirm();
+  const [editing, setEditing] = useState<Sale | null>(null);
   const cancel = async (s: Sale) => {
     const reason = await confirm({ title: `Cancelar venda ${s.number}?`, danger: true, confirmLabel: 'Cancelar venda', reasonLabel: 'Motivo', text: 'Os títulos gerados serão cancelados. Recebimentos devem ser estornados antes.' });
     if (reason) run((d) => cancelSale(d, s.id, reason), 'Venda cancelada.');
   };
   return (
     <div className="card">
-      <DataTable rows={[...db.sales].reverse()} rowKey={(s) => s.id} search={(s) => `${s.number} ${s.description} ${db.parties.find((p) => p.id === s.customerId)?.name ?? ''}`}
+      <DataTable rows={[...db.sales].reverse()} rowKey={(s) => s.id} onRowClick={(s) => { if (s.status === 'ativa') setEditing(s); }} search={(s) => `${s.number} ${s.description} ${db.parties.find((p) => p.id === s.customerId)?.name ?? ''}`}
         empty={<Empty title="Nenhuma venda registrada" text="Ao registrar uma venda, o sistema gera contas a receber, encargos do canal e calcula a margem com o custo realizado (OP) ou estimado (orçamento)." action={<button className="btn primary" onClick={onNew}>Registrar venda</button>} />}
         columns={[
           { key: 'n', header: 'Venda', render: (s) => <span className="mono">{s.number}</span>, sort: (s) => s.number },
@@ -280,24 +305,38 @@ function Vendas({ onNew }: { onNew: () => void }) {
           { key: 'f', header: 'Encargos', num: true, render: (s) => fmtBRL(s.fees.total) },
           { key: 'c', header: 'Custo', num: true, render: (s) => { const e = saleEconomics(s); return e.cogs ? <>{fmtBRL(e.cogs)} <Badge tone={s.costStatus === 'realizado' ? 'success' : 'warning'}>{s.costStatus}</Badge></> : <Badge tone="error">pendente</Badge>; } },
           { key: 'm', header: 'Contribuição', num: true, render: (s) => { const e = saleEconomics(s); return e.contribution ? <span style={{ color: e.contribution.isNegative() ? 'var(--error)' : undefined }}>{fmtBRL(e.contribution)} ({fmtPct(e.revenue.isZero() ? null : e.contribution.div(e.revenue))})</span> : '—'; } },
-          { key: 's', header: '', render: (s) => s.status === 'cancelada' ? <Badge>cancelada</Badge> : <button className="btn ghost sm" onClick={(e) => { e.stopPropagation(); cancel(s); }}>Cancelar</button> },
+          { key: 's', header: '', render: (s) => s.status === 'cancelada' ? <Badge>cancelada</Badge> : <span className="row" style={{ gap: 4, flexWrap: 'nowrap' }}><button className="btn ghost sm" onClick={(e) => { e.stopPropagation(); setEditing(s); }}>Editar</button><button className="btn ghost sm" onClick={(e) => { e.stopPropagation(); cancel(s); }}>Cancelar</button></span> },
         ]} />
+      {editing && <SaleForm sale={editing} onClose={() => setEditing(null)} />}
       {confirmEl}
     </div>
   );
 }
 
-export function SaleForm({ onClose, preset }: { onClose: () => void; preset?: { finishedGoodId?: string; orderId?: string; quoteId?: string; itemId?: string } }) {
+export function SaleForm({ onClose, preset, sale }: { onClose: () => void; preset?: { finishedGoodId?: string; orderId?: string; quoteId?: string; itemId?: string }; sale?: Sale }) {
   const { db, run } = useStore();
+  // Kit de entrega do orçamento: sugerido na primeira venda do pedido (o kit vai uma vez por entrega).
+  const kitDefault = (q: Quote) => {
+    const k = latestVersion(q).deliveryKit;
+    const already = db.sales.some((s) => s.status === 'ativa' && s.quoteId === q.id && s.deliveryKit);
+    return k && !already && db.deliveryKits.some((x) => x.id === k.kitId) ? { kitId: k.kitId, kitQty: String(k.qty) } : { kitId: '', kitQty: '1' };
+  };
   const [f, set, setF] = useForm(() => {
     const base = { date: todayISO(), description: '', projectId: '', customerId: '', quoteId: '', quoteItemId: '', orderId: '', finishedGoodId: '', qty: '1', unitPrice: '', discount: '', freightCharged: '', freightCost: '',
-      channelId: db.channels.find((c) => c.active)?.id ?? '', feesWithheld: true, manualUnitCost: '', notes: '' };
+      channelId: db.channels.find((c) => c.active)?.id ?? '', feesWithheld: true, manualUnitCost: '', notes: '', kitId: '', kitQty: '1' };
+    if (sale) {
+      const br = (v: string) => (D(v).isZero() ? '' : v.replace('.', ','));
+      return { ...base, date: sale.date, description: sale.description, projectId: sale.projectId ?? '', customerId: sale.customerId ?? '', quoteId: sale.quoteId ?? '', quoteItemId: sale.quoteItemId ?? '',
+        orderId: sale.orderId ?? '', finishedGoodId: sale.finishedGoodId ?? '', qty: String(sale.qty), unitPrice: sale.unitPrice.replace('.', ','), discount: br(sale.discount),
+        freightCharged: br(sale.freightCharged), freightCost: br(sale.freightCost), channelId: sale.channelId ?? '', feesWithheld: sale.feesWithheld, notes: sale.notes ?? '',
+        manualUnitCost: !sale.quoteId && !sale.orderId && !sale.finishedGoodId && sale.unitCost ? sale.unitCost.replace('.', ',') : '' };
+    }
     // Peça do estoque separada para um pedido aprovado
     const pq = db.quotes.find((x) => x.id === preset?.quoteId);
     if (pq) {
       const it = quoteItem(pq, preset?.itemId);
       return { ...base, quoteId: pq.id, quoteItemId: it.itemId, finishedGoodId: it.finishedGoodId ?? '', description: it.name, projectId: pq.projectId ?? '', customerId: pq.customerId ?? '',
-        qty: String(it.input.quantity), unitPrice: it.summary.unitPrice ? it.summary.unitPrice.replace('.', ',') : '', channelId: it.input.channelId ?? base.channelId };
+        qty: String(it.input.quantity), unitPrice: it.summary.unitPrice ? it.summary.unitPrice.replace('.', ',') : '', channelId: it.input.channelId ?? base.channelId, ...kitDefault(pq) };
     }
     const fg = db.finishedGoods.find((x) => x.id === preset?.finishedGoodId);
     if (fg) return { ...base, finishedGoodId: fg.id, description: fg.description, projectId: fg.projectId ?? '', unitPrice: fg.suggestedPrice ? fg.suggestedPrice.replace('.', ',') : '' };
@@ -307,11 +346,15 @@ export function SaleForm({ onClose, preset }: { onClose: () => void; preset?: { 
       const it = q ? quoteItemAt(q, o.quoteVersion, o.quoteItemId) : undefined;
       const price = it?.summary.unitPrice ?? null;
       return { ...base, orderId: o.id, quoteId: q?.id ?? '', quoteItemId: it?.itemId ?? '', description: o.description, projectId: o.projectId ?? '', customerId: o.customerId ?? q?.customerId ?? '',
-        qty: String(o.actual?.qtyApproved ?? o.qtyPlanned), unitPrice: price ? price.replace('.', ',') : '', channelId: it?.input.channelId ?? base.channelId };
+        qty: String(o.actual?.qtyApproved ?? o.qtyPlanned), unitPrice: price ? price.replace('.', ',') : '', channelId: it?.input.channelId ?? base.channelId, ...(q ? kitDefault(q) : {}) };
     }
     return base;
   });
-  const terms = useTerms(f.date);
+  const terms = useTerms(f.date, sale?.payment);
+  const editBlock = sale ? saleEditBlock(db, sale) : null;
+  const kitInput = f.kitId ? { kitId: f.kitId, qty: Math.max(1, Math.round(num(f.kitQty) ?? 1)) } : null;
+  const kitModel = db.deliveryKits.find((k) => k.id === f.kitId);
+  const kitEst = kitModel && kitInput ? kitUnitCost(db, kitModel).total.times(kitInput.qty) : null;
   const fgOptions = db.finishedGoods.map((g) => ({ g, available: finishedGoodBalance(db, g.id).available }))
     .filter((x) => x.available > 0 || x.g.id === f.finishedGoodId)
     .map(({ g, available }) => ({ value: g.id, label: `${g.code} · ${g.description} · ${available} disponível(is)` }));
@@ -328,7 +371,7 @@ export function SaleForm({ onClose, preset }: { onClose: () => void; preset?: { 
     const order = db.orders.find((o) => o.quoteId === q.id && o.quoteItemId === it.itemId && o.status === 'concluida');
     setF((s) => ({ ...s, quoteId: q.id, quoteItemId: it.itemId, description: it.name, projectId: q.projectId ?? s.projectId, customerId: q.customerId ?? s.customerId,
       qty: String(order?.actual?.qtyApproved ?? it.input.quantity), unitPrice: it.summary.unitPrice ? it.summary.unitPrice.replace('.', ',') : s.unitPrice,
-      channelId: it.input.channelId ?? s.channelId, orderId: order?.id ?? '', finishedGoodId: it.finishedGoodId ?? (order ? '' : s.finishedGoodId) }));
+      channelId: it.input.channelId ?? s.channelId, orderId: order?.id ?? '', finishedGoodId: it.finishedGoodId ?? (order ? '' : s.finishedGoodId), ...kitDefault(q) }));
   };
   const quoteOptions = db.quotes.filter((q) => q.status !== 'recusado').flatMap((q) => quoteItems(q).filter((it) => itemState(db, q, it.itemId) !== 'recusado')
     .map((it) => ({ value: `${q.id}|${it.itemId}`, label: `${q.number} · ${it.name}` })));
@@ -340,26 +383,35 @@ export function SaleForm({ onClose, preset }: { onClose: () => void; preset?: { 
     const ch = channelRates(db.channels.find((c) => c.id === f.channelId) ?? null);
     const fees = ch ? cents(gross.times(ch.rates).plus(ch.fixedFee)) : ZERO;
     let cost: ReturnType<typeof resolveSaleCost> = { unitCost: null, status: 'pendente' };
-    try { cost = resolveSaleCost(db, { finishedGoodId: f.finishedGoodId || undefined, orderId: f.orderId || undefined, quoteId: f.quoteId || undefined, quoteItemId: f.quoteItemId || undefined, manualUnitCost: dec(f.manualUnitCost) }); } catch { /* ignora na prévia */ }
+    try { cost = resolveSaleCost(db, { finishedGoodId: f.finishedGoodId || undefined, orderId: f.orderId || undefined, quoteId: f.quoteId || undefined, quoteItemId: f.quoteItemId || undefined, manualUnitCost: dec(f.manualUnitCost), deliveryKit: kitInput }); } catch { /* ignora na prévia */ }
     const freightNet = (parseBR(f.freightCharged) ?? ZERO).minus(parseBR(f.freightCost) ?? ZERO);
     const receivable = gross.plus(parseBR(f.freightCharged) ?? 0).minus(f.feesWithheld ? fees : 0);
-    const cogs = cost.unitCost ? cents(cost.unitCost.times(qty)) : null;
+    const cogs = cost.unitCost ? cents(cost.unitCost.times(qty)).plus(kitEst ?? 0) : null;
     return { gross, fees, receivable, cost, contribution: cogs ? gross.minus(fees).plus(freightNet).minus(cogs) : null, cogs };
   }, [f, db]);
-  const submit = () => run((d) => registerSale(d, {
+  const submit = () => run((d) => (sale ? updateSale(d, sale.id, {
+    date: f.date, description: f.description, projectId: f.projectId || undefined, customerId: f.customerId || undefined, qty: num(f.qty) ?? 0, unitPrice: dec(f.unitPrice) ?? '0',
+    discount: dec(f.discount) ?? '0', freightCharged: dec(f.freightCharged) ?? '0', freightCost: dec(f.freightCost) ?? '0', channelId: f.channelId || undefined, feesWithheld: f.feesWithheld,
+    manualUnitCost: dec(f.manualUnitCost), payment: terms.toTerms(f.date), notes: f.notes,
+  }) : registerSale(d, {
     date: f.date, description: f.description, projectId: f.projectId || undefined, customerId: f.customerId || undefined, quoteId: f.quoteId || undefined, quoteItemId: f.quoteItemId || undefined, orderId: f.orderId || undefined,
     finishedGoodId: f.finishedGoodId || undefined, qty: num(f.qty) ?? 0, unitPrice: dec(f.unitPrice) ?? '0', discount: dec(f.discount) ?? '0', freightCharged: dec(f.freightCharged) ?? '0', freightCost: dec(f.freightCost) ?? '0',
-    channelId: f.channelId || undefined, feesWithheld: f.feesWithheld, manualUnitCost: dec(f.manualUnitCost), payment: terms.toTerms(f.date), notes: f.notes,
-  }), 'Venda registrada e financeiro atualizado.').then((r) => r.ok && onClose());
+    channelId: f.channelId || undefined, feesWithheld: f.feesWithheld, manualUnitCost: dec(f.manualUnitCost), deliveryKit: kitInput, payment: terms.toTerms(f.date), notes: f.notes,
+  })), sale ? 'Venda corrigida: encargos e financeiro refeitos.' : 'Venda registrada e financeiro atualizado.').then((r) => r.ok && onClose());
   const done = db.orders.filter((o) => o.status === 'concluida');
   return (
-    <Modal wide title="Registrar venda" subtitle="Gera conta a receber (ou recebimento à vista), encargos do canal e o snapshot do custo para a margem." onClose={onClose}
-      footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={submit}>Registrar venda</button></>}>
+    <Modal wide title={sale ? `Editar venda ${sale.number}` : 'Registrar venda'} subtitle={sale ? 'Corrija o que foi digitado errado. Contas a receber, encargos e frete são refeitos.' : 'Gera conta a receber (ou recebimento à vista), encargos do canal e o snapshot do custo para a margem.'} onClose={onClose}
+      footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={submit} disabled={!!editBlock}>{sale ? 'Salvar correção' : 'Registrar venda'}</button></>}>
       <div className="stack">
+        {editBlock && <Alert tone="warning" title="Edição bloqueada">{editBlock}</Alert>}
+        {sale && <p className="small muted" style={{ margin: 0 }}>Vínculos mantidos: {[sale.quoteId && `orçamento ${db.quotes.find((q) => q.id === sale.quoteId)?.number ?? ''}`, sale.orderId && `pedido ${db.orders.find((o) => o.id === sale.orderId)?.number ?? ''}`,
+          sale.finishedGoodId && `peça pronta ${db.finishedGoods.find((g) => g.id === sale.finishedGoodId)?.code ?? ''}`, sale.deliveryKit && `kit ${sale.deliveryKit.name}`].filter(Boolean).join(' · ') || 'nenhum'}. Para trocar vínculos ou kit, cancele e registre de novo.</p>}
         <div className="grid g3">
+          {!sale && <>
           <SelectField label="A partir do orçamento (peça)" value={f.quoteId ? `${f.quoteId}|${f.quoteItemId}` : ''} onChange={pickQuote} placeholder="— nenhum —" options={quoteOptions} hint="Preenche produto, quantidade, preço e canal" />
           <SelectField label="Ordem de produção (custo realizado)" value={f.orderId} onChange={(v) => setF((s) => ({ ...s, orderId: v, finishedGoodId: v ? '' : s.finishedGoodId }))} placeholder="— nenhuma —" options={done.map((o) => ({ value: o.id, label: `${o.number} · ${o.description}` }))} />
           <SelectField label="Peça pronta do estoque" value={f.finishedGoodId} onChange={pickFinished} placeholder="— nenhuma —" options={fgOptions} hint="Baixa o saldo de pronta-entrega" />
+          </>}
           <DateField label="Data da venda" required value={f.date} onChange={set('date')} />
           <TextField label="Produto / descrição" required value={f.description} onChange={set('description')} />
           <SelectField label="Projeto" value={f.projectId} onChange={set('projectId')} placeholder="—" options={db.projects.map((p) => ({ value: p.id, label: p.name }))} hint="Agrupa o resultado por produto" />
@@ -372,6 +424,12 @@ export function SaleForm({ onClose, preset }: { onClose: () => void; preset?: { 
           <NumField label="Frete pago pela empresa" suffix="R$" value={f.freightCost} onChange={set('freightCost')} hint="Gera conta a pagar" />
         </div>
         <Check label="Encargos retidos pelo canal (marketplace/gateway repassa o valor líquido)" checked={f.feesWithheld} onChange={set('feesWithheld')} />
+        {!sale && db.deliveryKits.length > 0 && <div className="grid g3">
+          <SelectField label="Kit de entrega enviado" value={f.kitId} onChange={set('kitId')} placeholder="— sem kit —" options={db.deliveryKits.filter((k) => k.active || k.id === f.kitId).map((k) => ({ value: k.id, label: k.name }))}
+            hint="Os itens do kit saem do estoque nesta venda" />
+          {f.kitId && <NumField label="Quantidade de kits" value={f.kitQty} onChange={set('kitQty')} />}
+          {kitEst && <Field label="Custo do kit"><div className="readonly-value">{fmtBRL(kitEst)} (custo real dos lotes na baixa)</div></Field>}
+        </div>}
         {!f.quoteId && !f.orderId && !f.finishedGoodId && <NumField label="Custo unitário de fabricação (estimado)" suffix="R$" value={f.manualUnitCost} onChange={set('manualUnitCost')} hint="Sem orçamento/OP vinculados, informe o custo para calcular a margem. Vazio = margem pendente." />}
         {preview && (
           <div className="card"><div className="card-body">

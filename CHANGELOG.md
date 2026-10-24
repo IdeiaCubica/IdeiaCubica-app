@@ -2,6 +2,36 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.6.0 — 24/10/2026
+
+### Correção: filamento com R$/kg 1.000× maior (ex.: R$ 91.770,00/kg)
+- Causa: na compra, a unidade padrão do filamento era **grama**. Digitar “1” (um carretel) com R$ 89,37 + frete virava
+  R$ 91,77 **por grama**. Agora o filamento é comprado por **carretel** (peso líquido do cadastro) ou **kg**; grama só se escolhida.
+- Custo fora da faixa normal (R$ 20–800/kg) gera alerta na compra (com confirmação), na lista de compras, no cadastro e no orçamento.
+- Compras com custo improvável aparecem no topo de Compras com o atalho para corrigir.
+
+### Compras
+- **Desconto na compra**: rateado pelo valor dos itens; reduz o valor pago e o custo dos lotes (o preço do cadastro não muda).
+- **Editar compra**: corrige quantidade, unidade, valores, frete, desconto, data, fornecedor e pagamento. Lotes, custos e financeiro
+  são refeitos juntos (mesmo número de compra). Bloqueia só se já houver pagamento do usuário; lote já usado mantém o insumo.
+
+### Estoque
+- Nova aba **Saldo por insumo**: comprado − usado na produção − perdas/ajustes = saldo. O saldo saiu do cadastro de materiais
+  (lá fica o preço de referência e o preço usado nos orçamentos).
+- Produção para estoque com a opção **“Já produzi (baixar material agora)”**: baixa o filamento e lança as peças prontas com o custo real.
+- Nome do insumo com **tipo e cor do filamento** em todas as listas de seleção (produção, estoque inicial, compras, kits).
+
+### Orçamentos
+- **Kits de entrega** (Cadastros → Kits de entrega): modelos com saquinho, cartão, adesivo etc. No orçamento, o custo do kit entra no
+  preço das peças e **não aparece para o cliente**; na venda, os itens do kit saem do estoque.
+- **Orçamento kit**: “Juntar orçamentos (kit)” reúne vários orçamentos num só com os mesmos valores; “+ Peça do estoque” adiciona
+  peças prontas direto no orçamento.
+- **Conferência antes de enviar**: alerta para custo de filamento improvável, peso/tempo absurdos e preço abaixo do custo.
+
+### Edição em todas as telas
+- Vendas (preço, quantidade, desconto, frete, canal, cliente, data, recebimento), títulos financeiros e categorias financeiras
+  agora podem ser editados. Compras, estoque inicial e peças produzidas já podiam.
+
 ## v1.5.4 — 24/10/2026
 
 ### Correção: valor do orçamento diferente entre as telas

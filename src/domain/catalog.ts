@@ -51,6 +51,15 @@ const DEFAULT_SIGLAS: Record<string, string> = {
 const plain = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
 
 /** Sigla sugerida para uma categoria: conhecida, ou as iniciais (sem repetir outra categoria). */
+/** Nome do insumo para listas de seleção, com tipo e cor do filamento (quando o nome ainda não os tem). */
+export function materialLabel(m: Pick<Material, 'name' | 'filament'>) {
+  const f = m.filament;
+  if (!f) return m.name;
+  const name = m.name.toLowerCase();
+  const extra = [f.materialType, f.color].filter((x) => x && !name.includes(x.toLowerCase()));
+  return extra.length ? `${m.name} · ${extra.join(' ')}` : m.name;
+}
+
 export function suggestSigla(db: DB, name: string, exceptId?: ID): string {
   const known = DEFAULT_SIGLAS[plain(name)];
   const used = new Set(db.categories.filter((c) => c.id !== exceptId && c.code).map((c) => c.code!));

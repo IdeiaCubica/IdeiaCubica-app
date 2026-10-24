@@ -122,7 +122,8 @@ export interface Lot {
   initialQty: number;
   /** Custo por unidade de estoque, incluindo custos de aquisição atribuíveis. Precisão total. */
   unitCost: DecStr;
-  cost: { goods: DecStr; freight: DecStr; other: DecStr };
+  /** Composição do custo do lote; desconto da compra rateado reduz o custo. */
+  cost: { goods: DecStr; freight: DecStr; other: DecStr; discount?: DecStr };
   notes?: string;
 }
 
@@ -161,7 +162,9 @@ export interface PurchaseEquipment {
   /** Frete e outros custos atribuídos pelo rateio. */
   freight: DecStr;
   other: DecStr;
-  /** Custo total de aquisição = mercadoria + frete + outros. */
+  /** Desconto da compra atribuído pelo rateio. */
+  discount?: DecStr;
+  /** Custo total de aquisição = mercadoria + frete + outros − desconto. */
   total: DecStr;
   printerId?: ID;
   /** A impressora foi cadastrada por esta compra. */
@@ -179,12 +182,15 @@ export interface Purchase {
   equipment?: PurchaseEquipment[];
   freight: DecStr;
   otherCosts: DecStr;
+  /** Desconto obtido na compra (o preço do insumo no cadastro não muda; o custo do lote sim). */
+  discount?: DecStr;
   total: DecStr;
   payment: PaymentTerms;
   status: 'ativa' | 'cancelada';
   cancelReason?: string;
   notes?: string;
   createdAt: ISODateTime;
+  editedAt?: ISODateTime;
 }
 
 /* ------------------------------------------------------------------ */
@@ -208,7 +214,7 @@ export interface StockMovement {
   type: MovementType;
   /** Sempre positivo; o sinal vem do tipo. */
   qty: number;
-  ref: { kind: 'compra' | 'estoque_inicial' | 'op' | 'inventario' | 'perda' | 'manual'; id?: ID };
+  ref: { kind: 'compra' | 'estoque_inicial' | 'op' | 'inventario' | 'perda' | 'manual' | 'venda'; id?: ID };
   /** Chave de idempotência: impede que a mesma operação movimente o estoque duas vezes. */
   key: string;
   reason?: string;
@@ -393,6 +399,8 @@ export interface QuoteInput {
   failureSource: 'historico' | 'manual';
   extras: QuoteExtraLine[];
   freightSubsidyPerOrder: DecStr | null;
+  /** Parte do custo do kit de entrega do pedido atribuída a esta peça (custo interno, oculto ao cliente). */
+  deliveryKitShare?: DecStr | null;
   /** Envio deste orçamento: caixa da peça e CEPs. Novo orçamento parte do padrão de Parâmetros → Envios. */
   shipping?: QuoteShipping;
   development: { mode: 'nenhum' | 'diluir' | 'cobrar'; hours: number; licenseCost: DecStr | null; expectedUnits: number | null };
@@ -453,7 +461,24 @@ export interface QuoteVersion {
   items: QuoteVersionItem[];
   /** Envio do orçamento inteiro (caixa, CEPs, frete cobrado do cliente). */
   shipping?: QuoteShipping;
+  /** Kit de entrega escolhido (custo distribuído entre as peças; nunca aparece no orçamento do cliente). */
+  deliveryKit?: QuoteDeliveryKit;
   note?: string;
+}
+
+export interface QuoteDeliveryKit { kitId: ID; name: string; qty: number; unitCost: DecStr; total: DecStr }
+
+/** Modelo de kit de entrega: acessórios que acompanham o pedido (saquinho, cartão, adesivo da marca…). */
+export interface DeliveryKit {
+  id: ID;
+  name: string;
+  active: boolean;
+  /** Itens do estoque (baixados na venda/entrega). Quantidade na unidade do insumo, por kit. */
+  items: { materialId: ID; qty: number }[];
+  /** Custos sem estoque (ex.: impressão do cartão), por kit. */
+  extras: { description: string; cost: DecStr }[];
+  notes?: string;
+  createdAt: ISODateTime;
 }
 
 /** Situação de cada peça (não versionada). "producao" é derivada do pedido ativo. */
@@ -654,6 +679,8 @@ export interface Sale {
   /** Encargos calculados no momento da venda (snapshot das alíquotas do canal). */
   fees: { ratesPct: DecStr; fixed: DecStr; total: DecStr };
   feesWithheld: boolean;
+  /** Kit de entrega enviado com a venda: materiais baixados do estoque e custo real (entra no resultado). */
+  deliveryKit?: { kitId: ID; name: string; qty: number; cost: DecStr };
   /** Custo unitário de fabricação usado para margem: realizado (OP) ou estimado (orçamento). */
   unitCost: DecStr | null;
   costStatus: 'realizado' | 'estimado' | 'pendente';
@@ -662,6 +689,7 @@ export interface Sale {
   cancelReason?: string;
   notes?: string;
   createdAt: ISODateTime;
+  editedAt?: ISODateTime;
 }
 
 /* ------------------------------------------------------------------ */
@@ -693,6 +721,7 @@ export interface DB {
   quotes: Quote[];
   orders: ProductionOrder[];
   finishedGoods: FinishedGood[];
+  deliveryKits: DeliveryKit[];
   accounts: Account[];
   finCategories: FinCategory[];
   titles: FinTitle[];

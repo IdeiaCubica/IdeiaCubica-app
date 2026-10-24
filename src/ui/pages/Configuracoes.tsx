@@ -79,6 +79,7 @@ export const NATURE_LABEL: Record<FinNature, string> = {
 function Categorias() {
   const { db, run } = useStore();
   const [f, set, setF] = useForm({ name: '', direction: 'out', nature: 'despesa_fixa' });
+  const [edit, setEdit] = useState<FinCategory | null>(null);
   const add = () => run((d) => {
     const name = f.name.trim();
     if (!name) throw new BusinessError('Informe o nome da categoria.');
@@ -96,15 +97,41 @@ function Categorias() {
         </div>
       </div></div>
       <div className="card">
-        <DataTable<FinCategory> rows={db.finCategories} rowKey={(c) => c.id} empty={null}
+        <DataTable<FinCategory> rows={db.finCategories} rowKey={(c) => c.id} empty={null} onRowClick={(c) => !c.system && setEdit(c)}
           columns={[
             { key: 'n', header: 'Categoria', render: (c) => <>{c.name} {c.system && <Badge tone="info" title="Usada pelas integrações automáticas">sistema</Badge>}</>, sort: (c) => c.name },
             { key: 'd', header: 'Direção', render: (c) => c.direction === 'in' ? 'Entrada' : 'Saída' },
             { key: 'na', header: 'Natureza', render: (c) => NATURE_LABEL[c.nature] },
+            { key: 'a', header: '', render: (c) => c.system ? <span className="muted small">protegida</span> : <button className="btn ghost sm" onClick={(e) => { e.stopPropagation(); setEdit(c); }}>Editar</button> },
           ]} />
       </div>
+      {edit && <CategoryEditModal category={edit} onClose={() => setEdit(null)} />}
       <Alert tone="info">A natureza define o tratamento gerencial: compras de insumos são <b>estoque</b> (viram custo quando consumidas/vendidas) e impressoras são <b>investimento</b> — nenhuma delas entra integralmente no custo de uma peça.</Alert>
     </div>
+  );
+}
+
+function CategoryEditModal({ category, onClose }: { category: FinCategory; onClose: () => void }) {
+  const { db, run } = useStore();
+  const used = db.titles.some((t) => t.categoryId === category.id);
+  const [f, set] = useForm({ name: category.name, direction: category.direction as string, nature: category.nature as string });
+  const save = () => run((d) => {
+    const c = d.finCategories.find((x) => x.id === category.id);
+    if (!c || c.system) throw new BusinessError('Categorias do sistema não podem ser alteradas.');
+    const name = f.name.trim();
+    if (!name) throw new BusinessError('Informe o nome da categoria.');
+    if (d.finCategories.some((x) => x.id !== c.id && x.name.toLowerCase() === name.toLowerCase())) throw new BusinessError('Já existe uma categoria com esse nome.');
+    if (used && f.direction !== c.direction) throw new BusinessError('A categoria já tem lançamentos; a direção (entrada/saída) não pode mudar.');
+    Object.assign(c, { name, direction: f.direction as 'in' | 'out', nature: f.nature as FinNature });
+  }, 'Categoria atualizada.').then((r) => r.ok && onClose());
+  return (
+    <Modal title={`Editar categoria "${category.name}"`} onClose={onClose} footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={save}>Salvar</button></>}>
+      <div className="stack">
+        <TextField label="Nome" required value={f.name} onChange={set('name')} />
+        <SelectField label="Direção" value={f.direction} onChange={set('direction')} options={[{ value: 'out', label: 'Saída' }, { value: 'in', label: 'Entrada' }]} hint={used ? 'Já tem lançamentos: a direção fica fixa.' : undefined} />
+        <SelectField label="Natureza (efeito no resultado)" value={f.nature} onChange={set('nature')} options={Object.entries(NATURE_LABEL).map(([value, label]) => ({ value, label }))} />
+      </div>
+    </Modal>
   );
 }
 

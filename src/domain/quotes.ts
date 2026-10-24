@@ -6,14 +6,15 @@
  * trabalho, impressora, canal, rateio). Mudanças futuras de preço de filamento
  * ou de configuração nunca alteram orçamentos antigos.
  */
-import type { CostParams, DB, ID, Quote, QuoteInput, QuoteItemStatus, QuoteShipping, QuoteStatus, QuoteSummary, QuoteVersion, QuoteVersionItem, Settings } from './types';
-import { Decimal, ZERO } from './money';
+import type { CostParams, DB, ID, Quote, QuoteDeliveryKit, QuoteInput, QuoteItemStatus, QuoteShipping, QuoteStatus, QuoteSummary, QuoteVersion, QuoteVersionItem, Settings } from './types';
+import { D, Decimal, ZERO } from './money';
 import { BusinessError, assert, audit, byId, newId, nextCode, nowISO, requireText } from './core';
 import { computeCosts, type CostResult } from './costing';
 import { computePricing, type PricingResult } from './pricing';
 import { depreciationPerHour, overheadRate } from './catalog';
 import { lotLabel } from './inventory';
 import { shippingDefaults } from './shipping';
+import { unusualUnitCost } from './costSanity';
 
 /** Novo orçamento já preenchido com os padrões de Parâmetros de Custos (todos alteráveis no orçamento). */
 export function emptyQuoteInput(settings: Settings): QuoteInput {
@@ -57,6 +58,27 @@ export function materialCostPolicy(db: DB, materialId: ID): { unitCost: Decimal 
   const mat = db.materials.find((m) => m.id === materialId);
   if (mat?.referenceCost) return { unitCost: new Decimal(mat.referenceCost), source: 'preço de referência do cadastro' };
   return { unitCost: null, source: 'sem preço' };
+}
+
+/**
+ * Conferência de segurança do orçamento: aponta valores improváveis que costumam ser
+ * erro de digitação (custo do filamento fora da faixa, peso ou tempo absurdos, preço
+ * abaixo do custo). Não bloqueia: o usuário confere antes de enviar ao cliente.
+ */
+export function quoteSanity(db: DB, input: QuoteInput, params: CostParams, ev?: QuoteEvaluation): string[] {
+  const out: string[] = [];
+  for (const line of input.materials) {
+    const id = lineMaterialId(db, line);
+    const mat = db.materials.find((m) => m.id === id);
+    const snap = line.lotId ? params.lots[line.lotId] : id ? params.materials?.[id] : undefined;
+    const w = unusualUnitCost(mat ?? (snap ? { unit: snap.unit, filament: { materialType: '', color: '' } } : undefined), snap?.unitCost);
+    if (w) out.push(`${mat ? mat.name : 'Filamento'}: ${w}${snap && 'source' in snap ? ` (origem: ${snap.source})` : ''}`);
+    if (mat?.unit === 'g' && line.qtyPerUnit > 5000) out.push(`Peso de ${line.qtyPerUnit} g por peça em ${mat.name} parece alto demais. O peso é de UMA peça, em gramas.`);
+  }
+  if (input.printHoursPerUnit !== null && input.printHoursPerUnit > 200) out.push(`Tempo de impressão de ${input.printHoursPerUnit.toFixed(1)} h por peça parece alto demais. Confira o tempo de UMA peça.`);
+  const revenue = ev?.pricing.analysis?.revenue;
+  if (ev && revenue && revenue.lt(ev.costs.total)) out.push('O valor para o cliente está abaixo do custo total: este orçamento dá prejuízo.');
+  return out;
 }
 
 /** Normaliza linhas de orçamentos antigos (v0.1 guardava só o lote). */
@@ -155,15 +177,42 @@ export function staleItems(db: DB, q: Quote) {
 }
 
 /**
+ * Distribui o custo do kit de entrega entre as peças (pela quantidade de peças), em centavos exatos.
+ * Peças travadas (em produção) mantêm a parte que já tinham; o restante vai para as demais.
+ */
+export function withKitShares<T extends { input: QuoteInput }>(drafts: T[], kit: QuoteDeliveryKit | null, locked: (d: T) => boolean): T[] {
+  const lockedSum = drafts.filter(locked).reduce((a, d) => a.plus(D(d.input.deliveryKitShare || '0')), D(0));
+  const targets = drafts.filter((d) => !locked(d));
+  const remaining = kit ? Decimal.max(D(0), D(kit.total).minus(lockedSum)) : D(0);
+  const weights = targets.map((d) => D(Math.max(d.input.quantity, 0)));
+  const totalW = weights.reduce((a, w) => a.plus(w), D(0));
+  const parts = targets.map((_, i) => (remaining.isZero() || totalW.isZero() ? D(0) : remaining.times(weights[i]).div(totalW).toDecimalPlaces(2)));
+  if (parts.length && !remaining.isZero()) parts[parts.length - 1] = parts[parts.length - 1].plus(remaining.minus(parts.reduce((a, p) => a.plus(p), D(0))));
+  return drafts.map((d) => {
+    const k = targets.indexOf(d);
+    if (k < 0) return d;
+    const share = parts[k].gt(0) ? parts[k].toString() : null;
+    if ((d.input.deliveryKitShare ?? null) === share) return d;
+    const input = { ...d.input };
+    if (share) input.deliveryKitShare = share; else delete input.deliveryKitShare;
+    return { ...d, input };
+  });
+}
+
+/**
  * Salva uma nova versão do orçamento com todas as peças. Peças que já têm pedido
  * em produção (ou separadas do estoque) ficam travadas: precisam continuar iguais.
  */
-export function saveQuote(db: DB, meta: { quoteId?: ID; name?: string; projectId?: ID; customerId?: ID; note?: string; refreshCosts?: boolean },
-  drafts: QuoteItemDraft[], shipping?: QuoteShipping): Quote {
-  assert(drafts.length > 0, 'Adicione ao menos uma peça ao orçamento.');
+export function saveQuote(db: DB, meta: { quoteId?: ID; name?: string; projectId?: ID; customerId?: ID; note?: string; refreshCosts?: boolean; deliveryKit?: QuoteDeliveryKit | null },
+  draftsIn: QuoteItemDraft[], shipping?: QuoteShipping): Quote {
+  assert(draftsIn.length > 0, 'Adicione ao menos uma peça ao orçamento.');
   if (meta.customerId) byId(db.parties, meta.customerId, 'Cliente');
   const prev = meta.quoteId ? byId(db.quotes, meta.quoteId, 'Orçamento') : undefined;
   const prevItems = prev ? latestVersion(prev).items : [];
+  // Kit de entrega: distribui o custo entre as peças que ainda podem mudar (mesma regra da tela).
+  const kit = meta.deliveryKit === undefined ? (prev ? latestVersion(prev).deliveryKit : undefined) : meta.deliveryKit ?? undefined;
+  const drafts = meta.deliveryKit === undefined ? draftsIn
+    : withKitShares(draftsIn, kit ?? null, (d) => !!(prev && d.itemId && isItemLocked(db, prev, d.itemId)));
   const items: QuoteVersionItem[] = drafts.map((d, i) => {
     const label = drafts.length > 1 ? `peça ${i + 1}` : 'peça';
     const name = requireText(d.name, `a descrição da ${label}`);
@@ -200,7 +249,7 @@ export function saveQuote(db: DB, meta: { quoteId?: ID; name?: string; projectId
     }
   }
   const name = meta.name?.trim() || items[0].name;
-  const version: QuoteVersion = { version: 1, createdAt: nowISO(), items, shipping: shipping ? structuredClone(shipping) : undefined, note: meta.note };
+  const version: QuoteVersion = { version: 1, createdAt: nowISO(), items, shipping: shipping ? structuredClone(shipping) : undefined, deliveryKit: kit ? structuredClone(kit) : undefined, note: meta.note };
   if (prev) {
     version.version = prev.versions.length + 1;
     prev.versions.push(version);

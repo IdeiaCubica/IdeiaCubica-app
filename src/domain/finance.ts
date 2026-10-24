@@ -112,6 +112,36 @@ export function reverseSettlement(db: DB, titleId: ID, settlementId: ID, reason:
   audit(db, 'Estorno de liquidação', `${t.description}: R$ ${s.amount} — ${reason}`);
 }
 
+/**
+ * Corrige um título. Descrição, vencimento, fornecedor/cliente e observações sempre podem mudar.
+ * Valor, competência e categoria só em lançamentos manuais ainda sem pagamento
+ * (títulos de compra/venda são corrigidos editando a compra/venda de origem).
+ */
+export function updateTitle(db: DB, titleId: ID, input: { description: string; dueDate: ISODate; partyId?: ID; notes?: string; amount?: string; competenceDate?: ISODate; categoryId?: ID }) {
+  const t = byId(db.titles, titleId, 'Título');
+  assert(t.status !== 'cancelado', 'Título cancelado não pode ser editado.');
+  const description = requireText(input.description, 'a descrição');
+  assert(isISODate(input.dueDate), 'Informe o vencimento.');
+  if (input.partyId) byId(db.parties, input.partyId, 'Fornecedor/cliente');
+  const amount = input.amount !== undefined ? cents(D(input.amount || '0')) : D(t.amount);
+  const core = !amount.eq(D(t.amount)) || (input.competenceDate && input.competenceDate !== t.competenceDate) || (input.categoryId && input.categoryId !== t.categoryId);
+  if (core) {
+    assert(t.origin.kind === 'manual', `Este título foi gerado por uma ${t.origin.kind}. Para mudar valor, data ou categoria, edite a ${t.origin.kind} de origem.`);
+    assert(titlePaid(t).isZero(), 'Há pagamento/recebimento registrado neste título. Estorne-o antes de mudar o valor.');
+    assert(amount.gt(0), 'O valor deve ser maior que zero.');
+    if (input.competenceDate) { assert(isISODate(input.competenceDate), 'Data de competência inválida.'); t.competenceDate = input.competenceDate; }
+    if (input.categoryId) {
+      const c = byId(db.finCategories, input.categoryId, 'Categoria financeira');
+      assert(c.direction === t.direction, 'A categoria precisa ser do mesmo tipo (pagar/receber).');
+      t.categoryId = c.id;
+    }
+    t.amount = amount.toString();
+  }
+  Object.assign(t, { description, dueDate: input.dueDate, partyId: input.partyId || undefined, notes: input.notes });
+  audit(db, 'Título editado', description);
+  return t;
+}
+
 export function cancelTitle(db: DB, titleId: ID, reason: string) {
   const t = byId(db.titles, titleId, 'Título');
   assert(t.status !== 'cancelado', 'Título já cancelado.');

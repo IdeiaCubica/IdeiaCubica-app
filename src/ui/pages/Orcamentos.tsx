@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useStore } from '../store';
 import { navigate } from '../App';
-import type { DB, Quote, QuoteExtraLine, QuoteInput, QuoteItemStatus, QuoteShipping, QuoteStatus, QuoteVersion, QuoteVersionItem, RoundingRule } from '../../domain/types';
+import type { DB, Quote, QuoteDeliveryKit, QuoteExtraLine, QuoteInput, QuoteItemStatus, QuoteShipping, QuoteStatus, QuoteVersion, QuoteVersionItem, RoundingRule } from '../../domain/types';
 import {
   ITEM_STATE_LABEL, deleteQuote, emptyQuoteInput, evaluateQuote, isItemLocked, itemOrder, itemState, latestVersion, materialCostPolicy, perHour, quoteItems, quoteTotal,
-  paramsForItem, saveQuote, setItemStatus, setQuoteStatus, staleItems, type ItemState, type QuoteEvaluation,
+  paramsForItem, quoteSanity, saveQuote, setItemStatus, setQuoteStatus, staleItems, withKitShares, type ItemState, type QuoteEvaluation, type QuoteItemDraft,
 } from '../../domain/quotes';
+import { kitUnitCost, quoteKit } from '../../domain/deliveryKits';
 import { isLockedComponent, laborTotals, type CompStatus, type CostComponent } from '../../domain/costing';
 import { ROUNDING_LABEL } from '../../domain/pricing';
-import { createOrdersFromQuote } from '../../domain/production';
+import { createOrdersFromQuote, finishedGoodBalance, finishedGoodDraft, mergeQuotes } from '../../domain/production';
 import { allocate } from '../../domain/purchases';
 import { saveParty } from '../../domain/catalog';
 import { fmtDate, fmtDateTime, fmtPhone, newId } from '../../domain/core';
@@ -58,10 +59,12 @@ function QuoteList({ tab }: { tab: ListTab }) {
   const approvedStates: ItemState[] = ['aprovado', 'producao', 'produzido', 'separado'];
   const approved = pieces.filter((r) => approvedStates.includes(r.state));
   const approvedValue = approved.reduce((s, r) => s.plus(r.it.summary.orderPrice ?? 0), new Decimal(0));
+  const [merging, setMerging] = useState(false);
   return (
     <>
       <PageHead eyebrow="Orçamentos" title="Orçamentos" text="Orce várias peças por cliente, envie o orçamento de todas ou só de algumas e mande para produção as que o cliente aprovar."
-        actions={<button className="btn primary" onClick={() => navigate('orcamentos/novo')}>Novo orçamento</button>} />
+        actions={<><button className="btn secondary" onClick={() => setMerging(true)} disabled={db.quotes.length < 2}>Juntar orçamentos (kit)</button><button className="btn primary" onClick={() => navigate('orcamentos/novo')}>Novo orçamento</button></>} />
+      {merging && <MergeQuotesDialog onClose={() => setMerging(false)} />}
       <Tabs<ListTab> value={tab} onChange={(t) => navigate(t === 'clientes' ? 'orcamentos' : `orcamentos/${t}`)} tabs={[
         { id: 'clientes', label: 'Por cliente', count: db.quotes.length || undefined },
         { id: 'pecas', label: 'Por peça', count: pieces.length || undefined },
@@ -94,6 +97,49 @@ function QuoteList({ tab }: { tab: ListTab }) {
         </>
       )}
     </>
+  );
+}
+
+/** Orçamento kit: junta vários orçamentos (ex.: peças do estoque) num só, mantendo os valores de cada peça. */
+function MergeQuotesDialog({ onClose }: { onClose: () => void }) {
+  const { db, run } = useStore();
+  const [sel, setSel] = useState<string[]>([]);
+  const [name, setName] = useState('');
+  const [customerId, setCustomerId] = useState('');
+  const [del, setDel] = useState(true);
+  const [q, setQ] = useState('');
+  const customer = (id?: string) => db.parties.find((p) => p.id === id)?.name;
+  const candidates = [...db.quotes].reverse().filter((x) => quoteItems(x).some((it) => itemState(db, x, it.itemId) !== 'recusado'))
+    .filter((x) => !q.trim() || `${x.number} ${x.name} ${customer(x.customerId) ?? ''}`.toLowerCase().includes(q.trim().toLowerCase()));
+  const blocked = (x: Quote) => quoteItems(x).some((it) => isItemLocked(db, x, it.itemId));
+  const chosen = db.quotes.filter((x) => sel.includes(x.id));
+  const total = chosen.reduce((s, x) => s.plus(quoteTotal(db, x).price), new Decimal(0));
+  const toggle = (id: string) => setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
+  const submit = () => run((d) => mergeQuotes(d, sel, { name, customerId: customerId || undefined, deleteSources: del }), 'Orçamento kit criado.')
+    .then((r) => { if (r.ok) { onClose(); navigate(`orcamentos/${r.value.id}`); } });
+  return (
+    <Modal wide title="Juntar orçamentos num kit" subtitle="As peças em aberto dos orçamentos escolhidos vão para um orçamento único, com os mesmos valores. Ideal para o cliente que compra várias peças do estoque." onClose={onClose}
+      footer={<><span className="muted" style={{ marginRight: 'auto' }}>{sel.length} selecionado(s) · total {fmtBRL(total)}</span><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={submit} disabled={sel.length < 2}>Criar orçamento kit</button></>}>
+      <div className="stack">
+        <div className="grid g3">
+          <TextField label="Nome do orçamento kit" value={name} onChange={setName} placeholder="Ex.: Kit decoração da Ana" />
+          <SelectField label="Cliente" value={customerId} onChange={setCustomerId} placeholder="— o mesmo dos orçamentos —" options={db.parties.filter((p) => p.kind === 'cliente').map((p) => ({ value: p.id, label: p.name }))} />
+          <Check label="Excluir os orçamentos de origem depois de juntar" checked={del} onChange={setDel} />
+        </div>
+        <input type="search" className="search-lg" placeholder="Buscar orçamento…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Buscar orçamentos" />
+        <div className="card"><table className="tbl"><thead><tr><th></th><th>Orçamento</th><th>Peças</th><th>Cliente</th><th className="num">Valor</th></tr></thead><tbody>
+          {candidates.map((x) => { const b = blocked(x); return (
+            <tr key={x.id} className={b ? 'muted' : ''}>
+              <td><input type="checkbox" aria-label={`Selecionar ${x.number}`} checked={sel.includes(x.id)} disabled={b} onChange={() => toggle(x.id)} /></td>
+              <td><span className="mono">{x.number}</span><div className="small">{x.name}</div></td>
+              <td className="small">{quoteItems(x).filter((it) => itemState(db, x, it.itemId) !== 'recusado').map((it) => `${it.name}${it.finishedGoodId ? ' (estoque)' : ''}`).join(', ')}{b && <div className="small">tem peça em produção/separada</div>}</td>
+              <td>{customer(x.customerId) ?? '—'}</td>
+              <td className="num">{fmtBRL(quoteTotal(db, x).price)}</td>
+            </tr>); })}
+        </tbody></table></div>
+        <p className="small muted">Peças recusadas ficam de fora. Dentro do orçamento você também pode usar <b>+ Peça do estoque</b> para montar o kit direto.</p>
+      </div>
+    </Modal>
   );
 }
 
@@ -184,6 +230,7 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
   const [newClient, setNewClient] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [producing, setProducing] = useState(false);
+  const [addingStock, setAddingStock] = useState(false);
   const idx = Math.min(active, items.length - 1);
   const cur = items[idx];
   const input = cur.input;
@@ -192,8 +239,15 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
   const stateOf = (it: DraftItem): ItemState => (quote && it.itemId ? itemState(db, quote, it.itemId) : 'aberto');
   const lockedItem = (it: DraftItem) => !!quote && !!it.itemId && isItemLocked(db, quote, it.itemId);
   const curLocked = lockedItem(cur);
+  // Kit de entrega do pedido: custo distribuído entre as peças (oculto ao cliente).
+  const [kit, setKit] = useState<QuoteDeliveryKit | null>(() => (quote ? latestVersion(quote).deliveryKit ?? null : null));
+  const qtyKey = items.map((it) => it.input.quantity).join(',');
+  useEffect(() => {
+    setItems((prev) => { const next = withKitShares(prev, kit, lockedItem); return next.every((x, i) => x === prev[i]) ? prev : next; });
+  }, [kit, qtyKey, items.length]);
   const unsaved = !!quote && (JSON.stringify(items) !== JSON.stringify(draftsOf(quote))
     || JSON.stringify(shipping) !== JSON.stringify(latestVersion(quote).shipping ?? quoteShipping(db, latestVersion(quote).items[0].input))
+    || JSON.stringify(kit ?? null) !== JSON.stringify(latestVersion(quote).deliveryKit ?? null)
     || (meta.customerId || undefined) !== quote.customerId);
 
   // Mesma regra da lista e do documento do cliente: peça salva e não alterada usa o valor salvo.
@@ -223,7 +277,7 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
 
   if (quoteId && !quote) return <Empty title="Orçamento não encontrado" action={<button className="btn secondary" onClick={() => navigate('orcamentos')}>Voltar</button>} />;
 
-  const save = () => run((d) => saveQuote(d, { quoteId: quote?.id, name: meta.title || undefined, customerId: meta.customerId || undefined, note: meta.note || (refreshCosts && stale.length ? 'Custos atualizados' : undefined), projectId: quote?.projectId, refreshCosts },
+  const save = () => run((d) => saveQuote(d, { quoteId: quote?.id, name: meta.title || undefined, customerId: meta.customerId || undefined, note: meta.note || (refreshCosts && stale.length ? 'Custos atualizados' : undefined), projectId: quote?.projectId, refreshCosts, deliveryKit: kit },
     items.map((it) => ({ itemId: it.itemId, name: it.name, image: it.image, input: it.input, finishedGoodId: it.finishedGoodId })), shipping),
     quote ? 'Orçamento atualizado (nova versão salva; as anteriores ficam no histórico).' : 'Orçamento criado.')
     .then((r) => {
@@ -281,6 +335,7 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
   };
 
   const ev = evaluation.ev;
+  const sanity = quoteSanity(db, input, params, ev);
   const title = meta.title || items[0]?.name || 'Novo orçamento';
   const producible = quote ? items.filter((it) => it.itemId && !it.finishedGoodId && ['aberto', 'aprovado'].includes(stateOf(it))) : [];
   const curState = stateOf(cur);
@@ -335,7 +390,9 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
           {/* 2. Peças */}
           <div className="card">
             <div className="card-head"><div><h2>2. Peças do orçamento</h2><p className="muted small">Orce várias peças: o cliente pode aprovar algumas e outras não. Clique numa peça para editar.</p></div>
-              <div className="row"><button type="button" className="btn secondary sm" onClick={duplicate}>Duplicar peça</button><button type="button" className="btn primary sm" onClick={addItem}>+ Adicionar peça</button></div></div>
+              <div className="row"><button type="button" className="btn secondary sm" onClick={duplicate}>Duplicar peça</button>
+                <button type="button" className="btn secondary sm" onClick={() => setAddingStock(true)}>+ Peça do estoque</button>
+                <button type="button" className="btn primary sm" onClick={addItem}>+ Adicionar peça</button></div></div>
             <div className="card-body">
               <div className="piece-tabs" role="tablist" aria-label="Peças do orçamento">
                 {items.map((it, i) => {
@@ -410,9 +467,10 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
 
           {/* Frete do orçamento inteiro */}
           <FreightSection db={db} items={items} shipping={shipping} setShipping={setShipping} setItems={setItems} customerId={meta.customerId} lockedIds={items.filter(lockedItem).map((it) => it.itemId!)} />
+          <DeliveryKitSection db={db} kit={kit} setKit={setKit} items={items} />
 
           {quote && <Section title="Observação desta versão"><TextField label="O que mudou (opcional)" value={meta.note} onChange={(v) => setMeta((m) => ({ ...m, note: v }))} /></Section>}
-          {quote && <VersionHistory quote={quote} onLoad={(v) => { setItems(v.items.map((it) => ({ itemId: it.itemId, name: it.name, image: it.image ?? null, input: { overrides: {}, ...structuredClone(it.input) }, finishedGoodId: it.finishedGoodId }))); setActive(0); if (v.shipping) setShipping(structuredClone(v.shipping)); }} />}
+          {quote && <VersionHistory quote={quote} onLoad={(v) => { setItems(v.items.map((it) => ({ itemId: it.itemId, name: it.name, image: it.image ?? null, input: { overrides: {}, ...structuredClone(it.input) }, finishedGoodId: it.finishedGoodId }))); setActive(0); if (v.shipping) setShipping(structuredClone(v.shipping)); setKit(v.deliveryKit ? structuredClone(v.deliveryKit) : null); }} />}
         </div>
 
         <div className="sticky stack">
@@ -424,6 +482,9 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
             </div>
           </div>
           <p className="section-title" style={{ margin: '4px 0 -4px' }}>{cur.name || `Peça ${idx + 1}`}</p>
+          {sanity.length > 0 && <Alert tone="error" title="Confira antes de enviar ao cliente">
+            <ul style={{ margin: 0, paddingLeft: 18 }}>{sanity.map((s, i) => <li key={i}>{s}</li>)}</ul>
+          </Alert>}
           {evaluation.error ? <Alert tone="error" title="Não foi possível calcular">{evaluation.error}</Alert>
             : ev && <ResultPanel ev={ev} input={input} patch={patch} locked={curLocked} />}
         </div>
@@ -432,6 +493,8 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
         onSave={(v) => run((d) => saveParty(d, v), 'Cliente cadastrado.').then((r) => { if (r.ok) { setMeta((m) => ({ ...m, customerId: r.value.id })); setNewClient(false); } })} />}
       {exporting && quote && <ClientQuoteExport quote={quote} onClose={() => setExporting(false)} unsaved={unsavedAll} />}
       {producing && quote && <ProduceDialog quote={quote} onClose={() => setProducing(false)} />}
+      {addingStock && <StockPieceDialog db={db} exclude={items.map((it) => it.finishedGoodId).filter(Boolean) as string[]} onClose={() => setAddingStock(false)}
+        onAdd={(d) => { setItems((s) => [...s, { name: d.name, image: d.image ?? null, input: d.input, finishedGoodId: d.finishedGoodId }]); setActive(items.length); setAddingStock(false); }} />}
       {confirmEl}
     </>
   );
@@ -543,6 +606,60 @@ function ParamsSection({ db, input, patch }: { db: DB; input: QuoteInput; patch:
 }
 
 /* ---------------- Frete (SuperFrete) ---------------- */
+/** Adiciona ao orçamento uma peça pronta do estoque (preço sugerido da peça). */
+function StockPieceDialog({ db, exclude, onClose, onAdd }: { db: DB; exclude: string[]; onClose: () => void; onAdd: (d: QuoteItemDraft) => void }) {
+  const { toast } = useStore();
+  const options = db.finishedGoods.map((g) => ({ g, available: finishedGoodBalance(db, g.id).available })).filter((x) => x.available > 0 && !exclude.includes(x.g.id));
+  const [fgId, setFgId] = useState(options[0]?.g.id ?? '');
+  const [qty, setQty] = useState<string | null>('1');
+  const [price, setPrice] = useState<string | null>(null);
+  const sel = options.find((x) => x.g.id === fgId);
+  const add = () => {
+    try { onAdd(finishedGoodDraft(db, fgId, { qty: Math.round(Number(qty ?? 0)), unitPrice: price })); } catch (e) { toast('error', e instanceof Error ? e.message : String(e)); }
+  };
+  return (
+    <Modal title="Adicionar peça do estoque" subtitle="Peças prontas (pronta-entrega). Ao aprovar, as peças são separadas para este pedido." onClose={onClose}
+      footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={add} disabled={!sel}>Adicionar ao orçamento</button></>}>
+      {options.length === 0 ? <Empty title="Nenhuma peça disponível em estoque" text="Registre peças em Produção → Produções para estoque (ou em Estoque → Peças produzidas)." /> : (
+        <div className="stack">
+          <SelectField label="Peça" value={fgId} onChange={(v) => { setFgId(v); setPrice(null); }} options={options.map(({ g, available }) => ({ value: g.id, label: `${g.code} · ${g.description} · ${available} disponível(is)${g.suggestedPrice ? ` · ${fmtBRL(g.suggestedPrice)}` : ''}` }))} />
+          <div className="grid g2">
+            <DecField label="Quantidade" value={qty} onChange={setQty} suffix="un" hint={sel ? `máximo ${sel.available}` : undefined} />
+            <DecField label="Preço por peça" value={price ?? sel?.g.suggestedPrice ?? null} onChange={setPrice} suffix="R$" hint="Vazio = preço sugerido da peça" />
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+/** Kit de entrega (acessórios complementares): custo interno do pedido, nunca mostrado ao cliente. */
+function DeliveryKitSection({ db, kit, setKit, items }: { db: DB; kit: QuoteDeliveryKit | null; setKit: (k: QuoteDeliveryKit | null) => void; items: DraftItem[] }) {
+  const { toast } = useStore();
+  const kits = db.deliveryKits.filter((k) => k.active || k.id === kit?.kitId);
+  const choose = (kitId: string, qty: number) => {
+    if (!kitId) return setKit(null);
+    try { setKit(quoteKit(db, kitId, qty)); } catch (e) { toast('error', e instanceof Error ? e.message : String(e)); }
+  };
+  const model = kit ? db.deliveryKits.find((k) => k.id === kit.kitId) : undefined;
+  const current = model ? kitUnitCost(db, model) : null;
+  const changed = !!(kit && current && !current.missing.length && !current.total.eq(kit.unitCost));
+  return (
+    <Section title="Kit de entrega" subtitle="Acessórios que vão junto com o pedido (saquinho, cartão, adesivo…). O custo entra no preço das peças e não aparece no orçamento do cliente.">
+      {kits.length === 0 ? <p className="muted small" style={{ margin: 0 }}>Nenhum kit cadastrado. <a href="#/cadastros/kits">Cadastre os modelos de kit em Cadastros → Kits de entrega</a>.</p> : (<>
+        <div className="grid g3">
+          <SelectField label="Modelo do kit" value={kit?.kitId ?? ''} onChange={(v) => choose(v, kit?.qty ?? 1)} placeholder="— sem kit —"
+            options={kits.map((k) => { const c = kitUnitCost(db, k); return { value: k.id, label: `${k.name} · ${c.missing.length ? 'sem preço' : fmtBRL(c.total)}` }; })} />
+          <DecField label="Quantidade de kits" value={kit?.qty ?? null} onChange={(v) => kit && choose(kit.kitId, Math.max(1, Math.round(Number(v ?? 1))))} suffix="kit(s)" hint="Normalmente 1 por pedido" />
+          <Field label="Custo do kit no pedido"><div className="readonly-value">{kit ? `${fmtBRL(kit.total)} (${kit.qty} × ${fmtBRL(kit.unitCost)})` : '—'}</div></Field>
+        </div>
+        {kit && <p className="small muted" style={{ margin: '8px 0 0' }}>Distribuído pela quantidade de peças: {items.map((it, i) => `${it.name || `Peça ${i + 1}`} ${fmtBRL(it.input.deliveryKitShare ?? 0)}`).join(' · ')}. Os itens do kit saem do estoque quando a venda é registrada.</p>}
+        {changed && <Alert tone="warning" title="O custo deste kit mudou">Hoje o kit custa {fmtBRL(current!.total)} (salvo: {fmtBRL(kit!.unitCost)}). <button type="button" className="link-btn" onClick={() => choose(kit!.kitId, kit!.qty)}>Usar o custo de hoje</button></Alert>}
+      </>)}
+    </Section>
+  );
+}
+
 function FreightSection({ db, items, shipping, setShipping, setItems, customerId, lockedIds }: {
   db: DB; items: DraftItem[]; shipping: QuoteShipping; setShipping: (s: QuoteShipping) => void;
   setItems: (fn: (s: DraftItem[]) => DraftItem[]) => void; customerId: string; lockedIds: string[];

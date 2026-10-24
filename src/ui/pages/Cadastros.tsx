@@ -1,17 +1,19 @@
 import { useState } from 'react';
 import { useStore } from '../store';
 import { navigate } from '../App';
-import type { AddressParts, Category, DB, Material, NamedItem, Party, Unit } from '../../domain/types';
+import type { AddressParts, Category, DB, DeliveryKit, Material, NamedItem, Party, Unit } from '../../domain/types';
 import { AddressFields } from '../components/AddressFields';
-import { deleteNamed, namedUsage, nextMaterialCode, normalizeSigla, priceHistory, saveCategory, saveMaterial, saveNamed, saveParty, suggestSigla, type NamedList } from '../../domain/catalog';
+import { deleteNamed, materialLabel, namedUsage, nextMaterialCode, normalizeSigla, priceHistory, saveCategory, saveMaterial, saveNamed, saveParty, suggestSigla, type NamedList } from '../../domain/catalog';
 import { lotBalance, materialBalance, reorderAnalysis } from '../../domain/inventory';
 import { materialCostPolicy } from '../../domain/quotes';
+import { unusualUnitCost } from '../../domain/purchases';
+import { deleteDeliveryKit, kitUnitCost, saveDeliveryKit } from '../../domain/deliveryKits';
 import { UNIT_LABEL, fmtDate, fmtDocument, fmtPhone } from '../../domain/core';
 import { Decimal, fmtBRL, fmtNum, parseBR, toInputBR } from '../../domain/money';
 import { perGramToPerKg, perKgToPerGram } from '../../domain/conversions';
-import { Alert, Badge, Check, Combobox, DataTable, Empty, Modal, NumField, PageHead, SelectField, Tabs, TextArea, TextField, dec, num, useConfirm, useForm } from '../components/ui';
+import { Alert, Badge, Check, Combobox, DataTable, Empty, Field, Modal, NumField, PageHead, SelectField, Tabs, TextArea, TextField, dec, num, useConfirm, useForm } from '../components/ui';
 
-type Tab = 'materiais' | 'clientes' | 'fornecedores' | 'marcas' | 'fabricantes';
+type Tab = 'materiais' | 'kits' | 'clientes' | 'fornecedores' | 'marcas' | 'fabricantes';
 export const FILAMENT_TYPES = ['PLA', 'PLA Silk', 'PLA Matte', 'PETG', 'ABS', 'ASA', 'TPU', 'PC', 'Nylon', 'Outro'];
 
 export function Cadastros({ param }: { param?: string }) {
@@ -22,12 +24,14 @@ export function Cadastros({ param }: { param?: string }) {
       <PageHead eyebrow="Cadastros" title="Cadastros" text="Materiais, clientes, fornecedores, marcas e fabricantes usados em orçamentos, compras, produção e vendas." />
       <Tabs<Tab> value={tab} onChange={(t) => navigate(`cadastros/${t}`)} tabs={[
         { id: 'materiais', label: 'Materiais', count: db.materials.length },
+        { id: 'kits', label: 'Kits de entrega', count: db.deliveryKits.length || undefined },
         { id: 'clientes', label: 'Clientes', count: db.parties.filter((p) => p.kind === 'cliente').length },
         { id: 'fornecedores', label: 'Fornecedores', count: db.parties.filter((p) => p.kind === 'fornecedor').length },
         { id: 'marcas', label: 'Marcas', count: db.brands.length },
         { id: 'fabricantes', label: 'Fabricantes', count: db.manufacturers.length },
       ]} />
       {tab === 'materiais' && <Materiais />}
+      {tab === 'kits' && <DeliveryKits />}
       {tab === 'clientes' && <Parties kind="cliente" />}
       {tab === 'fornecedores' && <Parties kind="fornecedor" />}
       {tab === 'marcas' && <NamedListManager list="brands" title="Marcas" singular="marca" usedIn="materiais" />}
@@ -101,6 +105,81 @@ export function priceLabel(m: Material, unitCost: Decimal.Value | null | undefin
   return m.unit === 'g' ? `${fmtBRL(perGramToPerKg(unitCost))}/kg` : `${fmtBRL(unitCost, 4)}/${m.unit}`;
 }
 
+/* ---------------- Kits de entrega ---------------- */
+function DeliveryKits() {
+  const { db, run } = useStore();
+  const [confirm, confirmEl] = useConfirm();
+  const [edit, setEdit] = useState<DeliveryKit | 'novo' | null>(null);
+  const remove = async (k: DeliveryKit) => {
+    if (await confirm({ title: `Excluir o kit "${k.name}"?`, danger: true, confirmLabel: 'Excluir', text: 'Se o kit já foi usado em orçamentos ou vendas, ele fica inativo (o histórico é preservado).' }) === null) return;
+    run((d) => deleteDeliveryKit(d, k.id), 'Kit removido.');
+  };
+  return (
+    <div className="card">
+      <div className="card-head">
+        <div><h2>Kits de entrega</h2><p className="muted small">Modelos de acessórios que acompanham o pedido (saquinho, cartão de agradecimento, adesivo, logo…). No orçamento, o custo do kit entra no preço das peças e <b>não aparece para o cliente</b>. Na venda, os itens saem do estoque.</p></div>
+        <button className="btn primary" onClick={() => setEdit('novo')}>Novo kit</button>
+      </div>
+      <DataTable rows={db.deliveryKits} rowKey={(k) => k.id} onRowClick={setEdit}
+        empty={<Empty title="Nenhum kit cadastrado" text="Cadastre os insumos do kit (ex.: saquinho, cartão) em Materiais e registre a compra; depois monte aqui os modelos de kit." action={<button className="btn primary" onClick={() => setEdit('novo')}>Cadastrar kit</button>} />}
+        columns={[
+          { key: 'n', header: 'Kit', render: (k) => <><b>{k.name}</b>{k.notes && <div className="muted small">{k.notes}</div>}</>, sort: (k) => k.name },
+          { key: 'i', header: 'Itens', render: (k) => [...k.items.map((it) => { const m = db.materials.find((x) => x.id === it.materialId); return `${fmtNum(it.qty)} ${m?.unit ?? ''} ${m ? materialLabel(m) : 'insumo removido'}`; }), ...k.extras.map((e) => e.description)].join(' · ') },
+          { key: 'c', header: 'Custo por kit', num: true, render: (k) => { const c = kitUnitCost(db, k); return c.missing.length ? <Badge tone="warning" title={c.missing.join(', ')}>sem preço</Badge> : <b>{fmtBRL(c.total)}</b>; } },
+          { key: 's', header: 'Situação', render: (k) => k.active ? <Badge tone="success">ativo</Badge> : <Badge>inativo</Badge> },
+          { key: 'a', header: '', render: (k) => <button className="btn ghost sm" onClick={(e) => { e.stopPropagation(); remove(k); }}>Excluir</button> },
+        ]} />
+      {edit && <DeliveryKitForm kit={edit === 'novo' ? undefined : edit} onClose={() => setEdit(null)} />}
+      {confirmEl}
+    </div>
+  );
+}
+
+function DeliveryKitForm({ kit, onClose }: { kit?: DeliveryKit; onClose: () => void }) {
+  const { db, run } = useStore();
+  const [f, set] = useForm({ name: kit?.name ?? '', active: kit?.active ?? true, notes: kit?.notes ?? '' });
+  const [items, setItems] = useState(() => kit?.items.map((it) => ({ materialId: it.materialId, qty: toInputBR(it.qty) })) ?? [{ materialId: '', qty: '1' }]);
+  const [extras, setExtras] = useState(() => kit?.extras.map((e) => ({ description: e.description, cost: toInputBR(e.cost, 2) })) ?? []);
+  const options = db.materials.filter((m) => m.active || items.some((it) => it.materialId === m.id)).map((m) => ({ value: m.id, label: `${m.code} · ${materialLabel(m)} (${m.unit})` }));
+  const payload = { name: f.name, active: f.active, notes: f.notes || undefined, items: items.map((it) => ({ materialId: it.materialId, qty: num(it.qty) ?? 0 })), extras: extras.map((e) => ({ description: e.description, cost: dec(e.cost) ?? '' })) };
+  let preview: ReturnType<typeof kitUnitCost> | null = null;
+  try { preview = kitUnitCost(db, { id: '', createdAt: '', ...payload, items: payload.items.filter((i) => i.materialId && i.qty > 0), extras: payload.extras.filter((e) => e.cost).map((e) => ({ description: e.description, cost: e.cost })) }); } catch { preview = null; }
+  const submit = () => run((d) => saveDeliveryKit(d, payload, kit?.id), kit ? 'Kit atualizado.' : 'Kit cadastrado.').then((r) => r.ok && onClose());
+  return (
+    <Modal wide title={kit ? `Editar kit "${kit.name}"` : 'Novo kit de entrega'} subtitle="Quantidades por kit, na unidade de cada insumo. O custo usa o preço atual (última compra ou referência)." onClose={onClose}
+      footer={<><span className="muted" style={{ marginRight: 'auto' }}>Custo por kit: <b>{preview && !preview.missing.length ? fmtBRL(preview.total) : '—'}</b></span><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={submit}>Salvar kit</button></>}>
+      <div className="stack">
+        <div className="grid g2">
+          <TextField label="Nome do kit" required value={f.name} onChange={set('name')} placeholder="Ex.: Kit presente (saquinho + cartão + adesivo)" />
+          <Check label="Kit ativo (aparece nos orçamentos)" checked={f.active} onChange={set('active')} />
+        </div>
+        <p className="section-title">Itens do estoque</p>
+        {items.map((it, i) => (
+          <div key={i} className="line-item">
+            <Field label="Insumo"><Combobox ariaLabel="Insumo do kit" value={it.materialId} onChange={(v) => setItems((r) => r.map((x, k) => (k === i ? { ...x, materialId: v } : x)))} placeholder="— digite para buscar —" options={options} /></Field>
+            <NumField label="Quantidade por kit" value={it.qty} onChange={(v) => setItems((r) => r.map((x, k) => (k === i ? { ...x, qty: v } : x)))} suffix={db.materials.find((m) => m.id === it.materialId)?.unit} />
+            <button className="btn ghost sm" onClick={() => setItems((r) => r.filter((_, k) => k !== i))} aria-label="Remover">✕</button>
+          </div>
+        ))}
+        <div><button className="btn secondary sm" onClick={() => setItems((r) => [...r, { materialId: '', qty: '1' }])}>+ Item do estoque</button></div>
+        <p className="section-title">Custos sem estoque (opcional)</p>
+        {extras.map((e, i) => (
+          <div key={i} className="line-item">
+            <TextField label="Descrição" value={e.description} onChange={(v) => setExtras((r) => r.map((x, k) => (k === i ? { ...x, description: v } : x)))} placeholder="Ex.: impressão do cartão" />
+            <NumField label="Custo por kit" suffix="R$" value={e.cost} onChange={(v) => setExtras((r) => r.map((x, k) => (k === i ? { ...x, cost: v } : x)))} />
+            <button className="btn ghost sm" onClick={() => setExtras((r) => r.filter((_, k) => k !== i))} aria-label="Remover">✕</button>
+          </div>
+        ))}
+        <div><button className="btn secondary sm" onClick={() => setExtras((r) => [...r, { description: '', cost: '' }])}>+ Custo sem estoque</button></div>
+        {preview && preview.lines.length > 0 && <div className="card"><table className="tbl"><thead><tr><th>Item</th><th className="num">Qtd.</th><th className="num">Custo</th></tr></thead><tbody>
+          {preview.lines.map((l, i) => <tr key={i}><td>{l.label}</td><td className="num">{fmtNum(l.qty)} {l.unit}</td><td className="num">{l.cost ? fmtBRL(l.cost, 4) : <Badge tone="warning">sem preço</Badge>}</td></tr>)}
+        </tbody></table></div>}
+        <TextArea label="Observações" value={f.notes} onChange={set('notes')} />
+      </div>
+    </Modal>
+  );
+}
+
 /* ---------------- Materiais ---------------- */
 function Materiais() {
   const { db, run } = useStore();
@@ -112,7 +191,7 @@ function Materiais() {
   return (
     <div className="card">
       <div className="card-head">
-        <div><h2>Materiais</h2><p className="muted small">Filamentos e demais insumos. O preço usado no orçamento vem da última compra ou, sem compras, do preço de referência.</p></div>
+        <div><h2>Materiais</h2><p className="muted small">Filamentos e demais insumos. O preço usado no orçamento vem da última compra ou, sem compras, do preço de referência. Saldos ficam em <a href="#/estoque">Estoque → Saldo por insumo</a>.</p></div>
         <div className="row"><button className="btn secondary" onClick={() => setCats(true)}>Categorias</button><button className="btn primary" onClick={() => setEdit('novo')}>Novo material</button></div>
       </div>
       <DataTable rows={rows} rowKey={(m) => m.id} onRowClick={setView}
@@ -122,8 +201,8 @@ function Materiais() {
         columns={[
           { key: 'c', header: 'Código', render: (m) => <span className="mono">{m.code}</span>, sort: (m) => m.code },
           { key: 'n', header: 'Material', render: (m) => <><b>{m.filament?.colorHex && <i className="swatch" style={{ background: m.filament.colorHex }} />}{m.name}</b><div className="muted small">{materialDesc(db, m)}</div></>, sort: (m) => m.name },
-          { key: 'p', header: 'Preço nos orçamentos', num: true, render: (m) => { const pol = materialCostPolicy(db, m.id); return pol.unitCost ? <><b>{priceLabel(m, pol.unitCost)}</b><div className="muted small">{pol.source}</div></> : <Badge tone="warning">sem preço</Badge>; } },
-          { key: 'f', header: 'Estoque disponível', num: true, render: (m) => { const b = materialBalance(db, m.id); const low = m.minStock !== null && m.minStock !== undefined && b.available.lt(m.minStock); return <span style={{ color: low ? 'var(--error)' : undefined }}>{fmtNum(b.available)} {m.unit}</span>; } },
+          { key: 'r', header: 'Preço de referência', num: true, render: (m) => m.referenceCost ? priceLabel(m, m.referenceCost) : <span className="muted">—</span> },
+          { key: 'p', header: 'Preço nos orçamentos', num: true, render: (m) => { const pol = materialCostPolicy(db, m.id); const warn = unusualUnitCost(m, pol.unitCost); return pol.unitCost ? <><b className={warn ? 'err-text' : ''}>{priceLabel(m, pol.unitCost)}</b><div className="muted small">{pol.source}</div>{warn && <Badge tone="error" title={warn}>custo improvável — corrija a compra</Badge>}</> : <Badge tone="warning">sem preço</Badge>; } },
           { key: 's', header: 'Situação', render: (m) => {
             if (!m.active) return <Badge>inativo</Badge>;
             const r = reorderAnalysis(db, m);

@@ -6,11 +6,18 @@ financeiros; custos unitários (R$/g) mantêm precisão total.
 
 ## 1. Custo de aquisição (compras) — `purchases.ts`
 
-- **Custo por unidade do lote** = (mercadoria + frete atribuído + outros custos atribuídos) ÷ quantidade recebida.
+- **Custo por unidade do lote** = (mercadoria + frete atribuído + outros custos atribuídos − desconto atribuído) ÷ quantidade recebida.
   Ex.: (R$ 100 + R$ 10) ÷ 1.000 g = **R$ 0,11/g**.
-- **Rateio** de frete/outros entre itens de uma compra: proporcional ao valor da mercadoria; o resíduo de centavos vai ao último item
+- **Rateio** de frete/outros/desconto entre itens de uma compra: proporcional ao valor da mercadoria; o resíduo de centavos vai ao último item
   (a soma sempre fecha). Sem valor de mercadoria, rateio igualitário.
-- O custo fica gravado no lote e **nunca é alterado**.
+- **Desconto da compra** (v1.6): reduz o valor pago e o custo dos lotes. O preço de referência do cadastro não muda.
+  Ex.: filamento R$ 89,37 + etiquetas R$ 10,63, desconto R$ 10 → R$ 8,94 no filamento e R$ 1,06 nas etiquetas.
+- **Unidade da compra** (v1.6): filamento é digitado por **carretel** (peso líquido do cadastro) ou **kg** — nunca em gramas por padrão.
+  "1 g" a R$ 89,37 daria R$ 89.370/kg (1.000× maior).
+- **Custo improvável** (`costSanity.ts`): filamento fora de R$ 20–800/kg gera alerta na compra (confirmação obrigatória), na lista de
+  compras, no cadastro e no orçamento.
+- O custo fica gravado no lote. **Edição da compra** (v1.6) recalcula lotes, rateios e títulos juntos enquanto não houver pagamento
+  do usuário (a saída à vista da própria compra é refeita); lote já usado mantém o insumo e não pode ficar abaixo do que já saiu.
 - Vale para qualquer insumo (filamento em g; etiquetas, caixas etc. na unidade cadastrada). Ex.: 500 etiquetas por R$ 40
   com R$ 0,08 de frete atribuído = R$ 40,08 ÷ 500 = **R$ 0,08016/un**.
 - **Equipamentos** (impressora, ferramenta durável) participam do rateio de frete, mas não geram lote nem estoque:
@@ -102,6 +109,10 @@ Exemplo (sem taxas): custo R$ 50, markup 100% → preço R$ 100, lucro R$ 50, ma
 - Bloqueios: saldo físico negativo, liberação maior que a reserva, reserva maior que o disponível.
 - Cada movimentação tem **chave de idempotência**: a mesma operação (ex.: consumo da OP X no lote Y) não é aplicada duas vezes.
 - Valor do estoque = Σ físico × custo do lote (custo histórico específico).
+- **Saldo por insumo** (v1.6): físico = comprado + estoque inicial − usado na produção − perdas ± ajustes − devoluções.
+  O estoque só entra por compra/estoque inicial e só sai pela produção (conclusão da OP ou “já produzi”), perdas, ajustes e kits de entrega vendidos.
+- **Já produzi** (v1.6, `produceForStockNow`): cria a produção para estoque e conclui na hora, baixando o material pelos lotes mais antigos
+  (tudo ou nada); as peças entram com o custo real dos lotes.
 - **Demanda planejada** = Σ material previsto das OPs "Planejada" e "Aguardando material" (ainda sem reserva; as demais já estão no reservado,
   então não contam duas vezes). **Projetado** = disponível − demanda planejada.
 - **Ponto de pedido** = estoque mínimo + segurança + consumo médio diário (90 dias, consumo + perdas) × prazo de reposição;
@@ -123,6 +134,13 @@ Exemplo (sem taxas): custo R$ 50, markup 100% → preço R$ 100, lucro R$ 50, ma
 - Peça com pedido ativo ou separada fica **travada**: uma nova versão do orçamento precisa mantê-la igual e não pode removê-la.
 - Situação geral: todas recusadas → recusado; todas as não recusadas em produção/separadas → em produção; alguma aprovada → aprovado.
 - Frete “empresa paga”: rateado entre as peças editáveis proporcionalmente ao peso (g) de cada uma; entra no custo de cada peça.
+- **Kit de entrega** (v1.6, `deliveryKits.ts`): custo de 1 kit = Σ quantidade × preço atual do insumo (última compra → referência)
+  + custos sem estoque. Custo no pedido = kits × custo do kit (snapshot na versão). Rateado entre as peças editáveis pela
+  **quantidade de peças**, em centavos exatos (resíduo na última); entra na rubrica “Kit de entrega” do custo e, portanto, no preço.
+  Nunca aparece no documento do cliente.
+- **Orçamento kit** (v1.6): junta as peças não recusadas de vários orçamentos num só, mantendo o snapshot (custo e preço) de cada peça.
+  Peças em produção/separadas impedem a junção. Opcionalmente exclui os orçamentos de origem.
+- **Conferência** (`quoteSanity`): alerta para filamento fora de R$ 20–800/kg, peso > 5 kg por peça, tempo > 200 h por peça e preço abaixo do custo.
 
 ## 6. Produção — `production.ts`
 
@@ -165,4 +183,8 @@ Exemplo (sem taxas): custo R$ 50, markup 100% → preço R$ 100, lucro R$ 50, ma
 - O resultado é marcado como **realizado**, **estimado** (custos de orçamento ou mão de obra não apurada) ou **parcial**
   (vendas sem custo).
 - **Ponto de equilíbrio** = despesas indiretas mensais ÷ margem de contribuição média do período.
+- **Kit na venda** (v1.6): os itens saem do estoque (lotes mais antigos) e o custo real entra no custo da venda. Se o custo vem do
+  orçamento (que já inclui a parte do kit), essa parte é descontada para não contar duas vezes. Cancelar a venda devolve o kit ao estoque.
+- **Edição** (v1.6): venda e título podem ser corrigidos enquanto não houver recebimento/pagamento do usuário; títulos são refeitos.
+  Título de compra/venda só muda descrição, vencimento e observações (valores: edite a compra/venda).
 - **Caixa projetado (30 dias)** = saldo atual + a receber − a pagar com vencimento até 30 dias.

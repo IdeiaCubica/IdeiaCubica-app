@@ -56,6 +56,7 @@ export function createEmptyDB(): DB {
     quotes: [],
     orders: [],
     finishedGoods: [],
+    deliveryKits: [],
     accounts: [],
     finCategories: [
       fin(SYS_FIN.vendaProdutos, 'in', 'receita_venda', true),

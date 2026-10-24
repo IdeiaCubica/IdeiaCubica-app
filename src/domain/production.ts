@@ -8,11 +8,12 @@
  *     concluir duas vezes ou clicar repetidamente não baixa o material de novo.
  *   - Cancelar libera as reservas; OP concluída não pode ser cancelada.
  */
-import type { CostParams, DB, FinishedGood, ID, OrderStatus, ProductionOrder, Project, QuoteInput } from './types';
+import type { CostParams, DB, FinishedGood, ID, OrderStatus, ProductionOrder, Project, Quote, QuoteInput, QuoteVersionItem } from './types';
 import { D, Decimal, ZERO, sum } from './money';
 import { BusinessError, assert, audit, byId, newId, nextCode, nowISO, requireNonNegative, requireText, toLocalDate, todayISO } from './core';
 import { addMovement, lotBalance, releaseAll, reserve } from './inventory';
-import { emptyQuoteInput, evaluateQuote, itemState, latestVersion, quoteItem, quoteItemAt, quoteItems, refreshQuoteStatus, resolveParams, saveQuote, summarize } from './quotes';
+import { materialLabel } from './catalog';
+import { deleteQuote, emptyQuoteInput, evaluateQuote, isItemLocked, itemState, latestVersion, quoteItem, quoteItemAt, quoteItems, refreshQuoteStatus, resolveParams, saveQuote, summarize, type QuoteItemDraft } from './quotes';
 import { computeCosts, laborTotals, type CostResult } from './costing';
 
 export const ORDER_STATUS_LABEL: Record<OrderStatus, string> = {
@@ -186,6 +187,27 @@ export function createManualOrder(db: DB, input: {
   db.orders.push(order);
   audit(db, purpose === 'estoque' ? 'Produção para estoque criada' : 'Pedido criado', `${order.number} ${description}`);
   return order;
+}
+
+/**
+ * Peças para estoque JÁ produzidas: cria a produção e conclui na hora, baixando o
+ * material do estoque (lotes por ordem de entrada) e lançando as peças prontas
+ * com o custo real. Falta de material bloqueia (nada é lançado).
+ */
+export function produceForStockNow(db: DB, input: Parameters<typeof createManualOrder>[1] & { location?: string }): ProductionOrder {
+  assert(input.plannedMaterials.length > 0, 'Informe o material usado para baixar do estoque.');
+  const o = createManualOrder(db, { ...input, purpose: 'estoque' });
+  const r = reserveOrderMaterials(db, o.id);
+  if (!r.ok) {
+    const desc = r.shortages.map((s) => { const m = db.materials.find((x) => x.id === s.materialId); return `${m ? materialLabel(m) : 'material'}: faltam ${s.shortage.toString()} ${m?.unit ?? ''}`; }).join('; ');
+    throw new BusinessError(`Estoque insuficiente para baixar o material (${desc}). Registre a compra ou o estoque inicial antes.`);
+  }
+  startOrder(db, o.id);
+  completeOrder(db, o.id, {
+    materials: orderReservations(db, o.id).map((x) => ({ lotId: x.lotId, qty: x.qty.toNumber() })),
+    hours: input.plannedHours ?? 0, qtyApproved: input.qtyPlanned, qtyRejected: 0, laborMinutes: null, failures: [], notes: input.notes, location: input.location,
+  });
+  return o;
 }
 
 /** Ordem do quadro: data de entrega mais próxima primeiro (sem data por último); empate pela ordem de criação. */
@@ -464,7 +486,8 @@ export function finishedGoodBalance(db: DB, fgId: ID) {
  * Orçamento a partir de uma peça pronta do estoque: o cliente pediu o valor.
  * A peça continua no estoque até o usuário marcar "Pedido aprovado".
  */
-export function quoteFromFinishedGood(db: DB, fgId: ID, opts: { customerId?: ID; qty: number; unitPrice?: string | null }) {
+/** Peça do estoque de peças prontas como item de orçamento (preço = sugerido da peça, ou o informado). */
+export function finishedGoodDraft(db: DB, fgId: ID, opts: { qty: number; unitPrice?: string | null }): QuoteItemDraft {
   const fg = byId(db.finishedGoods, fgId, 'Peça pronta');
   assert(Number.isInteger(opts.qty) && opts.qty > 0, 'Quantidade deve ser um inteiro maior que zero.');
   const bal = finishedGoodBalance(db, fgId);
@@ -472,9 +495,53 @@ export function quoteFromFinishedGood(db: DB, fgId: ID, opts: { customerId?: ID;
   const order = fg.orderId ? db.orders.find((o) => o.id === fg.orderId) : undefined;
   const base = order ? orderBaseInput(db, order).input : emptyQuoteInput(db.settings);
   const input: QuoteInput = { ...structuredClone(base), quantity: opts.qty, labor: { perOrder: 0, perUnit: 0 }, overrides: {} };
+  delete input.deliveryKitShare;
   // Custos seguem o mesmo motor (para a margem); o preço ao cliente é o preço sugerido da peça, ou o informado.
   input.manualPriceUnit = opts.unitPrice ?? fg.suggestedPrice ?? null;
-  return saveQuote(db, { customerId: opts.customerId, name: fg.description }, [{ name: fg.description, image: fg.image ?? null, input, finishedGoodId: fg.id }]);
+  return { name: fg.description, image: fg.image ?? null, input, finishedGoodId: fg.id };
+}
+
+export function quoteFromFinishedGood(db: DB, fgId: ID, opts: { customerId?: ID; qty: number; unitPrice?: string | null }) {
+  const draft = finishedGoodDraft(db, fgId, opts);
+  return saveQuote(db, { customerId: opts.customerId, name: draft.name }, [draft]);
+}
+
+/**
+ * Orçamento kit: junta peças de vários orçamentos (inclusive peças do estoque) num único
+ * orçamento. Peças recusadas ficam de fora; peças em produção ou separadas impedem a junção.
+ * Os valores salvos de cada peça são mantidos (mesmo preço dos orçamentos de origem).
+ */
+export function mergeQuotes(db: DB, quoteIds: ID[], opts: { name?: string; customerId?: ID; deleteSources: boolean }): Quote {
+  const ids = [...new Set(quoteIds)];
+  assert(ids.length >= 2, 'Selecione ao menos dois orçamentos para juntar.');
+  const sources = ids.map((id) => byId(db.quotes, id, 'Orçamento'));
+  const picked: { q: Quote; it: QuoteVersionItem }[] = [];
+  for (const q of sources) {
+    for (const it of quoteItems(q)) {
+      if (itemState(db, q, it.itemId) === 'recusado') continue;
+      assert(!isItemLocked(db, q, it.itemId), `A peça "${it.name}" de ${q.number} já está em produção ou separada do estoque. Retorne-a para o orçamento antes de juntar.`);
+      picked.push({ q, it });
+    }
+  }
+  assert(picked.length > 0, 'Os orçamentos selecionados não têm peças em aberto para juntar.');
+  const customers = new Set(sources.map((q) => q.customerId).filter(Boolean));
+  const customerId = opts.customerId ?? (customers.size === 1 ? [...customers][0] : undefined);
+  const drafts: QuoteItemDraft[] = picked.map(({ it }) => {
+    const input = structuredClone(it.input);
+    delete input.deliveryKitShare; // o kit de entrega é escolhido no orçamento novo
+    return { name: it.name, image: it.image ?? null, input, finishedGoodId: it.finishedGoodId };
+  });
+  const first = latestVersion(sources[0]);
+  const merged = saveQuote(db, { name: opts.name?.trim() || `Kit: ${picked.map((p) => p.it.name).slice(0, 3).join(' + ')}${picked.length > 3 ? '…' : ''}`, customerId,
+    note: `Junção de ${sources.map((q) => q.number).join(', ')}` }, drafts, first.shipping);
+  // Mantém o snapshot (custos e preço) de cada peça quando a entrada não mudou.
+  latestVersion(merged).items.forEach((item, i) => {
+    const src = picked[i].it;
+    if (JSON.stringify(src.input) === JSON.stringify(item.input)) { item.params = structuredClone(src.params); item.summary = structuredClone(src.summary); }
+  });
+  if (opts.deleteSources) for (const q of sources) deleteQuote(db, q.id, `Juntado no orçamento ${merged.number}`);
+  audit(db, 'Orçamentos juntados', `${sources.map((q) => q.number).join(' + ')} → ${merged.number}`);
+  return merged;
 }
 
 /** Baixa manual (avaria, brinde, uso próprio). */

@@ -4,11 +4,12 @@ import { useStore } from '../store';
 import { navigate } from '../App';
 import type { OrderStatus, ProductionOrder, Project } from '../../domain/types';
 import {
-  ORDER_STATUS_LABEL, QUEUE_STATUSES, addProjectFileVersion, byDelivery, cancelOrder, checkAvailability, compareOrder, completeOrder, createManualOrder,
+  ORDER_STATUS_LABEL, QUEUE_STATUSES, addProjectFileVersion, byDelivery, cancelOrder, checkAvailability, compareOrder, completeOrder, createManualOrder, produceForStockNow,
   moveOrderStatus, orderDelivery, orderReservations, productionQueue, queueShortages, reserveOrderMaterials, returnOrderToQuote,
   saveProject, startOrder, stockEstimate, updateOrderPlanning,
 } from '../../domain/production';
 import { lotBalance, lotLabel, reorderAnalysis } from '../../domain/inventory';
+import { materialLabel } from '../../domain/catalog';
 import { saleEconomics } from '../../domain/sales';
 import { quoteItemAt, quoteItems } from '../../domain/quotes';
 import { clientQuoteSettings } from '../../domain/clientQuote';
@@ -499,12 +500,12 @@ function CompleteForm({ order, onClose }: { order: ProductionOrder; onClose: () 
 /** Produção para estoque: sem orçamento; o sistema calcula custo e valor sugerido de venda na hora. */
 function StockProductionForm({ onClose }: { onClose: () => void }) {
   const { db, run } = useStore();
-  const [f, set] = useForm({ description: '', projectId: '', printerId: db.settings.defaultPrinterId ?? db.printers[0]?.id ?? '', qty: '1', hoursPerUnit: null as number | null, notes: '' });
+  const [f, set] = useForm({ description: '', projectId: '', printerId: db.settings.defaultPrinterId ?? db.printers[0]?.id ?? '', qty: '1', hoursPerUnit: null as number | null, notes: '', done: false, location: '' });
   const [mats, setMats] = useState([{ materialId: db.materials.find((m) => m.active && m.filament)?.id ?? '', qtyPerUnit: '' }]);
   const qty = num(f.qty) ?? 0;
   const matOpts = db.materials.filter((m) => m.active).map((m) => {
     const r = reorderAnalysis(db, m);
-    return { value: m.id, label: `${m.name} · disp. ${fmtNum(r.available)} ${m.unit}` };
+    return { value: m.id, label: `${materialLabel(m)} · disp. ${fmtNum(r.available)} ${m.unit}` };
   });
   const planned = mats.filter((m) => m.materialId && (num(m.qtyPerUnit) ?? 0) > 0).map((m) => ({ materialId: m.materialId, qty: (num(m.qtyPerUnit) ?? 0) * Math.max(qty, 0) }));
   const plannedHours = f.hoursPerUnit !== null ? f.hoursPerUnit * Math.max(qty, 0) : null;
@@ -512,21 +513,28 @@ function StockProductionForm({ onClose }: { onClose: () => void }) {
     if (!(qty > 0) || !planned.length) return null;
     try { return stockEstimate(db, { qtyPlanned: qty, plannedMaterials: planned, plannedHours, printerId: f.printerId || undefined }); } catch { return null; }
   }, [db, qty, JSON.stringify(planned), plannedHours, f.printerId]);
-  const submit = () => run((d) => createManualOrder(d, {
-    description: f.description, purpose: 'estoque', projectId: f.projectId || undefined, printerId: f.printerId || undefined, qtyPlanned: qty,
-    plannedMaterials: planned, plannedHours, notes: f.notes,
-  }), 'Produção para estoque criada: custo e valor sugerido calculados.').then((r) => r.ok && onClose());
+  const submit = () => {
+    const input = { description: f.description, purpose: 'estoque' as const, projectId: f.projectId || undefined, printerId: f.printerId || undefined, qtyPlanned: qty, plannedMaterials: planned, plannedHours, notes: f.notes };
+    run((d) => f.done ? produceForStockNow(d, { ...input, location: f.location }) : createManualOrder(d, input),
+      f.done ? 'Peças lançadas em Estoque → Peças produzidas e material baixado do estoque.' : 'Produção para estoque criada: custo e valor sugerido calculados.').then((r) => r.ok && onClose());
+  };
   const s = estimate?.summary;
   return (
     <Modal wide title="Nova produção para estoque" subtitle="Peças de pronta-entrega, sem orçamento prévio. Os valores usam os seus Parâmetros de Custos (markup, canal, falhas)." onClose={onClose}
-      footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={submit}>Criar produção</button></>}>
+      footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={submit}>{f.done ? 'Lançar peças e baixar material' : 'Criar produção'}</button></>}>
       <div className="stack">
+        <div className="seg" role="radiogroup" aria-label="Situação das peças">
+          <button type="button" role="radio" aria-checked={!f.done} className={`btn sm ${!f.done ? 'primary' : 'ghost'}`} onClick={() => set('done')(false)}>Vou produzir (entra no quadro)</button>
+          <button type="button" role="radio" aria-checked={f.done} className={`btn sm ${f.done ? 'primary' : 'ghost'}`} onClick={() => set('done')(true)}>Já produzi (baixar material agora)</button>
+        </div>
+        {f.done && <Alert tone="info" title="Peças já produzidas">O material informado abaixo sai do estoque agora (lotes mais antigos primeiro) e as peças entram em Estoque → Peças produzidas com o custo real dos lotes.</Alert>}
         <div className="grid g3">
           <TextField label="Peça" required value={f.description} onChange={set('description')} placeholder="Ex.: Dragão articulado" />
           <NumField label="Quantidade a produzir" required value={f.qty} onChange={set('qty')} suffix="un" />
           <SelectField label="Impressora" value={f.printerId} onChange={set('printerId')} placeholder="—" options={db.printers.map((p) => ({ value: p.id, label: p.name }))} />
           <TimeField label="Tempo de impressão de 1 peça" value={f.hoursPerUnit} onChange={set('hoursPerUnit')} />
           <SelectField label="Projeto" value={f.projectId} onChange={set('projectId')} placeholder="— nenhum —" options={db.projects.map((p) => ({ value: p.id, label: p.name }))} />
+          {f.done && <TextField label="Onde estão guardadas" value={f.location} onChange={set('location')} placeholder="Ex.: prateleira 2" />}
         </div>
         <p className="section-title">Material por peça</p>
         {mats.map((m, i) => (

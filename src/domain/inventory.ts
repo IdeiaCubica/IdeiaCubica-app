@@ -11,6 +11,7 @@
 import type { DB, ID, ISODate, Lot, Material, MovementType, StockMovement } from './types';
 import { D, Decimal, ZERO, cents } from './money';
 import { BusinessError, addDays, assert, audit, byId, newId, nextCode, nowISO, requirePositive, requireText, todayISO } from './core';
+import { materialLabel } from './catalog';
 
 const PHYSICAL_SIGN: Partial<Record<MovementType, 1 | -1>> = {
   entrada: 1, ajuste_pos: 1, consumo: -1, perda: -1, ajuste_neg: -1, devolucao: -1,
@@ -54,6 +55,29 @@ export function materialBalance(db: DB, materialId: ID) {
   return { physical, reserved, available: physical.minus(reserved), value: cents(value), lots };
 }
 
+/**
+ * Extrato do insumo: de onde vem o saldo.
+ *   saldo físico = compras + estoque inicial − consumo na produção − perdas ± ajustes − devoluções
+ */
+export function materialStatement(db: DB, materialId: ID) {
+  const lotIds = new Set(db.lots.filter((l) => l.materialId === materialId).map((l) => l.id));
+  const originOf = new Map(db.lots.filter((l) => lotIds.has(l.id)).map((l) => [l.id, l.origin]));
+  let purchased = ZERO, initial = ZERO, consumed = ZERO, lost = ZERO, adjusted = ZERO, returned = ZERO;
+  for (const m of db.movements) {
+    if (!lotIds.has(m.lotId)) continue;
+    const q = D(m.qty);
+    if (m.type === 'entrada') { if (originOf.get(m.lotId) === 'compra') purchased = purchased.plus(q); else initial = initial.plus(q); }
+    else if (m.type === 'consumo') consumed = consumed.plus(q);
+    else if (m.type === 'perda') lost = lost.plus(q);
+    else if (m.type === 'ajuste_pos') adjusted = adjusted.plus(q);
+    else if (m.type === 'ajuste_neg') adjusted = adjusted.minus(q);
+    else if (m.type === 'devolucao') returned = returned.plus(q);
+  }
+  const bal = materialBalance(db, materialId);
+  return { purchased, initial, consumed, lost, adjusted, returned, ...bal,
+    avgCost: bal.physical.gt(0) ? bal.value.div(bal.physical) : null };
+}
+
 /** Valor contábil do estoque (custo histórico específico por lote). */
 export function inventoryValue(db: DB): Decimal {
   return cents(db.lots.reduce((acc, l) => acc.plus(lotBalance(db, l.id).physical.times(D(l.unitCost))), ZERO));
@@ -61,7 +85,7 @@ export function inventoryValue(db: DB): Decimal {
 
 export function lotLabel(db: DB, lot: Lot): string {
   const mat = db.materials.find((m) => m.id === lot.materialId);
-  return `${mat?.code ?? '?'} · ${mat?.name ?? 'Material removido'} · ${lot.code}`;
+  return `${mat?.code ?? '?'} · ${mat ? materialLabel(mat) : 'Material removido'} · ${lot.code}`;
 }
 
 export interface MovementInput {

@@ -212,6 +212,10 @@ export function computeCosts(input: QuoteInput, params: CostParams): CostResult 
   const freight = Dn(input.freightSubsidyPerOrder);
   if (freight && freight.gt(0)) push({ key: 'frete', label: 'Frete pago pela empresa', group: 'direto', value: freight, status: 'ok', formula: 'valor por pedido' });
 
+  /* ---------- 6b. Kit de entrega (acessórios complementares: saquinho, cartão, adesivo…) ---------- */
+  const kit = Dn(input.deliveryKitShare);
+  if (kit && kit.gt(0)) push({ key: 'kit_entrega', label: 'Kit de entrega (acessórios)', group: 'direto', value: kit, status: 'ok', formula: 'parte do kit de entrega do pedido atribuída a esta peça (não aparece para o cliente)' });
+
   /* ---------- 7. Desenvolvimento / modelagem ---------- */
   const dev = input.development;
   if (dev.mode !== 'nenhum') {

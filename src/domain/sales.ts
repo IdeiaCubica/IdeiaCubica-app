@@ -9,14 +9,16 @@
  * O custo de fabricação da venda é um snapshot: realizado (OP concluída) ou
  * estimado (orçamento), sempre identificado.
  */
-import type { DB, ID, ISODate, PaymentTerms, Sale } from './types';
+import type { DB, FinTitle, ID, ISODate, PaymentTerms, Sale } from './types';
 import { D, Decimal, Dn, ZERO, cents, sum } from './money';
-import { assert, audit, byId, isISODate, newId, nextCode, nowISO, requireText } from './core';
+import { BusinessError, assert, audit, byId, isISODate, newId, nextCode, nowISO, requireText } from './core';
 import { categoryByName, cancelTitle, createTitlesFromTerms, titlePaid } from './finance';
 import { SYS_FIN } from './schema';
 import { channelRates } from './pricing';
 import { compareOrder, finishedGoodBalance } from './production';
 import { quoteItem } from './quotes';
+import { addMovement } from './inventory';
+import { consumeKit } from './deliveryKits';
 
 export interface SaleInput {
   date: ISODate;
@@ -35,12 +37,14 @@ export interface SaleInput {
   channelId?: ID;
   feesWithheld: boolean;
   manualUnitCost?: string | null;
+  /** Kit de entrega enviado: itens saem do estoque e o custo real entra no resultado. */
+  deliveryKit?: { kitId: ID; qty: number } | null;
   payment: PaymentTerms;
   notes?: string;
 }
 
 /** Determina o custo unitário da venda e sua natureza. */
-export function resolveSaleCost(db: DB, input: Pick<SaleInput, 'orderId' | 'quoteId' | 'quoteItemId' | 'manualUnitCost' | 'finishedGoodId'>): { unitCost: Decimal | null; status: Sale['costStatus'] } {
+export function resolveSaleCost(db: DB, input: Pick<SaleInput, 'orderId' | 'quoteId' | 'quoteItemId' | 'manualUnitCost' | 'finishedGoodId' | 'deliveryKit'>): { unitCost: Decimal | null; status: Sale['costStatus'] } {
   if (input.finishedGoodId) {
     const fg = byId(db.finishedGoods, input.finishedGoodId, 'Peça pronta');
     if (fg.unitCost !== null) return { unitCost: D(fg.unitCost), status: fg.costStatus };
@@ -53,8 +57,11 @@ export function resolveSaleCost(db: DB, input: Pick<SaleInput, 'orderId' | 'quot
   }
   if (input.quoteId) {
     const q = byId(db.quotes, input.quoteId, 'Orçamento');
-    const u = quoteItem(q, input.quoteItemId).summary.unitCost;
-    if (u) return { unitCost: D(u), status: 'estimado' };
+    const it = quoteItem(q, input.quoteItemId);
+    const u = it.summary.unitCost;
+    // O custo do orçamento já inclui a parte do kit; se o kit é baixado na venda (custo real), não conta duas vezes.
+    const kitPerUnit = input.deliveryKit && it.input.deliveryKitShare ? D(it.input.deliveryKitShare).div(it.input.quantity) : ZERO;
+    if (u) return { unitCost: Decimal.max(ZERO, D(u).minus(kitPerUnit)), status: 'estimado' };
   }
   const manual = Dn(input.manualUnitCost);
   if (manual) return { unitCost: manual, status: 'estimado' };
@@ -66,6 +73,45 @@ export function saleGross(s: Pick<Sale, 'qty' | 'unitPrice' | 'discount'>): Deci
 }
 
 export function registerSale(db: DB, input: SaleInput): Sale {
+  return applySale(db, input);
+}
+
+function saleTitles(db: DB, s: Sale) {
+  return db.titles.filter((t) => t.origin.kind === 'venda' && t.origin.id === s.id && t.status !== 'cancelado');
+}
+/** Recebimento à vista criado pela própria venda (não é um recebimento posterior do usuário). */
+function isAutoSettlement(s: Sale, t: FinTitle) {
+  return t.settlements.length === 1 && !t.settlements[0].reversed && s.payment.mode === 'avista' && t.direction === 'in'
+    && t.settlements[0].date === t.competenceDate && D(t.settlements[0].amount).eq(D(t.amount));
+}
+
+/** Motivo pelo qual a venda não pode ser editada (null = pode). */
+export function saleEditBlock(db: DB, s: Sale): string | null {
+  if (s.status !== 'ativa') return 'Venda cancelada não pode ser editada.';
+  if (saleTitles(db, s).some((t) => titlePaid(t).gt(0) && !isAutoSettlement(s, t))) {
+    return 'Já há recebimento/pagamento registrado nesta venda (além do à vista). Estorne em Financeiro → Títulos para editar.';
+  }
+  return null;
+}
+
+/**
+ * Corrige uma venda (erros de digitação): preço, quantidade, desconto, frete, canal,
+ * cliente, data, condição de recebimento. Títulos e encargos são refeitos; o kit de
+ * entrega e os vínculos (orçamento, pedido, peça pronta) são mantidos.
+ */
+export function updateSale(db: DB, saleId: ID, input: Omit<SaleInput, 'quoteId' | 'quoteItemId' | 'orderId' | 'finishedGoodId' | 'deliveryKit'>): Sale {
+  const s = byId(db.sales, saleId, 'Venda');
+  const block = saleEditBlock(db, s);
+  if (block) throw new BusinessError(block);
+  const full: SaleInput = { ...input, quoteId: s.quoteId, quoteItemId: s.quoteItemId, orderId: s.orderId, finishedGoodId: s.finishedGoodId };
+  const before = saleGross(s);
+  for (const t of saleTitles(db, s)) db.titles = db.titles.filter((x) => x.id !== t.id);
+  const out = applySale(db, full, s);
+  audit(db, 'Venda editada', `${s.number}: R$ ${before.toFixed(2)} → R$ ${saleGross(out).toFixed(2)}`);
+  return out;
+}
+
+function applySale(db: DB, input: SaleInput, existing?: Sale): Sale {
   assert(isISODate(input.date), 'Informe a data da venda.');
   const description = requireText(input.description, 'a descrição do produto vendido');
   assert(Number.isInteger(input.qty) && input.qty > 0, 'Quantidade deve ser um inteiro maior que zero.');
@@ -83,23 +129,32 @@ export function registerSale(db: DB, input: SaleInput): Sale {
   if (input.customerId) byId(db.parties, input.customerId, 'Cliente');
   // Venda de peça separada para um pedido aprovado (orçamento do estoque): consome a separação.
   const fgItem = input.finishedGoodId ? db.finishedGoods.find((g) => g.id === input.finishedGoodId) : undefined;
-  const alloc = fgItem?.allocations?.find((a) => a.quoteId === input.quoteId && (!input.quoteItemId || a.itemId === input.quoteItemId));
+  const alloc = existing ? undefined : fgItem?.allocations?.find((a) => a.quoteId === input.quoteId && (!input.quoteItemId || a.itemId === input.quoteItemId));
   if (input.finishedGoodId) {
     const bal = finishedGoodBalance(db, input.finishedGoodId);
-    const available = bal.available + (alloc?.qty ?? 0);
+    // Na edição, as peças desta própria venda voltam a contar como disponíveis.
+    const available = bal.available + (alloc?.qty ?? 0) + (existing?.finishedGoodId === input.finishedGoodId ? existing.qty : 0);
     assert(input.qty <= available, `Só há ${available} peça(s) pronta(s) deste item em estoque.`);
   }
-  const cost = resolveSaleCost(db, input);
+  const cost = resolveSaleCost(db, { ...input, deliveryKit: existing ? (existing.deliveryKit ? { kitId: existing.deliveryKit.kitId, qty: existing.deliveryKit.qty } : null) : input.deliveryKit });
   if (fgItem && alloc) fgItem.allocations = fgItem.allocations!.filter((a) => a.id !== alloc.id);
 
   const sale: Sale = {
-    id: newId(), number: nextCode(db, 'sale', 'VND'), date: input.date, customerId: input.customerId, projectId: input.projectId,
+    id: existing?.id ?? newId(), number: existing?.number ?? nextCode(db, 'sale', 'VND'), date: input.date, customerId: input.customerId, projectId: input.projectId,
     quoteId: input.quoteId, quoteItemId: input.quoteItemId ?? alloc?.itemId, orderId: input.orderId, finishedGoodId: input.finishedGoodId, description, qty: input.qty, unitPrice: unitPrice.toString(),
     discount: discount.toString(), freightCharged: freightCharged.toString(), freightCost: freightCost.toString(), channelId: input.channelId,
     fees: { ratesPct: ch ? ch.rates.times(100).toString() : '0', fixed: ch ? ch.fixedFee.toString() : '0', total: fees.toString() },
     feesWithheld: input.feesWithheld, unitCost: cost.unitCost ? cost.unitCost.toString() : null, costStatus: cost.status,
-    payment: input.payment, status: 'ativa', notes: input.notes, createdAt: nowISO(),
+    payment: input.payment, status: 'ativa', notes: input.notes, createdAt: existing?.createdAt ?? nowISO(),
   };
+  if (existing) {
+    sale.quoteItemId = existing.quoteItemId;
+    sale.deliveryKit = existing.deliveryKit;
+  } else if (input.deliveryKit?.kitId) {
+    const kit = byId(db.deliveryKits, input.deliveryKit.kitId, 'Kit de entrega');
+    const kitCost = consumeKit(db, kit.id, input.deliveryKit.qty, { kind: 'venda', id: sale.id }, input.date);
+    sale.deliveryKit = { kitId: kit.id, name: kit.name, qty: input.deliveryKit.qty, cost: kitCost.toString() };
+  }
 
   const customer = db.parties.find((p) => p.id === input.customerId);
   const receivable = gross.plus(freightCharged).minus(input.feesWithheld ? fees : ZERO);
@@ -123,6 +178,10 @@ export function registerSale(db: DB, input: SaleInput): Sale {
       terms: { mode: 'aprazo', installments: 1, firstDue: input.date, intervalDays: 30 },
     });
   }
+  if (existing) {
+    Object.assign(existing, sale, { editedAt: nowISO() });
+    return existing;
+  }
   db.sales.push(sale);
   audit(db, 'Venda registrada', `${sale.number}: R$ ${gross.toFixed(2)}`);
   return sale;
@@ -135,6 +194,10 @@ export function cancelSale(db: DB, saleId: ID, reason: string) {
   const titles = db.titles.filter((t) => t.origin.kind === 'venda' && t.origin.id === s.id && t.status !== 'cancelado');
   assert(!titles.some((t) => titlePaid(t).gt(0)), 'Há recebimentos/pagamentos registrados para esta venda. Estorne-os antes de cancelar.');
   titles.forEach((t) => cancelTitle(db, t.id, `Venda cancelada: ${why}`));
+  // Kit de entrega: devolve ao estoque o que foi baixado nesta venda.
+  for (const m of db.movements.filter((x) => x.ref.kind === 'venda' && x.ref.id === s.id && x.type === 'consumo')) {
+    addMovement(db, { lotId: m.lotId, type: 'ajuste_pos', qty: m.qty, ref: { kind: 'venda', id: s.id }, key: `venda:${s.id}:kit-estorno:${m.lotId}`, reason: `Venda ${s.number} cancelada: kit devolvido ao estoque` });
+  }
   s.status = 'cancelada';
   s.cancelReason = why;
   audit(db, 'Venda cancelada', `${s.number} — ${why}`);
@@ -147,7 +210,7 @@ export interface SaleEconomics {
   revenue: Decimal;      // receita de produtos (após desconto)
   fees: Decimal;
   freightNet: Decimal;   // frete cobrado − frete pago (negativo = subsídio)
-  cogs: Decimal | null;  // custo dos produtos vendidos
+  cogs: Decimal | null;  // custo dos produtos vendidos (inclui o kit de entrega baixado na venda)
   contribution: Decimal | null;
 }
 
@@ -155,7 +218,8 @@ export function saleEconomics(s: Sale): SaleEconomics {
   const revenue = saleGross(s);
   const fees = D(s.fees.total);
   const freightNet = D(s.freightCharged).minus(D(s.freightCost));
-  const cogs = s.unitCost !== null ? cents(D(s.unitCost).times(s.qty)) : null;
+  const kit = D(s.deliveryKit?.cost ?? 0);
+  const cogs = s.unitCost !== null ? cents(D(s.unitCost).times(s.qty)).plus(kit) : null;
   return { revenue, fees, freightNet, cogs, contribution: cogs === null ? null : revenue.minus(fees).plus(freightNet).minus(cogs) };
 }
 

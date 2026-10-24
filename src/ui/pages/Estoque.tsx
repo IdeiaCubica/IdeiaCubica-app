@@ -2,16 +2,17 @@ import { useEffect, useState } from 'react';
 import { useStore } from '../store';
 import { navigate } from '../App';
 import type { Lot, MovementType } from '../../domain/types';
-import { adjustInventory, deleteInitialStock, inventoryValue, isUntouchedLot, lotBalance, registerInitialStock, registerLoss, reorderAnalysis, unitCostFromTotal, updateInitialStock } from '../../domain/inventory';
+import { adjustInventory, deleteInitialStock, inventoryValue, isUntouchedLot, lotBalance, materialStatement, registerInitialStock, registerLoss, reorderAnalysis, unitCostFromTotal, updateInitialStock } from '../../domain/inventory';
+import { materialLabel } from '../../domain/catalog';
 import { fmtDate, todayISO } from '../../domain/core';
-import { D, fmtBRL, fmtNum, parseBR, toInputBR } from '../../domain/money';
+import { D, Decimal, fmtBRL, fmtNum, parseBR, toInputBR } from '../../domain/money';
 import { perGramToPerKg, perKgToPerGram } from '../../domain/conversions';
 import { Alert, Badge, Check, Combobox, DataTable, DateField, Empty, Field, Kpi, Modal, NumField, PageHead, SelectField, Tabs, TextField, num, useConfirm, useForm } from '../components/ui';
 import { materialDesc } from './Cadastros';
 import { PecasProntas, finishedStockSummary } from './PecasProntas';
 
-type Tab = 'lotes' | 'pecas' | 'movimentos' | 'reposicao';
-const TABS: Tab[] = ['lotes', 'pecas', 'movimentos', 'reposicao'];
+type Tab = 'saldos' | 'lotes' | 'pecas' | 'movimentos' | 'reposicao';
+const TABS: Tab[] = ['saldos', 'lotes', 'pecas', 'movimentos', 'reposicao'];
 
 export const MOV_LABEL: Record<MovementType, { label: string; sign: 1 | -1 | 0; tone: 'success' | 'error' | 'warning' | 'info' | 'neutral' }> = {
   entrada: { label: 'Entrada', sign: 1, tone: 'success' }, consumo: { label: 'Consumo', sign: -1, tone: 'info' },
@@ -24,9 +25,9 @@ const STATUS_ORDER = { falta: 0, repor: 1, sem_parametros: 2, ok: 3 } as const;
 
 export function Estoque({ param }: { param?: string }) {
   const { db } = useStore();
-  const [tab, setTabState] = useState<Tab>(TABS.includes(param as Tab) ? (param as Tab) : 'lotes');
-  const setTab = (t: Tab) => { setTabState(t); navigate(t === 'lotes' ? 'estoque' : `estoque/${t}`); };
-  useEffect(() => { if (TABS.includes(param as Tab)) setTabState(param as Tab); else if (!param) setTabState('lotes'); }, [param]);
+  const [tab, setTabState] = useState<Tab>(TABS.includes(param as Tab) ? (param as Tab) : 'saldos');
+  const setTab = (t: Tab) => { setTabState(t); navigate(t === 'saldos' ? 'estoque' : `estoque/${t}`); };
+  useEffect(() => { if (TABS.includes(param as Tab)) setTabState(param as Tab); else if (!param) setTabState('saldos'); }, [param]);
   const [initial, setInitial] = useState(false);
   const reorder = db.materials.filter((m) => m.active).map((m) => reorderAnalysis(db, m));
   const toBuy = reorder.filter((r) => r.status === 'repor' || r.status === 'falta').length;
@@ -45,9 +46,10 @@ export function Estoque({ param }: { param?: string }) {
         <Kpi label="Materiais a repor" value={toBuy} hint={toBuy ? 'Veja a aba Reposição' : 'Nenhuma reposição sugerida'} />
       </div>
       <Tabs<Tab> value={tab} onChange={setTab} tabs={[
-        { id: 'lotes', label: 'Materiais (lotes e saldos)' }, { id: 'pecas', label: 'Peças produzidas', count: fg.pieces || undefined },
+        { id: 'saldos', label: 'Saldo por insumo' }, { id: 'lotes', label: 'Lotes' }, { id: 'pecas', label: 'Peças produzidas', count: fg.pieces || undefined },
         { id: 'movimentos', label: 'Movimentações', count: db.movements.length }, { id: 'reposicao', label: 'Reposição', count: toBuy || undefined },
       ]} />
+      {tab === 'saldos' && <Saldos onLots={() => setTab('lotes')} />}
       {tab === 'lotes' && <Lotes />}
       {tab === 'pecas' && <PecasProntas />}
       {tab === 'movimentos' && <Movimentos />}
@@ -84,6 +86,38 @@ export function Estoque({ param }: { param?: string }) {
       )}
       {initial && <InitialStockForm onClose={() => setInitial(false)} />}
     </>
+  );
+}
+
+/** Saldo de cada insumo explicado: compras e estoque inicial menos o que a produção consumiu. */
+function Saldos({ onLots }: { onLots: () => void }) {
+  const { db } = useStore();
+  const [onlyBalance, setOnlyBalance] = useState(false);
+  const rows = db.materials.filter((m) => m.active || db.lots.some((l) => l.materialId === m.id))
+    .map((m) => ({ m, s: materialStatement(db, m.id) }))
+    .filter((r) => !onlyBalance || r.s.physical.gt(0));
+  const q = (v: Decimal, unit: string) => unit === 'g' && v.abs().gte(1000) ? `${fmtNum(v.div(1000), 2)} kg` : `${fmtNum(v)} ${unit}`;
+  return (
+    <div className="card">
+      <DataTable rows={rows} rowKey={(r) => r.m.id} onRowClick={onLots}
+        search={(r) => `${r.m.code} ${materialLabel(r.m)} ${materialDesc(db, r.m)}`}
+        toolbar={<Check label="Somente com saldo" checked={onlyBalance} onChange={setOnlyBalance} />}
+        empty={<Empty title="Nenhum insumo cadastrado" text="Cadastre os insumos e registre as compras: o estoque nasce das compras e baixa com a produção." />}
+        columns={[
+          { key: 'm', header: 'Insumo', render: (r) => <><b>{r.m.filament?.colorHex && <i className="swatch" style={{ background: r.m.filament.colorHex }} />}{materialLabel(r.m)}</b><div className="muted small">{r.m.code} · {materialDesc(db, r.m)}</div></>, sort: (r) => r.m.name },
+          { key: 'e', header: 'Comprado', num: true, render: (r) => <>{q(r.s.purchased, r.m.unit)}{r.s.initial.gt(0) && <div className="muted small">+ {q(r.s.initial, r.m.unit)} inicial</div>}</> },
+          { key: 'c', header: 'Usado na produção', num: true, render: (r) => r.s.consumed.gt(0) ? `− ${q(r.s.consumed, r.m.unit)}` : '—' },
+          { key: 'p', header: 'Perdas / ajustes', num: true, render: (r) => { const v = r.s.adjusted.minus(r.s.lost).minus(r.s.returned); return v.isZero() ? '—' : `${v.isNegative() ? '− ' : '+ '}${q(v.abs(), r.m.unit)}`; } },
+          { key: 'f', header: 'Saldo físico', num: true, render: (r) => <b>{q(r.s.physical, r.m.unit)}</b>, sort: (r) => r.s.physical.toNumber() },
+          { key: 'r', header: 'Reservado', num: true, render: (r) => r.s.reserved.gt(0) ? q(r.s.reserved, r.m.unit) : '—' },
+          { key: 'a', header: 'Disponível', num: true, render: (r) => <b className={r.s.available.lte(0) ? 'err-text' : ''}>{q(r.s.available, r.m.unit)}</b>, sort: (r) => r.s.available.toNumber() },
+          { key: 'v', header: 'Valor em estoque', num: true, render: (r) => <>{fmtBRL(r.s.value)}{r.s.avgCost && <div className="muted small">{r.m.unit === 'g' ? `${fmtBRL(perGramToPerKg(r.s.avgCost))}/kg` : `${fmtBRL(r.s.avgCost, 4)}/${r.m.unit}`} médio</div>}</>, sort: (r) => r.s.value.toNumber() },
+        ]} />
+      <div className="card-body"><p className="small muted">
+        <b>Saldo físico</b> = comprado + estoque inicial − usado na produção − perdas ± ajustes de inventário. O estoque entra pelas <a href="#/compras">Compras</a> e sai quando a produção é concluída
+        (ou quando você registra peças “já produzidas” em Produção → Produções para estoque). <b>Reservado</b> = separado para produções já liberadas. O preço usado nos orçamentos fica em Cadastros (última compra).
+      </p></div>
+    </div>
   );
 }
 
@@ -256,7 +290,7 @@ function InitialStockForm({ onClose, lot }: { onClose: () => void; lot?: Lot }) 
       <div className="stack">
         <Alert tone="info">Não gera lançamento financeiro (a compra já ocorreu antes). Para compras novas, use <b>Registrar compra</b>.</Alert>
         {editing ? <Field label="Material"><div className="readonly-value">{mat ? `${mat.code} · ${mat.name}` : '—'}</div></Field>
-          : <SelectField label="Material" required value={f.materialId} onChange={set('materialId')} options={db.materials.map((m) => ({ value: m.id, label: `${m.code} · ${m.name}` }))} />}
+          : <SelectField label="Material" required value={f.materialId} onChange={set('materialId')} options={db.materials.map((m) => ({ value: m.id, label: `${m.code} · ${materialLabel(m)}` }))} />}
         <div className="grid g2">
           <NumField label="Quantidade atual" suffix={mat?.unit} required value={f.qty} onChange={set('qty')} hint={mat?.filament?.spoolWeightG ? `Pese e desconte o carretel (${fmtNum(mat.filament.spoolWeightG)} g). 1 carretel cheio = ${fmtNum(mat.filament.netWeightG)} g.` : grams ? '1 carretel de 1 kg = 1000 g' : undefined} />
           <DateField label="Data" value={f.date} onChange={set('date')} />

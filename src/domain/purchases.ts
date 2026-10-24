@@ -10,17 +10,22 @@
  *   3. o(s) título(s) financeiro(s), separados por natureza (insumos / equipamentos):
  *      liquidados se à vista; em aberto se a prazo.
  *
- * Rateio de frete e outros custos de aquisição entre itens: proporcional ao
+ * Rateio de frete, outros custos e DESCONTO entre itens: proporcional ao
  * valor da mercadoria de cada item (documentado em docs/REGRAS_DE_CALCULO.md).
+ * O desconto reduz o custo do lote (e o valor pago), nunca o preço do cadastro.
+ *
+ * A compra pode ser editada (erros de digitação) enquanto não houver pagamento
+ * registrado; lotes já usados mantêm o insumo e não podem ficar com saldo negativo.
  */
-import type { DB, ID, ISODate, Lot, PaymentTerms, Purchase, PurchaseEquipment } from './types';
+import type { DB, FinTitle, ID, ISODate, Lot, PaymentTerms, Purchase, PurchaseEquipment } from './types';
 import { D, Decimal, ZERO, cents, sum } from './money';
 import { BusinessError, assert, audit, byId, convertQty, isISODate, newId, nextCode, nowISO, requireText } from './core';
-import { addMovement, lotBalance } from './inventory';
+import { addMovement, isUntouchedLot, lotBalance } from './inventory';
 import { savePrinter } from './catalog';
 import { categoryByName, cancelTitle, createTitlesFromTerms, titlePaid } from './finance';
 import { SYS_FIN } from './schema';
 import type { Unit } from './types';
+import { unusualUnitCost } from './costSanity';
 
 export interface PurchaseItemInput {
   materialId: ID;
@@ -29,6 +34,8 @@ export interface PurchaseItemInput {
   unit?: Unit;
   price: string;
   batchNumber?: string;
+  /** Edição: lote existente desta compra que esta linha corrige. */
+  lotId?: ID;
 }
 
 /** Equipamento (impressora, ferramenta durável): investimento, sem estoque. */
@@ -38,6 +45,8 @@ export interface PurchaseEquipmentInput {
   price: string;
   /** Impressora: cadastrar nova (com o custo de aquisição) ou atualizar o valor de aquisição de uma existente. */
   printer?: { mode: 'nova'; name: string; manufacturer?: string; model?: string } | { mode: 'existente'; printerId: ID };
+  /** Edição: linha de equipamento existente desta compra. */
+  id?: ID;
 }
 
 export interface PurchaseInput {
@@ -47,18 +56,21 @@ export interface PurchaseInput {
   equipment?: PurchaseEquipmentInput[];
   freight: string;
   otherCosts: string;
+  /** Desconto obtido na compra (valor em R$). */
+  discount?: string;
   payment: PaymentTerms;
   notes?: string;
 }
 
-/** Custo por unidade = (mercadoria + frete atribuído + outros atribuídos) / quantidade. */
-export function unitAcquisitionCost(goods: Decimal.Value, freight: Decimal.Value, other: Decimal.Value, qty: number): Decimal {
+/** Custo por unidade = (mercadoria + frete atribuído + outros atribuídos − desconto atribuído) / quantidade. */
+export function unitAcquisitionCost(goods: Decimal.Value, freight: Decimal.Value, other: Decimal.Value, qty: number, discount: Decimal.Value = 0): Decimal {
   if (!(qty > 0)) throw new BusinessError('Quantidade deve ser maior que zero para calcular o custo unitário.');
-  return D(goods).plus(D(freight)).plus(D(other)).div(qty);
+  return D(goods).plus(D(freight)).plus(D(other)).minus(D(discount)).div(qty);
 }
 
 /** Rateio proporcional com centavos exatos (resíduo no último item). */
 export function allocate(total: Decimal, weights: Decimal[]): Decimal[] {
+  if (!weights.length) return [];
   const totalWeight = sum(weights);
   if (total.isZero()) return weights.map(() => ZERO);
   if (totalWeight.isZero()) {
@@ -71,6 +83,17 @@ export function allocate(total: Decimal, weights: Decimal[]): Decimal[] {
   return parts;
 }
 
+export { FILAMENT_PER_KG_RANGE, unusualUnitCost } from './costSanity';
+
+/** Lotes cujo custo está fora da faixa plausível (verificação de saúde dos dados). */
+export function unusualLots(db: DB) {
+  return db.lots.flatMap((lot) => {
+    const mat = db.materials.find((m) => m.id === lot.materialId);
+    const warning = unusualUnitCost(mat, lot.unitCost);
+    return warning && mat ? [{ lot, mat, warning, purchase: db.purchases.find((p) => p.id === lot.purchaseId) }] : [];
+  });
+}
+
 /** Categoria financeira de equipamentos (investimento); recriada se tiver sido removida. */
 export function equipmentCategory(db: DB) {
   const found = db.finCategories.find((c) => c.name === SYS_FIN.equipamentos)
@@ -81,23 +104,26 @@ export function equipmentCategory(db: DB) {
   return c;
 }
 
-export function registerPurchase(db: DB, input: PurchaseInput): Purchase {
+/** Valida e calcula a compra (itens, rateios, total) — usado no registro e na edição. */
+function computePurchase(db: DB, input: PurchaseInput) {
   assert(isISODate(input.date), 'Informe a data da compra.');
   const eqInput = input.equipment ?? [];
   assert(input.items.length + eqInput.length > 0, 'Adicione ao menos um item à compra.');
   if (input.supplierId) byId(db.parties, input.supplierId, 'Fornecedor');
   const freight = cents(D(input.freight || '0'));
   const other = cents(D(input.otherCosts || '0'));
+  const discount = cents(D(input.discount || '0'));
   assert(!freight.isNegative() && !other.isNegative(), 'Frete e outros custos não podem ser negativos.');
+  assert(!discount.isNegative(), 'O desconto não pode ser negativo.');
 
   const items = input.items.map((it, i) => {
     const mat = byId(db.materials, it.materialId, `Insumo do item ${i + 1}`);
-    assert(mat.active, `O insumo ${mat.name} está inativo.`);
+    assert(mat.active || !!it.lotId, `O insumo ${mat.name} está inativo.`);
     const qty = convertQty(it.qty, it.unit ?? mat.unit, mat.unit);
     assert(qty > 0, `Quantidade do item ${i + 1} deve ser maior que zero.`);
     const price = cents(D(it.price || '0'));
     assert(!price.isNegative(), `Valor do item ${i + 1} inválido.`);
-    return { mat, qty, price, batchNumber: it.batchNumber };
+    return { mat, qty, price, batchNumber: it.batchNumber, lotId: it.lotId };
   });
   const equipment = eqInput.map((e, i) => {
     const description = requireText(e.description, `a descrição do equipamento ${i + 1}`);
@@ -112,43 +138,73 @@ export function registerPurchase(db: DB, input: PurchaseInput): Purchase {
     return { ...e, description, price };
   });
 
-  // Frete e outros custos são rateados por valor entre TODOS os itens (insumos e equipamentos).
+  // Frete, outros custos e desconto são rateados por valor entre TODOS os itens (insumos e equipamentos).
   const weights = [...items.map((i) => i.price), ...equipment.map((e) => e.price)];
+  const goods = sum(weights);
+  assert(discount.lte(goods), `O desconto (R$ ${discount.toFixed(2)}) não pode ser maior que o valor das mercadorias (R$ ${goods.toFixed(2)}).`);
   const freightParts = allocate(freight, weights);
   const otherParts = allocate(other, weights);
-  const total = sum(weights).plus(freight).plus(other);
+  const discountParts = allocate(discount, weights);
+  const total = goods.plus(freight).plus(other).minus(discount);
   assert(total.gt(0), 'O valor total da compra deve ser maior que zero.');
+  return { items, equipment, freight, other, discount, freightParts, otherParts, discountParts, total };
+}
 
-  const purchase: Purchase = {
-    id: newId(), number: nextCode(db, 'purchase', 'CMP'), date: input.date, supplierId: input.supplierId,
-    items: [], equipment: [], freight: freight.toString(), otherCosts: other.toString(), total: total.toString(),
-    payment: input.payment, status: 'ativa', notes: input.notes, createdAt: nowISO(),
-  };
+type Calc = ReturnType<typeof computePurchase>;
 
+/** Lote já usado mantém o insumo e não pode ficar com saldo abaixo do que já saiu/reservou. */
+function checkLotChange(db: DB, lot: Lot, materialId: ID, qty: number) {
+  if (lot.materialId !== materialId) assert(isUntouchedLot(db, lot.id), `O lote ${lot.code} já foi usado; não é possível trocar o insumo. Mantenha o insumo e corrija só quantidade/valor.`);
+  const b = lotBalance(db, lot.id);
+  const newPhysical = b.physical.plus(D(qty).minus(b.initial));
+  assert(!newPhysical.lt(b.reserved) && !newPhysical.isNegative(),
+    `O lote ${lot.code} já teve ${b.initial.minus(b.available).toString()} usados/reservados; a quantidade não pode ficar abaixo do que já saiu do estoque.`);
+}
+
+/** Cria os lotes, equipamentos e títulos de uma compra já calculada. */
+function materialize(db: DB, purchase: Purchase, input: PurchaseInput, calc: Calc, previous?: Purchase) {
+  const { items, equipment, freightParts, otherParts, discountParts } = calc;
   let materialsTotal = ZERO;
   items.forEach((it, i) => {
-    materialsTotal = materialsTotal.plus(it.price).plus(freightParts[i]).plus(otherParts[i]);
-    const lot: Lot = {
-      id: newId(), code: nextCode(db, 'lot', 'L'), materialId: it.mat.id, origin: 'compra', purchaseId: purchase.id,
-      supplierId: input.supplierId, date: input.date, batchNumber: it.batchNumber, initialQty: it.qty,
-      unitCost: unitAcquisitionCost(it.price, freightParts[i], otherParts[i], it.qty).toString(),
-      cost: { goods: it.price.toString(), freight: freightParts[i].toString(), other: otherParts[i].toString() },
+    materialsTotal = materialsTotal.plus(it.price).plus(freightParts[i]).plus(otherParts[i]).minus(discountParts[i]);
+    const fields = {
+      materialId: it.mat.id, supplierId: input.supplierId, date: input.date, batchNumber: it.batchNumber, initialQty: it.qty,
+      unitCost: unitAcquisitionCost(it.price, freightParts[i], otherParts[i], it.qty, discountParts[i]).toString(),
+      cost: { goods: it.price.toString(), freight: freightParts[i].toString(), other: otherParts[i].toString(), discount: discountParts[i].toString() },
     };
-    db.lots.push(lot);
-    addMovement(db, { lotId: lot.id, type: 'entrada', qty: it.qty, date: input.date, ref: { kind: 'compra', id: purchase.id }, key: `compra:${purchase.id}:${lot.id}` });
+    let lot = it.lotId ? db.lots.find((l) => l.id === it.lotId && l.purchaseId === purchase.id) : undefined;
+    if (lot) {
+      // Correção de um lote existente: mesma entrada no estoque, quantidade e custo corrigidos.
+      checkLotChange(db, lot, it.mat.id, it.qty);
+      Object.assign(lot, fields);
+      const entry = db.movements.find((m) => m.lotId === lot!.id && m.type === 'entrada');
+      if (entry) Object.assign(entry, { qty: it.qty, date: input.date, materialId: it.mat.id });
+      db.movements.filter((m) => m.lotId === lot!.id).forEach((m) => { m.materialId = it.mat.id; });
+    } else {
+      lot = { id: newId(), code: nextCode(db, 'lot', 'L'), origin: 'compra', purchaseId: purchase.id, ...fields } as Lot;
+      db.lots.push(lot);
+      addMovement(db, { lotId: lot.id, type: 'entrada', qty: it.qty, date: input.date, ref: { kind: 'compra', id: purchase.id }, key: `compra:${purchase.id}:${lot.id}` });
+    }
     purchase.items.push({ materialId: it.mat.id, qty: it.qty, price: it.price.toString(), batchNumber: it.batchNumber, lotId: lot.id });
   });
 
   let equipmentTotal = ZERO;
   equipment.forEach((e, k) => {
     const i = items.length + k;
-    const cost = e.price.plus(freightParts[i]).plus(otherParts[i]);
+    const cost = e.price.plus(freightParts[i]).plus(otherParts[i]).minus(discountParts[i]);
     equipmentTotal = equipmentTotal.plus(cost);
+    const old = e.id ? previous?.equipment?.find((x) => x.id === e.id) : undefined;
     const line: PurchaseEquipment = {
-      id: newId(), description: e.description, qty: e.qty, price: e.price.toString(),
-      freight: freightParts[i].toString(), other: otherParts[i].toString(), total: cost.toString(),
+      id: old?.id ?? newId(), description: e.description, qty: e.qty, price: e.price.toString(),
+      freight: freightParts[i].toString(), other: otherParts[i].toString(), discount: discountParts[i].toString(), total: cost.toString(),
     };
-    if (e.printer?.mode === 'nova') {
+    if (old?.printerId && db.printers.some((p) => p.id === old.printerId)) {
+      // Linha existente: mantém o vínculo com a impressora e atualiza o valor de aquisição.
+      const p = byId(db.printers, old.printerId, 'Impressora');
+      assert(!p.residualValue || D(p.residualValue).lte(cost), `O valor residual de ${p.name} é maior que o custo desta compra. Ajuste a impressora primeiro.`);
+      p.acquisitionValue = cost.toString();
+      Object.assign(line, { printerId: p.id, printerCreated: old.printerCreated, prevAcquisition: old.prevAcquisition });
+    } else if (e.printer?.mode === 'nova') {
       const p = savePrinter(db, {
         name: e.printer.name, manufacturer: e.printer.manufacturer ?? '', model: e.printer.model ?? '', acquisitionValue: cost.toString(),
         residualValue: null, usefulLifeHours: null, initialHours: 0, energyMode: 'estimado', kwhPerHour: null, maintenancePerHour: null,
@@ -183,10 +239,120 @@ export function registerPurchase(db: DB, input: PurchaseInput): Purchase {
       partyId: input.supplierId, origin: { kind: 'compra', id: purchase.id }, terms: input.payment,
     });
   }
+}
 
+export function registerPurchase(db: DB, input: PurchaseInput): Purchase {
+  const calc = computePurchase(db, input);
+  assert(calc.items.every((it) => !it.lotId) && (input.equipment ?? []).every((e) => !e.id), 'Itens de outra compra não podem ser registrados aqui.');
+  const purchase: Purchase = {
+    id: newId(), number: nextCode(db, 'purchase', 'CMP'), date: input.date, supplierId: input.supplierId,
+    items: [], equipment: [], freight: calc.freight.toString(), otherCosts: calc.other.toString(), discount: calc.discount.toString(), total: calc.total.toString(),
+    payment: input.payment, status: 'ativa', notes: input.notes, createdAt: nowISO(),
+  };
+  materialize(db, purchase, input, calc);
   db.purchases.push(purchase);
-  audit(db, 'Compra registrada', `${purchase.number}: R$ ${total.toFixed(2)} (${input.payment.mode === 'avista' ? 'à vista' : `${input.payment.installments}x a prazo`})`);
+  audit(db, 'Compra registrada', `${purchase.number}: R$ ${calc.total.toFixed(2)}${calc.discount.gt(0) ? ` (desconto R$ ${calc.discount.toFixed(2)})` : ''} (${input.payment.mode === 'avista' ? 'à vista' : `${input.payment.installments}x a prazo`})`);
   return purchase;
+}
+
+function activeTitles(db: DB, p: Purchase) {
+  return db.titles.filter((t) => t.origin.kind === 'compra' && t.origin.id === p.id && t.status !== 'cancelado');
+}
+
+/** Liquidação feita pela própria compra à vista (não é um pagamento posterior do usuário). */
+function isAutoSettlement(p: Purchase, t: FinTitle) {
+  const live = t.settlements.filter((s) => !s.reversed);
+  return p.payment.mode === 'avista' && live.length === 1 && t.settlements.length === 1
+    && live[0].date === t.competenceDate && live[0].accountId === p.payment.accountId && D(live[0].amount).eq(D(t.amount));
+}
+
+/** Há pagamento registrado pelo usuário (além da liquidação automática da compra à vista). */
+function hasUserPayments(db: DB, p: Purchase) {
+  return activeTitles(db, p).some((t) => titlePaid(t).gt(0) && !isAutoSettlement(p, t));
+}
+
+/** Motivo pelo qual a compra não pode ser editada (null = pode). */
+export function purchaseEditBlock(db: DB, p: Purchase): string | null {
+  if (p.status !== 'ativa') return 'Compra cancelada não pode ser editada.';
+  if (hasUserPayments(db, p)) {
+    return 'Já há pagamento registrado desta compra. Para editar, estorne o pagamento em Financeiro → Contas a pagar; depois edite e pague de novo.';
+  }
+  return null;
+}
+
+/** Lote da compra que já teve consumo, reserva, perda ou ajuste (insumo fixo; quantidade ≥ o que já saiu). */
+export function purchaseLotUsed(db: DB, lotId: ID) {
+  return !isUntouchedLot(db, lotId);
+}
+
+/**
+ * Edição da compra (corrige erros de digitação): recalcula lotes, rateios, desconto
+ * e títulos financeiros. Mantém número, lotes já usados e vínculos com impressoras.
+ */
+export function updatePurchase(db: DB, purchaseId: ID, input: PurchaseInput, reason?: string): Purchase {
+  const p = byId(db.purchases, purchaseId, 'Compra');
+  const block = purchaseEditBlock(db, p);
+  if (block) throw new BusinessError(block);
+  const calc = computePurchase(db, input);
+  const before = p.total;
+
+  // Itens removidos: o lote só pode sair se ainda não foi usado.
+  const keptLots = new Set(calc.items.map((it) => it.lotId).filter(Boolean));
+  for (const it of p.items) {
+    if (keptLots.has(it.lotId)) continue;
+    const lot = db.lots.find((l) => l.id === it.lotId);
+    if (!lot) continue;
+    assert(isUntouchedLot(db, lot.id), `O lote ${lot.code} já foi usado na produção (ou reservado/ajustado) e não pode ser removido da compra.`);
+  }
+  // Lotes mantidos: valida tudo antes de alterar qualquer dado.
+  for (const it of calc.items) {
+    const lot = it.lotId ? db.lots.find((l) => l.id === it.lotId && l.purchaseId === p.id) : undefined;
+    if (lot) checkLotChange(db, lot, it.mat.id, it.qty);
+  }
+  // Equipamentos removidos: desfaz o efeito na impressora.
+  const keptEq = new Set((input.equipment ?? []).map((e) => e.id).filter(Boolean));
+  for (const e of p.equipment ?? []) {
+    if (keptEq.has(e.id) || !e.printerId) continue;
+    const printer = db.printers.find((x) => x.id === e.printerId);
+    if (!printer) continue;
+    if (e.printerCreated) {
+      const used = db.orders.some((o) => o.printerId === printer.id) || db.quotes.some((q) => q.versions.some((v) => v.items.some((it) => it.input.printerId === printer.id)));
+      assert(!used, `A impressora ${printer.name} (cadastrada por esta compra) já tem orçamentos ou produções e não pode ser removida da compra.`);
+    }
+  }
+
+  // Validações feitas: aplica.
+  for (const it of p.items) {
+    if (keptLots.has(it.lotId)) continue;
+    db.movements = db.movements.filter((m) => m.lotId !== it.lotId);
+    db.lots = db.lots.filter((l) => l.id !== it.lotId);
+  }
+  for (const e of p.equipment ?? []) {
+    if (keptEq.has(e.id) || !e.printerId) continue;
+    const printer = db.printers.find((x) => x.id === e.printerId);
+    if (!printer) continue;
+    if (e.printerCreated) {
+      db.printers = db.printers.filter((x) => x.id !== printer.id);
+      if (db.settings.defaultPrinterId === printer.id) db.settings.defaultPrinterId = undefined;
+    } else if (printer.acquisitionValue === e.total) {
+      printer.acquisitionValue = e.prevAcquisition ?? null;
+    }
+  }
+  // Títulos sem pagamento (ou só com a liquidação automática da compra à vista) são refeitos;
+  // os que tiveram pagamentos estornados ficam cancelados (histórico).
+  for (const t of activeTitles(db, p)) {
+    if (t.settlements.length === 0 || isAutoSettlement(p, t)) db.titles = db.titles.filter((x) => x.id !== t.id);
+    else cancelTitle(db, t.id, `Compra ${p.number} editada`);
+  }
+
+  const previous: Purchase = { ...p, items: [...p.items], equipment: [...(p.equipment ?? [])] };
+  Object.assign(p, {
+    date: input.date, supplierId: input.supplierId, items: [], equipment: [], freight: calc.freight.toString(), otherCosts: calc.other.toString(),
+    discount: calc.discount.toString(), total: calc.total.toString(), payment: input.payment, notes: input.notes, editedAt: nowISO(),
+  });
+  materialize(db, p, input, calc, previous);
+  audit(db, 'Compra editada', `${p.number}: R$ ${D(before).toFixed(2)} → R$ ${calc.total.toFixed(2)}${reason ? ` — ${reason}` : ''}`);
+  return p;
 }
 
 /**
@@ -201,7 +367,8 @@ export function cancelPurchase(db: DB, purchaseId: ID, reason: string) {
     const used = db.movements.some((m) => m.lotId === it.lotId && m.type !== 'entrada');
     if (used) throw new BusinessError('Há consumo, reserva ou ajuste em lotes desta compra. Não é possível cancelar; registre uma devolução/ajuste.');
   }
-  const titles = db.titles.filter((t) => t.origin.kind === 'compra' && t.origin.id === p.id && t.status !== 'cancelado');
+  const titles = activeTitles(db, p);
+  // Cancelar devolve o dinheiro: exige o estorno explícito de qualquer pagamento (inclusive o da compra à vista).
   if (titles.some((t) => titlePaid(t).gt(0))) {
     throw new BusinessError('Há pagamentos registrados para esta compra. Estorne os pagamentos no Financeiro antes de cancelar.');
   }

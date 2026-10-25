@@ -11,7 +11,7 @@ import { isLockedComponent, laborTotals, type CompStatus, type CostComponent } f
 import { ROUNDING_LABEL } from '../../domain/pricing';
 import { createOrdersFromQuote, finishedGoodBalance, finishedGoodDraft, mergeQuotes } from '../../domain/production';
 import { allocate } from '../../domain/purchases';
-import { saveParty } from '../../domain/catalog';
+import { materialLabel, saveParty } from '../../domain/catalog';
 import { fmtDate, fmtDateTime, fmtPhone, newId } from '../../domain/core';
 import { D, Decimal, fmtBRL, fmtNum, fmtPct } from '../../domain/money';
 import { fmtDuration } from '../../domain/conversions';
@@ -61,11 +61,14 @@ function QuoteList({ tab }: { tab: ListTab }) {
   const approved = pieces.filter((r) => approvedStates.includes(r.state));
   const approvedValue = approved.reduce((s, r) => s.plus(r.it.summary.orderPrice ?? 0), new Decimal(0));
   const [merging, setMerging] = useState(false);
+  const [comparing, setComparing] = useState(false);
   return (
     <>
       <PageHead eyebrow="Orçamentos" title="Orçamentos" text="Orce várias peças por cliente, envie o orçamento de todas ou só de algumas e mande para produção as que o cliente aprovar."
-        actions={<><button className="btn secondary" onClick={() => setMerging(true)} disabled={db.quotes.length < 2}>Juntar orçamentos (kit)</button><button className="btn primary" onClick={() => navigate('orcamentos/novo')}>Novo orçamento</button></>} />
+        actions={<><button className="btn secondary" onClick={() => setComparing(true)} disabled={db.quotes.length < 1}>Comparar orçamentos</button>
+          <button className="btn secondary" onClick={() => setMerging(true)} disabled={db.quotes.length < 2}>Juntar orçamentos (kit)</button><button className="btn primary" onClick={() => navigate('orcamentos/novo')}>Novo orçamento</button></>} />
       {merging && <MergeQuotesDialog onClose={() => setMerging(false)} />}
+      {comparing && <CompareQuotesDialog onClose={() => setComparing(false)} />}
       <Tabs<ListTab> value={tab} onChange={(t) => navigate(t === 'clientes' ? 'orcamentos' : `orcamentos/${t}`)} tabs={[
         { id: 'clientes', label: 'Por cliente', count: db.quotes.length || undefined },
         { id: 'pecas', label: 'Por peça', count: pieces.length || undefined },
@@ -98,6 +101,92 @@ function QuoteList({ tab }: { tab: ListTab }) {
         </>
       )}
     </>
+  );
+}
+
+/**
+ * Comparador: dois modelos lado a lado (entradas, rubricas por peça e preço), com as diferenças
+ * em destaque e a explicação de onde vem a diferença de valor. Usa o valor SALVO de cada um.
+ */
+function CompareQuotesDialog({ onClose }: { onClose: () => void }) {
+  const { db } = useStore();
+  const options = [...db.quotes].reverse().flatMap((q) => quoteItems(q).map((it) => ({ value: `${q.id}|${it.itemId}`, label: `${q.number} · ${q.name}${quoteItems(q).length > 1 ? ` → ${it.name}` : ''}` })));
+  const [a, setA] = useState(options[0]?.value ?? '');
+  const [b, setB] = useState(options[1]?.value ?? '');
+  const load = (key: string) => {
+    const [qid, iid] = key.split('|');
+    const q = db.quotes.find((x) => x.id === qid);
+    const it = q ? quoteItems(q).find((x) => x.itemId === iid) : undefined;
+    if (!q || !it) return null;
+    try { return { q, it, ev: evaluateQuote(it.input, it.params) }; } catch { return null; }
+  };
+  const A = load(a), B = load(b);
+  type Row = { label: string; a: string; b: string; diff?: boolean };
+  const rows: Row[] = [];
+  const add = (label: string, fa: (x: NonNullable<typeof A>) => string) => {
+    if (!A || !B) return;
+    const va = fa(A), vb = fa(B);
+    rows.push({ label, a: va, b: vb, diff: va !== vb });
+  };
+  const per = (x: NonNullable<typeof A>, v: Decimal | null | undefined) => (v ? fmtBRL(v.div(x.it.input.quantity), 4) : '—');
+  const matText = (x: NonNullable<typeof A>) => x.ev.costs.materialLines.map((l) => `${l.label}: ${fmtNum(l.qtyOrder.div(x.it.input.quantity))} g × ${l.unitCost ? `${fmtBRL(perGramToPerKg(l.unitCost))}/kg` : 'sem preço'}`).join(' + ') || '—';
+  add('Quantidade do modelo', (x) => `${x.it.input.quantity} peça(s)`);
+  add('Filamento de 1 peça', matText);
+  add('Tempo de 1 peça', (x) => (x.it.input.printHoursPerUnit ? fmtDuration(x.it.input.printHoursPerUnit) : 'não informado'));
+  add('Impressora', (x) => x.it.params.printer?.name ?? '—');
+  add('Mão de obra por orçamento', (x) => `${fmtNum(laborTotals(x.it.input.labor).perOrder)} min`);
+  add('Mão de obra por peça', (x) => `${fmtNum(laborTotals(x.it.input.labor).perUnit)} min`);
+  add('Taxa de falha', (x) => `${fmtNum(x.it.input.failureRatePct ?? 0)}%`);
+  add('Markup', (x) => `${fmtNum(x.it.input.markupPct ?? 0)}%`);
+  add('Canal de venda', (x) => (x.it.params.channel ? `${x.it.params.channel.name} (${fmtNum(D(x.it.params.channel.taxPct).plus(x.it.params.channel.commissionPct).plus(x.it.params.channel.paymentFeePct).plus(x.it.params.channel.otherPct))}% + ${fmtBRL(x.it.params.channel.fixedFeePerOrder)})` : '—'));
+  add('Arredondamento', (x) => ROUNDING_LABEL[x.it.input.rounding]);
+  add('Desconto', (x) => `${fmtNum(x.it.input.discountPct ?? 0)}%`);
+  add('Preço digitado à mão', (x) => (x.it.input.manualPriceUnit ? fmtBRL(x.it.input.manualPriceUnit) : 'não (sugerido)'));
+  const keys = A && B ? [...new Set([...A.ev.costs.components, ...B.ev.costs.components].map((c) => c.key))] : [];
+  const comp = (x: NonNullable<typeof A>, k: string) => x.ev.costs.components.find((c) => c.key === k);
+  const compRows = keys.map((k) => {
+    const ca = comp(A!, k), cb = comp(B!, k);
+    const pa = ca?.value ? ca.value.div(A!.it.input.quantity) : D(0), pb = cb?.value ? cb.value.div(B!.it.input.quantity) : D(0);
+    return { k, label: (ca ?? cb)!.label, a: ca?.value ? per(A!, ca.value) : '—', b: cb?.value ? per(B!, cb.value) : '—', delta: pa.minus(pb), adjusted: ca?.status === 'ajustado' || cb?.status === 'ajustado' };
+  });
+  const unitA = A?.ev.pricing.analysis?.effectiveUnitPrice, unitB = B?.ev.pricing.analysis?.effectiveUnitPrice;
+  const reasons: string[] = [];
+  if (A && B && unitA && unitB) {
+    for (const r of [...compRows].sort((x, y) => y.delta.abs().cmp(x.delta.abs())).filter((r) => r.delta.abs().gte('0.01')).slice(0, 4)) {
+      reasons.push(`${r.label}: ${fmtBRL(r.delta.abs(), 2)} por peça a ${r.delta.isPositive() ? 'mais' : 'menos'} no orçamento 1${r.adjusted ? ' (valor ajustado à mão em um deles)' : ''}.`);
+    }
+    const roundA = A.ev.pricing.recommendedRoundedUnit && A.ev.pricing.recommendedUnit ? A.ev.pricing.recommendedRoundedUnit.minus(A.ev.pricing.recommendedUnit) : null;
+    const roundB = B.ev.pricing.recommendedRoundedUnit && B.ev.pricing.recommendedUnit ? B.ev.pricing.recommendedRoundedUnit.minus(B.ev.pricing.recommendedUnit) : null;
+    if (roundA && roundB && roundA.minus(roundB).abs().gte('0.05')) reasons.push(`Arredondamento: +${fmtBRL(roundA, 2)} por peça no 1 e +${fmtBRL(roundB, 2)} no 2.`);
+    if (A.it.input.manualPriceUnit || B.it.input.manualPriceUnit) reasons.push('Um dos modelos tem o preço digitado à mão: o valor não segue o cálculo.');
+    const perOrderA = laborTotals(A.it.input.labor).perOrder, perOrderB = laborTotals(B.it.input.labor).perOrder;
+    if ((perOrderA > 0 || perOrderB > 0) && A.it.input.quantity !== B.it.input.quantity) reasons.push(`Custos por orçamento (mão de obra de ${fmtNum(Math.max(perOrderA, perOrderB))} min, taxa fixa do canal) são divididos pela quantidade: com menos peças, cada uma carrega uma parte maior.`);
+  }
+  return (
+    <Modal wide title="Comparar orçamentos" subtitle="Escolha dois modelos para ver, lado a lado, o que foi preenchido, o custo de cada rubrica por peça e de onde vem a diferença de valor. Usa os valores salvos." onClose={onClose}
+      footer={<button className="btn primary" onClick={onClose}>Fechar</button>}>
+      <div className="stack">
+        <div className="grid g2">
+          <SelectField label="Orçamento 1" value={a} onChange={setA} options={options} />
+          <SelectField label="Orçamento 2" value={b} onChange={setB} options={options} />
+        </div>
+        {A && B && <>
+          <div className="kpis">
+            <Kpi label="1 peça — orçamento 1" value={unitA ? fmtBRL(unitA) : '—'} hint={`total ${fmtBRL(A.ev.pricing.analysis?.revenue)}`} />
+            <Kpi label="1 peça — orçamento 2" value={unitB ? fmtBRL(unitB) : '—'} hint={`total ${fmtBRL(B.ev.pricing.analysis?.revenue)}`} />
+            <Kpi label="Diferença por peça" value={unitA && unitB ? fmtBRL(unitA.minus(unitB)) : '—'} accent />
+          </div>
+          {reasons.length > 0 && <Alert tone="info" title="De onde vem a diferença"><ul style={{ margin: 0, paddingLeft: 18 }}>{reasons.map((r, i) => <li key={i}>{r}</li>)}</ul></Alert>}
+          <div className="card"><table className="tbl"><thead><tr><th>O que foi preenchido</th><th>Orçamento 1</th><th>Orçamento 2</th></tr></thead><tbody>
+            {rows.map((r) => <tr key={r.label} className={r.diff ? 'diff-row' : ''}><td>{r.label}</td><td>{r.diff ? <b>{r.a}</b> : r.a}</td><td>{r.diff ? <b>{r.b}</b> : r.b}</td></tr>)}
+          </tbody></table></div>
+          <div className="card"><table className="tbl"><thead><tr><th>Custo por peça</th><th className="num">Orçamento 1</th><th className="num">Orçamento 2</th></tr></thead><tbody>
+            {compRows.map((r) => <tr key={r.k} className={r.delta.abs().gte('0.01') ? 'diff-row' : ''}><td>{r.label}{r.adjusted && <Badge tone="info">ajustado à mão</Badge>}</td><td className="num">{r.a}</td><td className="num">{r.b}</td></tr>)}
+          </tbody><tfoot><tr><td>Custo de 1 peça</td><td className="num">{fmtBRL(A.ev.costs.unitTotal)}</td><td className="num">{fmtBRL(B.ev.costs.unitTotal)}</td></tr></tfoot></table></div>
+          <p className="small muted" style={{ margin: 0 }}>Linhas em destaque são diferentes entre os dois. Se o orçamento foi salvo antes da v1.8, o arredondamento antigo (por peça) continua no valor salvo: abra o orçamento e use “Atualizar para os custos de hoje”.</p>
+        </>}
+      </div>
+    </Modal>
   );
 }
 
@@ -251,6 +340,10 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
   const [exporting, setExporting] = useState(false);
   const [producing, setProducing] = useState(false);
   const [addingStock, setAddingStock] = useState(false);
+  // Novo orçamento começa sem modelo: o usuário escolhe "Criar nova peça" ou "Peça do estoque".
+  const [blankStart, setBlankStart] = useState(!quote);
+  const isPristine = (it: DraftItem) => !it.itemId && !it.name.trim() && !it.finishedGoodId && !it.image
+    && it.input.materials.every((m) => !m.qtyPerUnit) && !it.input.printHoursPerUnit && !it.input.extras.length;
   const idx = Math.min(active, items.length - 1);
   const cur = items[idx];
   const input = cur.input;
@@ -401,7 +494,7 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
       <div className="split">
         <div className="stack">
           {/* 1. Cliente */}
-          <Section title="1. Cliente">
+          <Section title="1. Cliente" collapsible="cliente" summary={`${db.parties.find((p) => p.id === meta.customerId)?.name ?? 'Cliente não informado'}${meta.title ? ` · ${meta.title}` : ''}`}>
             <div className="grid g2">
               <Field label="Cliente">
                 <div className="row" style={{ flexWrap: 'nowrap', gap: 8 }}>
@@ -414,13 +507,28 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
             </div>
           </Section>
 
+          {blankStart ? (
+            <div className="card">
+              <div className="card-head"><div><h2>2. Primeira peça do orçamento</h2><p className="muted small">Escolha como começar. Depois você pode adicionar outros modelos, novos ou do estoque.</p></div></div>
+              <div className="card-body">
+                <div className="start-choice">
+                  <button type="button" className="start-option" onClick={() => setBlankStart(false)}>
+                    <b>Criar nova peça</b><span>Peça sob encomenda: você informa filamento, peso e tempo de 1 peça e a quantidade.</span>
+                  </button>
+                  <button type="button" className="start-option" onClick={() => setAddingStock(true)}>
+                    <b>Peça do estoque</b><span>Peça pronta (pronta-entrega) de Estoque → Peças produzidas, com o preço previsto dela.</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : <>
           {/* 2. Peças */}
-          <div className="card">
-            <div className="card-head"><div><h2>2. Modelos de peça</h2><p className="muted small">Um modelo para cada peça diferente (ex.: 10 chaveiros + 10 vasos = 2 modelos). O cliente pode aprovar uns e outros não. Clique num modelo para editar.</p></div>
-              <div className="row"><button type="button" className="btn secondary sm" onClick={duplicate}>Duplicar modelo</button>
+          <Section title="2. Modelos de peça" collapsible="modelos" summary={`${items.length} modelo(s): ${items.map((it, i) => it.name || `Modelo ${i + 1}`).join(', ')}`}
+            subtitle="Um modelo para cada peça diferente (ex.: 10 chaveiros + 10 vasos = 2 modelos). O cliente pode aprovar uns e outros não. Clique num modelo para editar."
+            right={<><button type="button" className="btn secondary sm" onClick={duplicate}>Duplicar modelo</button>
                 <button type="button" className="btn secondary sm" onClick={() => setAddingStock(true)}>+ Peça do estoque</button>
-                <button type="button" className="btn primary sm" onClick={addItem}>+ Adicionar modelo</button></div></div>
-            <div className="card-body">
+                <button type="button" className="btn primary sm" onClick={addItem}>+ Criar nova peça</button></>}>
+            <div>
               <div className="piece-tabs" role="tablist" aria-label="Peças do orçamento">
                 {items.map((it, i) => {
                   const st = stateOf(it);
@@ -436,7 +544,7 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
                 })}
               </div>
             </div>
-          </div>
+          </Section>
 
           {curLocked && <Alert tone="info" title={`“${cur.name}” · ${ITEM_STATE_LABEL[curState]}`}>
             Somente leitura enquanto estiver em produção ou separada do estoque.{curOrder && <> Pedido <b>{curOrder.number}</b>{curOrder.dueDate ? ` · entrega ${fmtDate(curOrder.dueDate)}` : ''}. <a href="#/producao/pedidos">Ver pedidos</a></>}
@@ -444,7 +552,7 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
           {cur.finishedGoodId && <Alert tone="info" title="Peça a pronta-entrega">Vem do estoque de peças prontas ({db.finishedGoods.find((g) => g.id === cur.finishedGoodId)?.code}). Ao aprovar, vira “Pedido aprovado” e as peças são separadas; não precisa produzir.</Alert>}
 
           <fieldset disabled={curLocked} className="stack">
-            <Section title={`3. Modelo: ${cur.name || `Peça ${idx + 1}`}`} subtitle="Preencha tudo para 1 peça deste modelo (peso, tempo, custos por peça). A quantidade multiplica e forma o valor total do modelo." right={quote && cur.itemId && !curLocked ? (
+            <Section title={`3. Modelo: ${cur.name || `Modelo ${idx + 1}`}`} collapsible="modelo" summary={`${input.quantity} peça${input.quantity === 1 ? '' : 's'}${input.dimensionsCm ? ' · com dimensões' : ''}${cur.image ? ' · com foto' : ''}`} subtitle="Preencha tudo para 1 peça deste modelo (peso, tempo, custos por peça). A quantidade multiplica e forma o valor total do modelo." right={quote && cur.itemId && !curLocked ? (
               <div className="row">
                 {curState !== 'aprovado' && <button type="button" className="btn secondary sm" onClick={() => setStatus(cur, 'aprovado')}>{cur.finishedGoodId ? 'Pedido aprovado' : 'Cliente aprovou'}</button>}
                 {curState !== 'recusado' && <button type="button" className="btn ghost sm" onClick={() => setStatus(cur, 'recusado')}>Cliente recusou</button>}
@@ -502,6 +610,8 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
               </div>
             </Section>
 
+            <ComplementsSection db={db} input={input} patch={patch} />
+
             <ParamsSection db={db} input={input} patch={patch} />
           </fieldset>
 
@@ -509,10 +619,12 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
           <FreightSection db={db} items={items} shipping={shipping} setShipping={setShipping} setItems={setItems} customerId={meta.customerId} lockedIds={items.filter(lockedItem).map((it) => it.itemId!)} />
           <DeliveryKitSection db={db} kit={kit} setKit={setKit} items={items} />
 
-          {quote && <Section title="Observação desta versão"><TextField label="O que mudou (opcional)" value={meta.note} onChange={(v) => setMeta((m) => ({ ...m, note: v }))} /></Section>}
+          {quote && <Section title="Observação desta versão" collapsible="observacao" summary={meta.note || 'Sem observação'}><TextField label="O que mudou (opcional)" value={meta.note} onChange={(v) => setMeta((m) => ({ ...m, note: v }))} /></Section>}
           {quote && <VersionHistory quote={quote} onLoad={(v) => { setItems(v.items.map((it) => ({ itemId: it.itemId, name: it.name, image: it.image ?? null, input: { overrides: {}, ...structuredClone(it.input) }, finishedGoodId: it.finishedGoodId }))); setActive(0); if (v.shipping) setShipping(structuredClone(v.shipping)); setKit(v.deliveryKit ? structuredClone(v.deliveryKit) : null); }} />}
+          </>}
         </div>
 
+        {blankStart ? <div className="sticky stack"><div className="card"><div className="card-body"><p className="muted small" style={{ margin: 0 }}>O valor do orçamento aparece aqui assim que você escolher a primeira peça.</p></div></div></div> :
         <div className="sticky stack">
           <div className="card quote-total-card">
             <div className="card-body">
@@ -537,14 +649,20 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
           </Alert>}
           {evaluation.error ? <Alert tone="error" title="Não foi possível calcular">{evaluation.error}</Alert>
             : ev && <ResultPanel ev={ev} input={input} patch={patch} locked={curLocked} />}
-        </div>
+        </div>}
       </div>
       {newClient && <PartyForm kind="cliente" onClose={() => setNewClient(false)}
         onSave={(v) => run((d) => saveParty(d, v), 'Cliente cadastrado.').then((r) => { if (r.ok) { setMeta((m) => ({ ...m, customerId: r.value.id })); setNewClient(false); } })} />}
       {exporting && quote && <ClientQuoteExport quote={quote} onClose={() => setExporting(false)} unsaved={unsavedAll} />}
       {producing && quote && <ProduceDialog quote={quote} onClose={() => setProducing(false)} />}
       {addingStock && <StockPieceDialog db={db} exclude={items.map((it) => it.finishedGoodId).filter(Boolean) as string[]} onClose={() => setAddingStock(false)}
-        onAdd={(d) => { setItems((s) => [...s, { name: d.name, image: d.image ?? null, input: d.input, finishedGoodId: d.finishedGoodId }]); setActive(items.length); setAddingStock(false); }} />}
+        onAdd={(d) => {
+          const piece = { name: d.name, image: d.image ?? null, input: d.input, finishedGoodId: d.finishedGoodId };
+          // Peça do estoque no lugar do modelo vazio inicial (não deixa um "Modelo 1" em branco sobrando).
+          const replace = items.length === 1 && isPristine(items[0]);
+          setItems((s) => (replace ? [piece] : [...s, piece]));
+          setActive(replace ? 0 : items.length); setAddingStock(false); setBlankStart(false);
+        }} />}
       {confirmEl}
     </>
   );
@@ -590,7 +708,8 @@ function FilamentSection({ db, input, patch }: { db: DB; input: QuoteInput; patc
     );
   }
   return (
-    <Section title="Filamento de 1 peça" subtitle="Peso de UMA peça deste modelo, por cor/material (do fatiador). O preço vem do cadastro (última compra ou preço do cadastro).">
+    <Section title="Filamento de 1 peça" collapsible="filamento" subtitle="Peso de UMA peça deste modelo, por cor/material (do fatiador). O preço vem do cadastro (última compra ou preço do cadastro)."
+      summary={lines.length ? lines.map((l) => { const m = db.materials.find((x) => x.id === l.materialId); return `${m ? materialLabel(m) : 'filamento'}: ${fmtNum(l.qtyPerUnit)} g`; }).join(' + ') : 'Nenhum filamento'}>
       {lines.map((l, i) => {
         const mat = db.materials.find((m) => m.id === (l.materialId || db.lots.find((x) => x.id === l.lotId)?.materialId));
         const pol = mat ? materialCostPolicy(db, mat.id) : null;
@@ -617,15 +736,58 @@ function FilamentSection({ db, input, patch }: { db: DB; input: QuoteInput; patc
 }
 
 
+/* ---------------- Complementos de 1 peça ---------------- */
+/** Itens que vão na peça além do filamento: do estoque (luminária, ímã — custo da última compra) ou digitados. */
+function ComplementsSection({ db, input, patch }: { db: DB; input: QuoteInput; patch: (p: Partial<QuoteInput>) => void }) {
+  const setX = (id: string, p: Partial<QuoteExtraLine>) => patch({ extras: input.extras.map((e) => (e.id === id ? { ...e, ...p } : e)) });
+  const stock = db.materials.filter((m) => !m.filament && (m.active || input.extras.some((e) => e.materialId === m.id)));
+  const options = stock.map((m) => { const pol = materialCostPolicy(db, m.id); return { value: m.id, label: `${m.code} · ${m.name} · ${pol.unitCost ? `${fmtBRL(pol.unitCost, 4)}/${m.unit}` : 'sem preço'}` }; });
+  const addStock = () => patch({ extras: [...input.extras, { id: newId(), kind: 'outro', description: '', qtyPerUnit: 1, manualUnitCost: null, materialId: stock[0]?.id ?? '' }] });
+  const addManual = () => patch({ extras: [...input.extras, { id: newId(), kind: 'outro', description: '', qtyPerUnit: 1, manualUnitCost: null }] });
+  const lineCost = (e: QuoteExtraLine) => {
+    const uc = e.materialId ? materialCostPolicy(db, e.materialId).unitCost : e.manualUnitCost ? D(e.manualUnitCost) : null;
+    return uc ? uc.times(e.qtyPerUnit || 0) : null;
+  };
+  const totalPiece = input.extras.reduce((s, e) => s.plus(lineCost(e) ?? 0), D(0));
+  return (
+    <Section title="Complementos de 1 peça" collapsible="complementos"
+      summary={input.extras.length ? `${input.extras.length} item(ns) · ${fmtBRL(totalPiece)} por peça · ${fmtBRL(totalPiece.times(input.quantity))} no modelo` : 'Sem complementos (só filamento)'}
+      subtitle="O que vai junto na peça além do filamento: luminária, ímã, parafuso, argola… Escolha do estoque (preço da última compra, baixado na produção) ou digite um custo avulso.">
+      {input.extras.length === 0 && <p className="muted small" style={{ margin: 0 }}>Nenhum complemento. Use os botões abaixo se a peça leva algo além do filamento.</p>}
+      {input.extras.map((e) => {
+        const mat = e.materialId ? db.materials.find((m) => m.id === e.materialId) : undefined;
+        const cost = lineCost(e);
+        return (
+          <div key={e.id} className="filament-line">
+            {e.materialId !== undefined
+              ? <SelectField label="Complemento do estoque" value={e.materialId ?? ''} onChange={(v) => setX(e.id, { materialId: v, description: db.materials.find((m) => m.id === v)?.name ?? '' })} placeholder="— escolha o insumo —" options={options}
+                  hint={stock.length === 0 ? <a href="#/cadastros/materiais">Cadastre o insumo (ex.: luminária) em Cadastros → Materiais</a> : undefined} />
+              : <TextField label="Descrição (custo avulso)" value={e.description} onChange={(v) => setX(e.id, { description: v })} placeholder="Ex.: pintura à mão" />}
+            <DecField label={`Quantidade por peça${mat ? ` (${mat.unit})` : ''}`} value={e.qtyPerUnit || null} onChange={(v) => setX(e.id, { qtyPerUnit: Number(v ?? 0) })}
+              hint={cost ? `${fmtBRL(cost)} por peça · ${fmtBRL(cost.times(input.quantity))} no modelo` : undefined} />
+            {e.materialId !== undefined
+              ? <Field label="Custo unitário"><div className={`readonly-value ${mat && materialCostPolicy(db, mat.id).unitCost ? '' : 'missing'}`}>{mat ? (() => { const p = materialCostPolicy(db, mat.id); return p.unitCost ? `${fmtBRL(p.unitCost, 4)}/${mat.unit} · ${p.source}` : 'sem preço — registre a compra'; })() : '—'}</div></Field>
+              : <DecField label="Custo unitário" suffix="R$" value={e.manualUnitCost ?? null} onChange={(v) => setX(e.id, { manualUnitCost: v })} />}
+            <button type="button" className="btn ghost sm remove" onClick={() => patch({ extras: input.extras.filter((x) => x.id !== e.id) })} aria-label="Remover complemento">✕</button>
+          </div>
+        );
+      })}
+      <div className="row">
+        <button type="button" className="btn secondary sm" onClick={addStock}>+ Complemento do estoque</button>
+        <button type="button" className="btn ghost sm" onClick={addManual}>+ Custo avulso</button>
+      </div>
+    </Section>
+  );
+}
+
 /* ---------------- Parâmetros deste orçamento ---------------- */
 function ParamsSection({ db, input, patch }: { db: DB; input: QuoteInput; patch: (p: Partial<QuoteInput>) => void }) {
   const lab = laborTotals(input.labor);
-  const setX = (id: string, p: Partial<QuoteExtraLine>) => patch({ extras: input.extras.map((e) => (e.id === id ? { ...e, ...p } : e)) });
   return (
     <div className="card">
       <details className="params-details">
         <summary>
-          <div><h2>Parâmetros e outros custos deste modelo</h2><p className="muted small">Markup, canal, mão de obra e custos por peça (embalagem, ímãs…). Vêm de Parâmetros de Custos; abra para alterar só neste modelo.</p></div>
+          <div><h2>Parâmetros deste modelo</h2><p className="muted small">Markup, canal, taxa de falha, mão de obra (por orçamento e por peça), arredondamento e desconto. Vêm de Parâmetros de Custos; abra para alterar só neste modelo.</p></div>
         </summary>
         <div className="card-body stack" style={{ paddingTop: 0 }}>
           <div className="grid g3">
@@ -640,16 +802,6 @@ function ParamsSection({ db, input, patch }: { db: DB; input: QuoteInput; patch:
             <DecField label="Desconto" suffix="%" value={input.discountPct} onChange={(v) => patch({ discountPct: v })} />
             <DecField label="Frete pago pela empresa" suffix="R$" value={input.freightSubsidyPerOrder} onChange={(v) => patch({ freightSubsidyPerOrder: v })} hint="Vazio se o cliente paga" />
           </div>
-          <p className="section-title">Outros custos por peça (embalagem, ímãs, parafusos…)</p>
-          {input.extras.map((e) => (
-            <div key={e.id} className="filament-line">
-              <TextField label="Descrição" value={e.description} onChange={(v) => setX(e.id, { description: v })} placeholder="Ex.: caixa + saquinho" />
-              <DecField label="Quantidade por peça" value={e.qtyPerUnit || null} onChange={(v) => setX(e.id, { qtyPerUnit: Number(v ?? 0) })} />
-              <DecField label="Custo unitário" suffix="R$" value={e.manualUnitCost ?? null} onChange={(v) => setX(e.id, { manualUnitCost: v })} />
-              <button type="button" className="btn ghost sm remove" onClick={() => patch({ extras: input.extras.filter((x) => x.id !== e.id) })} aria-label="Remover custo">✕</button>
-            </div>
-          ))}
-          <div><button type="button" className="btn secondary sm" onClick={() => patch({ extras: [...input.extras, { id: newId(), kind: 'embalagem', description: '', qtyPerUnit: 1, manualUnitCost: null }] })}>+ Adicionar custo</button></div>
         </div>
       </details>
     </div>
@@ -868,8 +1020,15 @@ function ResultPanel({ ev, input, patch, locked }: { ev: QuoteEvaluation; input:
         </Alert>
       )}
 
-      <div className="card result-total">
-        <div className="card-body stack" style={{ gap: 16 }}>
+      {Object.keys(overrides).length > 0 && (
+        <Alert tone="warning" title={`${Object.keys(overrides).length} rubrica(s) ajustada(s) à mão`}>
+          {costs.components.filter((c) => c.status === 'ajustado').map((c) => c.label).join(', ')}: esses valores são fixos para o modelo inteiro e <b>não mudam</b> com a quantidade, o peso ou o filamento.
+          {' '}<button type="button" className="link-btn" onClick={() => patch({ overrides: {} })} disabled={locked}>Voltar todas ao calculado</button>
+        </Alert>
+      )}
+
+      <Section title="Valor deste modelo" collapsible="valores" summary={a ? `1 peça ${fmtBRL(a.effectiveUnitPrice)} · ${q} peça(s) ${fmtBRL(a.revenue)} · lucro ${fmtBRL(a.result)}` : 'Faltam informações'}>
+        <div className="stack" style={{ gap: 16 }}>
           <div className="big-figures">
             <div><span>Custo de 1 peça</span><b>{fmtBRL(costs.unitTotal)}</b><small>{q > 1 ? `modelo (${q} peças): ${fmtBRL(costs.total)}` : 'modelo com 1 peça'}</small></div>
             <div><span>Custo por hora</span><b>{costPerHour ? fmtBRL(costPerHour) : '—'}</b><small>{costs.machineHours ? `${fmtNum(costs.machineHours, 2)} h de impressão no modelo` : 'informe o tempo'}</small></div>
@@ -882,6 +1041,9 @@ function ResultPanel({ ev, input, patch, locked }: { ev: QuoteEvaluation; input:
               {input.manualPriceUnit && <button type="button" className="btn ghost sm" onClick={() => patch({ manualPriceUnit: null })} disabled={locked}>Usar sugerido</button>}
             </div>
             <small>Sugerido: <b>{fmtBRL(pricing.recommendedRoundedUnit)}</b> (markup {input.markupPct ? fmtNum(input.markupPct) + '%' : '—'} sobre o custo{pricing.channel ? ` + encargos de ${pricing.channel.name}` : ''}) · Mínimo: {fmtBRL(pricing.minimumUnit)}</small>
+            {pricing.recommendedUnit && pricing.recommendedRoundedUnit && <small>
+              Calculado {fmtBRL(pricing.recommendedUnit.times(q), 2)} no modelo → {fmtBRL(pricing.recommendedRoundedUnit.times(q))} ({ROUNDING_LABEL[input.rounding].toLowerCase()}{pricing.roundingLimited ? ': passaria de +5% e ficou só nos centavos' : ''}; arredondado uma vez no total do modelo, não em cada peça)
+            </small>}
           </div>
           {a && (
             <>
@@ -898,26 +1060,24 @@ function ResultPanel({ ev, input, patch, locked }: { ev: QuoteEvaluation; input:
           )}
           {a && a.contributionMargin.isNegative() && <Alert tone="error">Este valor não cobre os custos: cada venda gera prejuízo.</Alert>}
         </div>
-      </div>
+      </Section>
 
-      <div className="card">
-        <div className="card-head"><div><h2>Composição do custo</h2><p className="muted small">Você pode alterar as rubricas (menos o filamento, que vem do cadastro); apague o campo para voltar ao calculado.{q > 1 ? ` Os valores editáveis são do modelo inteiro (${q} peças); a última coluna mostra quanto fica em 1 peça.` : ''}</p></div></div>
-        <table className="tbl rubricas">
+      <Section title="Composição do custo" collapsible="composicao" summary={`Custo de 1 peça ${fmtBRL(costs.unitTotal)} · modelo ${fmtBRL(costs.total)}`}
+        subtitle={`Você pode alterar as rubricas (menos o filamento, que vem do cadastro); apague o campo para voltar ao calculado.${q > 1 ? ` Os valores editáveis são do modelo inteiro (${q} peças); a última coluna mostra quanto fica em 1 peça.` : ''}`}>
+        <div className="tbl-scroll"><table className="tbl rubricas">
           <thead><tr><th>Rubrica</th><th className="num">Calculado</th><th className="num">{q > 1 ? `Modelo (${q} peças)` : 'Valor usado'}</th>{q > 1 && <th className="num">1 peça</th>}</tr></thead>
           <tbody>
             {costs.components.map((c) => <RubricaRow key={c.key} c={c} q={q} override={overrides[c.key]} onChange={(v) => setOverride(c.key, v)} disabled={locked} />)}
           </tbody>
           <tfoot><tr><td>Custo total</td><td /><td className="num">{fmtBRL(costs.total)}</td>{q > 1 && <td className="num">{fmtBRL(costs.unitTotal)}</td>}</tr></tfoot>
-        </table>
-        <div className="card-body" style={{ paddingTop: 8 }}>
-          <details className="disclosure"><summary>Como cada valor foi calculado</summary>
-            <ul className="small" style={{ paddingLeft: 20, margin: 0 }}>
-              {costs.materialLines.map((l, i) => <li key={i}><b>{l.label}:</b> {fmtNum(l.qtyOrder)} {l.unit} × {l.unitCost ? `${fmtBRL(perGramToPerKg(l.unitCost))}/kg` : '—'} ({l.source || 'sem preço'}) = {l.cost ? fmtBRL(l.cost) : '—'}</li>)}
-              {costs.components.map((c) => <li key={c.key}><b>{c.label}:</b> {c.formula}</li>)}
-            </ul>
-          </details>
-        </div>
-      </div>
+        </table></div>
+        <details className="disclosure"><summary>Como cada valor foi calculado</summary>
+          <ul className="small" style={{ paddingLeft: 20, margin: 0 }}>
+            {costs.materialLines.map((l, i) => <li key={i}><b>{l.label}:</b> {fmtNum(l.qtyOrder)} {l.unit} × {l.unitCost ? `${fmtBRL(perGramToPerKg(l.unitCost))}/kg` : '—'} ({l.source || 'sem preço'}) = {l.cost ? fmtBRL(l.cost) : '—'}</li>)}
+            {costs.components.map((c) => <li key={c.key}><b>{c.label}:</b> {c.formula}</li>)}
+          </ul>
+        </details>
+      </Section>
     </>
   );
 }

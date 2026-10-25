@@ -4,7 +4,7 @@ import { D, splitInstallments, parseBR } from './money';
 import { unitAcquisitionCost, allocate } from './purchases';
 import { depreciationPerHour } from './catalog';
 import { computeCosts, componentValue } from './costing';
-import { analyzeAtPrice, computePricing, roundPrice } from './pricing';
+import { analyzeAtPrice, commercialRound, computePricing, roundPrice } from './pricing';
 import { emptyQuoteInput } from './quotes';
 import { createEmptyDB } from './schema';
 import type { CostParams, QuoteInput } from './types';
@@ -280,6 +280,12 @@ describe('Arredondamento comercial', () => {
     expect(roundPrice(D('47.01'), 'meio').toString()).toBe('47.5');
     expect(roundPrice(D('47.001'), 'nenhum').toString()).toBe('47.01');
     expect(roundPrice(D('47.90'), 'final90').toString()).toBe('47.9');
+  });
+  it('limite de +5%: peça barata não é distorcida; preço maior mantém o final ,90', () => {
+    expect(commercialRound(D('2.05'), 'final90')).toEqual({ value: D('2.05'), limited: true });
+    expect(commercialRound(D('2.051'), 'final90').value.toString()).toBe('2.06');
+    expect(commercialRound(D('47.23'), 'final90')).toEqual({ value: D('47.9'), limited: false });
+    expect(commercialRound(D('8.6'), 'final90').value.toString()).toBe('8.9'); // +3,5%: dentro do limite
   });
   it('markup e margem são recalculados no preço arredondado', () => {
     const p = params({ overheadPerMachineHour: '0' });

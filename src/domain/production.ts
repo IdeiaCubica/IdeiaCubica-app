@@ -13,7 +13,7 @@ import { D, Decimal, ZERO, sum } from './money';
 import { BusinessError, assert, audit, byId, newId, nextCode, nowISO, requireNonNegative, requireText, toLocalDate, todayISO } from './core';
 import { addMovement, lotBalance, releaseAll, reserve } from './inventory';
 import { materialLabel } from './catalog';
-import { deleteQuote, emptyQuoteInput, evaluateQuote, isItemLocked, itemState, latestVersion, quoteItem, quoteItemAt, quoteItems, refreshQuoteStatus, resolveParams, saveQuote, summarize, type QuoteItemDraft } from './quotes';
+import { MAX_IMAGE_CHARS, deleteQuote, emptyQuoteInput, evaluateQuote, isItemLocked, itemState, latestVersion, quoteItem, quoteItemAt, quoteItems, refreshQuoteStatus, resolveParams, saveQuote, summarize, type QuoteItemDraft } from './quotes';
 import { computeCosts, laborTotals, type CostResult } from './costing';
 
 export const ORDER_STATUS_LABEL: Record<OrderStatus, string> = {
@@ -47,11 +47,16 @@ export function addProjectFileVersion(db: DB, projectId: ID, v: { version: strin
 /* ---------------- Ordens ---------------- */
 function plannedFromInput(db: DB, input: QuoteInput) {
   const waste = input.consumptionBasis === 'peca' && input.wastePct ? D(1).plus(D(input.wastePct).div(100)) : D(1);
-  return input.materials.map((m) => ({
+  const filament = input.materials.map((m) => ({
     materialId: m.materialId ?? db.lots.find((l) => l.id === m.lotId)?.materialId ?? '',
     lotId: m.lotId,
     qty: D(m.qtyPerUnit).times(input.quantity).times(waste).toDecimalPlaces(2, Decimal.ROUND_UP).toNumber(),
   }));
+  // Complementos do estoque (luminária, ímã…): reservados e baixados junto com o filamento.
+  const complements = input.extras.filter((e) => e.materialId && e.qtyPerUnit > 0).map((e) => ({
+    materialId: e.materialId!, lotId: e.lotId, qty: D(e.qtyPerUnit).times(input.quantity).toDecimalPlaces(4, Decimal.ROUND_UP).toNumber(),
+  }));
+  return [...filament, ...complements];
 }
 
 /** Quanto desta OP está reservado (por lote). */
@@ -159,9 +164,10 @@ export function createManualOrder(db: DB, input: {
   /** Com lote: reserva daquele lote. Só com material: lotes por ordem de entrada. */
   plannedMaterials: { materialId?: ID; lotId?: ID; qty: number }[];
   plannedHours: number | null; responsible?: string; notes?: string;
-  purpose?: 'pedido' | 'estoque'; customerId?: ID; dueDate?: string;
+  purpose?: 'pedido' | 'estoque'; customerId?: ID; dueDate?: string; image?: string | null;
 }): ProductionOrder {
   const description = requireText(input.description, 'a descrição da ordem');
+  if (input.image) assert(input.image.length <= MAX_IMAGE_CHARS, 'A foto é grande demais. Use uma imagem menor.');
   assert(Number.isInteger(input.qtyPlanned) && input.qtyPlanned > 0, 'Quantidade planejada inválida.');
   if (input.plannedHours !== null) requireNonNegative(input.plannedHours, 'Horas previstas');
   const planned = input.plannedMaterials.map((m) => {
@@ -392,7 +398,7 @@ function addFinishedGoodFromOrder(db: DB, o: ProductionOrder, location?: string)
     qtyProduced: a.qtyApproved, unitCost: unit ? unit.toDecimalPlaces(4).toString() : null,
     costStatus: unit ? (cmp.real!.laborEstimated ? 'estimado' : 'realizado') : 'pendente',
     suggestedPrice: price, producedAt: toLocalDate(o.finishedAt!), location: location?.trim() || undefined,
-    image: item?.image ?? null, adjustments: [], allocations: [], createdAt: nowISO(),
+    image: o.image ?? item?.image ?? null, adjustments: [], allocations: [], createdAt: nowISO(),
     production: {
       materials: [...byMat.entries()].map(([mid, qty]) => { const m = db.materials.find((x) => x.id === mid); return { label: m ? (m.filament ? `${m.name} (${m.filament.materialType} ${m.filament.color})` : m.name) : 'Material removido', qty, unit: m?.unit ?? '' }; }),
       hours: a.hours + a.failures.reduce((s, f) => s + f.hoursLost, 0),
@@ -406,9 +412,10 @@ function addFinishedGoodFromOrder(db: DB, o: ProductionOrder, location?: string)
 
 /** Cadastra peças prontas já existentes (produzidas antes do sistema). */
 export function registerFinishedGood(db: DB, input: {
-  description: string; projectId?: ID; qty: number; unitCost: string | null; suggestedPrice?: string | null; producedAt: string; location?: string; notes?: string;
+  description: string; projectId?: ID; qty: number; unitCost: string | null; suggestedPrice?: string | null; producedAt: string; location?: string; notes?: string; image?: string | null;
 }): FinishedGood {
   const description = requireText(input.description, 'a descrição da peça');
+  if (input.image) assert(input.image.length <= MAX_IMAGE_CHARS, 'A foto é grande demais. Use uma imagem menor.');
   assert(Number.isInteger(input.qty) && input.qty > 0, 'Quantidade deve ser um inteiro maior que zero.');
   assert(/^\d{4}-\d{2}-\d{2}$/.test(input.producedAt), 'Informe a data de produção.');
   const cost = input.unitCost ? D(input.unitCost) : null;
@@ -416,7 +423,7 @@ export function registerFinishedGood(db: DB, input: {
   const fg: FinishedGood = {
     id: newId(), code: nextCode(db, 'finished', 'PC'), description, projectId: input.projectId, qtyProduced: input.qty,
     unitCost: cost ? cost.toString() : null, costStatus: cost ? 'estimado' : 'pendente', suggestedPrice: input.suggestedPrice || null,
-    producedAt: input.producedAt, location: input.location?.trim() || undefined, notes: input.notes, adjustments: [], createdAt: nowISO(),
+    producedAt: input.producedAt, location: input.location?.trim() || undefined, notes: input.notes, image: input.image ?? null, adjustments: [], createdAt: nowISO(),
   };
   db.finishedGoods.push(fg);
   audit(db, 'Peças prontas cadastradas', `${fg.code}: ${fg.qtyProduced} un.`);
@@ -437,8 +444,12 @@ export function isUntouchedFinishedGood(db: DB, fgId: ID) {
  */
 export function updateFinishedGood(db: DB, fgId: ID, input: {
   description: string; location?: string; suggestedPrice?: string | null; notes?: string; qty?: number; unitCost?: string | null; producedAt?: string;
+  /** Foto: sempre pode ser trocada (undefined = mantém). */
+  image?: string | null;
 }) {
   const fg = byId(db.finishedGoods, fgId, 'Peça pronta');
+  if (input.image) assert(input.image.length <= MAX_IMAGE_CHARS, 'A foto é grande demais. Use uma imagem menor.');
+  if (input.image !== undefined) fg.image = input.image;
   const description = requireText(input.description, 'a descrição da peça');
   if (input.suggestedPrice) assert(D(input.suggestedPrice).gte(0), 'O preço não pode ser negativo.');
   const changesCore = (input.qty !== undefined && input.qty !== fg.qtyProduced)
@@ -576,6 +587,16 @@ export function cancelOrder(db: DB, orderId: ID, reason: string) {
   audit(db, 'OP cancelada', `${o.number} — ${reason}`);
 }
 
+/** Troca a foto da produção; se já gerou peças prontas, atualiza a foto delas também. */
+export function setOrderImage(db: DB, orderId: ID, image: string | null) {
+  const o = byId(db.orders, orderId, 'Pedido/produção');
+  if (image) assert(image.length <= MAX_IMAGE_CHARS, 'A foto é grande demais. Use uma imagem menor.');
+  o.image = image;
+  const fg = o.finishedGoodId ? db.finishedGoods.find((g) => g.id === o.finishedGoodId) : undefined;
+  if (fg) fg.image = image;
+  audit(db, 'Foto da produção alterada', o.number);
+}
+
 /** Motivo pelo qual o pedido/produção não pode ser excluído (null = pode). */
 export function orderDeleteBlock(db: DB, o: ProductionOrder): string | null {
   if (db.sales.some((s) => s.orderId === o.id && s.status === 'ativa')) return 'Há venda registrada deste pedido. Cancele a venda antes de excluir.';
@@ -663,7 +684,8 @@ export function compareOrder(db: DB, o: ProductionOrder): OrderComparison {
   const laborEstimated = a.laborMinutes === null;
   const est0 = laborTotals(input.labor);
   real.labor = laborEstimated ? { perOrder: est0.perOrder + est0.perUnit * a.qtyApproved, perUnit: 0 } : { perOrder: a.laborMinutes!, perUnit: 0 };
-  real.extras = input.extras.map((e) => ({ ...e, qtyPerUnit: e.qtyPerUnit * a.qtyApproved }));
+  // Complementos do estoque já entram pelo consumo real dos lotes (acima); os demais, pelo previsto.
+  real.extras = input.extras.filter((e) => !e.materialId).map((e) => ({ ...e, qtyPerUnit: e.qtyPerUnit * a.qtyApproved }));
   // Amortização: (custo ÷ unidades previstas) × aprovadas. Com Q = 1, equivale a dividir por (previstas ÷ aprovadas).
   if (real.development.mode === 'diluir') {
     real.development = a.qtyApproved > 0 && real.development.expectedUnits

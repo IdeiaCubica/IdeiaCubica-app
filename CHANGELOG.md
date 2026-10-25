@@ -2,6 +2,27 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.8.0 — 25/10/2026
+
+### Correção de cálculo: arredondamento distorcia o valor de peças pequenas
+- Causa: o arredondamento comercial (final ,90) era aplicado em **cada peça**. 4 peças de 10,10 g davam 4 × R$ 2,90 = R$ 11,60,
+  enquanto 1 peça de 40,38 g com o mesmo filamento dava R$ 8,90. O mesmo efeito escondia a diferença de preço entre filamentos.
+- Agora o arredondamento é feito **uma vez no total do modelo** e tem **limite de +5%** (acima disso, só centavos).
+  O mesmo exemplo dá R$ 8,92 × R$ 8,90, e um filamento 33% mais caro dá um valor 33% maior.
+- A tela mostra o valor calculado e o arredondado do modelo. Rubricas ajustadas à mão geram aviso (valores fixos que não mudam
+  com quantidade, peso ou filamento), com o botão para voltar ao calculado.
+- **Comparar orçamentos** (Orçamentos → Comparar orçamentos): dois modelos lado a lado, com o que foi preenchido, o custo por peça
+  de cada rubrica e a explicação de onde vem a diferença.
+- Orçamentos salvos antes desta versão mantêm o valor salvo e mostram o aviso “os custos mudaram”: use “Atualizar para os custos de hoje”.
+
+### Novidades
+- **Foto** na produção para estoque (ao lançar e depois, no pedido) e nas peças em Estoque → Peças produzidas.
+- **Novo orçamento começa em branco** com duas opções: **Criar nova peça** ou **Peça do estoque** (sem “Modelo 1” vazio sobrando).
+- **Complementos de 1 peça**: luminária, ímã, parafuso… escolhidos dos insumos cadastrados (preço da última compra) ou custo avulso.
+  São reservados e baixados do estoque na produção.
+- **Ocultar/Mostrar** em todos os blocos do orçamento (cliente, modelos, modelo, filamento, tempo, complementos, frete, kit,
+  valor e composição do custo).
+
 ## v1.7.0 — 24/10/2026
 
 ### Novidades

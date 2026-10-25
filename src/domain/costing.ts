@@ -200,12 +200,17 @@ export function computeCosts(input: QuoteInput, params: CostParams): CostResult 
   if (input.extras.length) {
     const xPend: string[] = [];
     const total = sum(input.extras.map((e) => {
-      const uc = e.lotId ? (params.lots[e.lotId] ? D(params.lots[e.lotId].unitCost) : null) : Dn(e.manualUnitCost);
-      if (uc === null) { xPend.push(`Custo não definido para "${e.description || e.kind}".`); return ZERO; }
+      const fromStock = e.materialId ? params.materials?.[e.materialId] : undefined;
+      const uc = e.lotId ? (params.lots[e.lotId] ? D(params.lots[e.lotId].unitCost) : null)
+        : e.materialId ? Dn(fromStock?.unitCost ?? null) : Dn(e.manualUnitCost);
+      if (uc === null) {
+        xPend.push(e.materialId ? `Sem preço para o complemento "${fromStock?.label ?? e.description}": registre a compra ou o preço no cadastro.` : `Custo não definido para "${e.description || e.kind}".`);
+        return ZERO;
+      }
       return uc.times(e.qtyPerUnit).times(q);
     }));
-    push({ key: 'extras', label: 'Embalagem, acabamento e outros', group: 'direto', value: xPend.length ? null : total, status: xPend.length ? 'pendente' : 'ok',
-      formula: 'Σ (quantidade por peça × quantidade × custo unitário)', pendingMsgs: xPend });
+    push({ key: 'extras', label: 'Complementos e outros (luminária, ímã, embalagem…)', group: 'direto', value: xPend.length ? null : total, status: xPend.length ? 'pendente' : 'ok',
+      formula: 'Σ (quantidade por peça × quantidade × custo unitário; complementos do estoque pelo custo da última compra)', pendingMsgs: xPend });
   }
 
   /* ---------- 6. Frete subsidiado ---------- */

@@ -45,6 +45,20 @@ export function roundPrice(price: Decimal, rule: RoundingRule): Decimal {
   }
 }
 
+/**
+ * Limite do arredondamento comercial: no máximo +5% sobre o preço calculado da peça.
+ * Sem limite, peças baratas eram distorcidas (R$ 2,05 virava R$ 2,90: +41% por peça), e
+ * 4 peças de 10 g saíam mais caras que 1 peça de 40 g com o mesmo filamento e parâmetros.
+ */
+export const ROUNDING_MAX_INCREASE = D('0.05');
+
+/** Arredondamento comercial com limite; acima do limite, arredonda só os centavos (para cima). */
+export function commercialRound(price: Decimal, rule: RoundingRule): { value: Decimal; limited: boolean } {
+  const rounded = roundPrice(price, rule);
+  if (rule === 'nenhum' || price.lte(0) || rounded.lte(price.times(ONE.plus(ROUNDING_MAX_INCREASE)))) return { value: rounded, limited: false };
+  return { value: roundPrice(price, 'nenhum'), limited: true };
+}
+
 export interface ChannelRates { name: string; rates: Decimal; fixedFee: Decimal }
 
 export function channelRates(channel: CostParams['channel']): ChannelRates | null {
@@ -96,6 +110,8 @@ export interface PricingResult {
   minimumUnit: Decimal | null;
   recommendedUnit: Decimal | null;
   recommendedRoundedUnit: Decimal | null;
+  /** O arredondamento comercial passaria do limite (+5%) e foi trocado por centavos. */
+  roundingLimited?: boolean;
   premiumUnit: Decimal | null;
   premiumJustification: string | null;
   selectedUnit: Decimal | null;
@@ -122,12 +138,17 @@ export function computePricing(input: QuoteInput, params: CostParams, costs: Cos
 
   let recommendedUnit: Decimal | null = null;
   let recommendedRoundedUnit: Decimal | null = null;
+  let roundingLimited = false;
   const k = Dn(input.markupPct);
   if (k === null) errors.push('Defina o markup (em Parâmetros de Custos ou neste orçamento) para obter o preço sugerido.');
   else if (k.isNegative()) errors.push('O markup não pode ser negativo.');
   else {
     recommendedUnit = costs.total.times(ONE.plus(k.div(100))).plus(ch.fixedFee).div(ONE.minus(ch.rates)).div(q);
-    recommendedRoundedUnit = roundPrice(recommendedUnit, input.rounding);
+    // Arredonda o VALOR DO MODELO uma única vez (não cada peça): 4 peças de 10 g e 1 peça de 40 g
+    // com o mesmo filamento dão o mesmo valor. O preço de 1 peça = total ÷ quantidade, nos centavos acima.
+    const r = commercialRound(recommendedUnit.times(q), input.rounding);
+    recommendedRoundedUnit = r.value.div(q).toDecimalPlaces(2, Decimal.ROUND_CEIL);
+    roundingLimited = r.limited;
   }
 
   let premiumUnit: Decimal | null = null;
@@ -135,7 +156,7 @@ export function computePricing(input: QuoteInput, params: CostParams, costs: Cos
   const just = input.premium.justification.trim();
   if (premAmount && premAmount.gt(0) && recommendedRoundedUnit) {
     if (!just) errors.push('O preço premium exige uma justificativa comercial (personalização, acabamento, exclusividade...).');
-    else premiumUnit = roundPrice(recommendedRoundedUnit.plus(premAmount), input.rounding);
+    else premiumUnit = commercialRound(recommendedRoundedUnit.plus(premAmount), input.rounding).value;
   }
 
   const manual = Dn(input.manualPriceUnit);
@@ -144,7 +165,7 @@ export function computePricing(input: QuoteInput, params: CostParams, costs: Cos
   const market = Dn(input.marketPriceUnit);
 
   return {
-    channel: ch, errors, minimumUnit, recommendedUnit, recommendedRoundedUnit, premiumUnit,
+    channel: ch, errors, minimumUnit, recommendedUnit, recommendedRoundedUnit, roundingLimited, premiumUnit,
     premiumJustification: premiumUnit ? just : null, selectedUnit, selectedSource,
     analysis: selectedUnit ? analyzeAtPrice(selectedUnit, costs, ch, discount) : null,
     minimumAnalysis: analyzeAtPrice(minimumUnit, costs, ch),

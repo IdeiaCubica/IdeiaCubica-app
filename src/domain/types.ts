@@ -376,6 +376,11 @@ export interface QuoteExtraLine {
   description: string;
   /** Se vinculado a um lote, o custo vem do lote; senão, `manualUnitCost`. */
   lotId?: ID;
+  /**
+   * Complemento do estoque (luminária, ímã, parafuso…): insumo cadastrado. O custo vem da política
+   * do insumo (última compra → preço do cadastro) e o item é reservado/baixado na produção.
+   */
+  materialId?: ID;
   manualUnitCost?: DecStr | null;
   qtyPerUnit: number;
 }
@@ -571,6 +576,8 @@ export interface ProductionOrder {
   sequence?: number;
   /** Lote de peças prontas gerado ao concluir uma OP de estoque. */
   finishedGoodId?: ID;
+  /** Foto da peça (produção para estoque); passa para as peças prontas ao concluir. */
+  image?: string | null;
 }
 
 /**

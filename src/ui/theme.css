@@ -419,6 +419,13 @@ details.params-details[open] > summary { border-bottom: 1px solid var(--border);
 .quote-total-card .quote-models tr.on td { background: var(--surface-2, rgba(0,0,0,.04)); font-weight: 600; }
 .quote-total-card .quote-models tr.refused td { color: var(--muted, #888); }
 .section-collapsed .card-head { border-bottom: 0; }
+.tbl tr.diff-row td { background: var(--ic-ideia-soft); }
+.tbl-scroll { overflow-x: auto; margin: 0 -4px; }
+.start-choice { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+.start-option { display: flex; flex-direction: column; gap: 6px; text-align: left; padding: 18px; border: 1.5px solid var(--border, #d9dde3); border-radius: 12px; background: var(--surface, #fff); cursor: pointer; font: inherit; color: inherit; }
+.start-option:hover, .start-option:focus-visible { border-color: var(--ic-ideia); box-shadow: 0 0 0 3px var(--ic-ideia-soft); }
+.start-option b { font-size: 17px; }
+.start-option span { font-size: 14px; color: var(--muted, #5b6573); }
 .qc-img { position: relative; }
 .qc-count { position: absolute; right: 8px; bottom: 8px; background: var(--ic-realizacao); color: var(--ic-ideia); font-size: 12px; font-weight: 700; padding: 3px 8px; border-radius: 999px; }
 .danger-text { color: var(--error) !important; }

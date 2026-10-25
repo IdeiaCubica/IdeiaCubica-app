@@ -1,0 +1,345 @@
+<title>Guia Ideia Cúbica</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&display=swap">
+<style>
+/* Layout: manual de operação — índice fixo à esquerda no desktop, etapas numeradas porque o fluxo É uma sequência. */
+:root {
+  --bg: #fbfaf6;
+  --surface: #ffffff;
+  --ink: #0d1925;
+  --muted: #536173;
+  --line: #e3e0d6;
+  --brand: #fcb414;
+  --brand-soft: #fef3d6;
+  --navy: #022857;
+  --navy-soft: #e6ecf4;
+  --ok: #1f7a4d;
+  --ok-soft: #e3f3ea;
+  --warn: #9a5b00;
+  --warn-soft: #fdf0d9;
+  --bad: #b3261e;
+  --bad-soft: #fbe7e5;
+  --display: 'Outfit', 'Segoe UI', system-ui, sans-serif;
+  --body: 'Source Sans 3', 'Segoe UI', system-ui, sans-serif;
+  --mono: ui-monospace, Consolas, 'Courier New', monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0f1823; --surface: #16212e; --ink: #eef1f5; --muted: #a3b0c0; --line: #2a3747;
+  --brand: #fcb414; --brand-soft: #3a2e10; --navy: #8fb4e8; --navy-soft: #1c2b3f;
+  --ok: #6fd3a0; --ok-soft: #173326; --warn: #f2bb5c; --warn-soft: #3a2c12; --bad: #ff8f86; --bad-soft: #3b1d1b; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #0f1823; --surface: #16212e; --ink: #eef1f5; --muted: #a3b0c0; --line: #2a3747;
+  --brand: #fcb414; --brand-soft: #3a2e10; --navy: #8fb4e8; --navy-soft: #1c2b3f;
+  --ok: #6fd3a0; --ok-soft: #173326; --warn: #f2bb5c; --warn-soft: #3a2c12; --bad: #ff8f86; --bad-soft: #3b1d1b; color-scheme: dark; }
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 17px; line-height: 1.6; }
+.wrap { max-width: 1180px; margin: 0 auto; padding-block: 32px 80px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 48px; }
+@media (max-width: 860px) { .wrap { grid-template-columns: minmax(0, 1fr); gap: 24px; } nav.toc { position: static !important; } }
+h1, h2, h3 { font-family: var(--display); text-wrap: balance; line-height: 1.2; margin: 0; }
+h1 { font-size: clamp(30px, 5vw, 44px); font-weight: 700; letter-spacing: -0.5px; }
+h2 { font-size: 26px; font-weight: 700; }
+h3 { font-size: 19px; font-weight: 600; }
+p { margin: 0; }
+a { color: var(--navy); }
+a:focus-visible, button:focus-visible, input:focus-visible { outline: 3px solid var(--brand); outline-offset: 2px; }
+.eyebrow { font-family: var(--display); font-size: 13px; font-weight: 600; letter-spacing: 1.6px; text-transform: uppercase; color: var(--muted); }
+
+nav.toc { position: sticky; top: calc(24px + env(safe-area-inset-top, 0px)); align-self: start; display: flex; flex-direction: column; gap: 4px; font-size: 15px; }
+nav.toc a { text-decoration: none; color: var(--muted); padding: 5px 10px; border-left: 3px solid transparent; }
+nav.toc a:hover { color: var(--ink); border-left-color: var(--brand); }
+nav.toc .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; font-family: var(--display); font-weight: 700; font-size: 18px; color: var(--ink); }
+.cube { width: 26px; height: 26px; background: var(--brand); border-radius: 5px; box-shadow: inset -6px -6px 0 rgba(2,40,87,.25); flex: none; }
+
+main { min-width: 0; display: flex; flex-direction: column; gap: 56px; }
+header.hero { display: flex; flex-direction: column; gap: 14px; padding-bottom: 28px; border-bottom: 2px solid var(--brand); }
+header.hero p.lead { font-size: 19px; color: var(--muted); max-width: 64ch; }
+section { display: flex; flex-direction: column; gap: 18px; scroll-margin-top: 24px; }
+section > p, section li { max-width: 68ch; }
+.step-head { display: flex; align-items: baseline; gap: 14px; }
+.num { font-family: var(--display); font-weight: 700; font-size: 15px; color: var(--navy); background: var(--brand-soft); border: 1.5px solid var(--brand); border-radius: 999px; min-width: 34px; height: 34px; display: inline-grid; place-items: center; flex: none; transform: translateY(-3px); }
+ol.steps, ul.plain { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 8px; }
+ol.steps li::marker { font-family: var(--display); font-weight: 600; color: var(--navy); }
+.path { font-family: var(--display); font-weight: 600; font-size: 14.5px; background: var(--navy-soft); color: var(--navy); padding: 1px 8px; border-radius: 6px; white-space: nowrap; }
+b, strong { font-weight: 600; }
+
+.flow { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px; }
+@media (max-width: 860px) { .flow { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.flow div { background: var(--surface); border: 1px solid var(--line); border-top: 4px solid var(--brand); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 4px; }
+.flow b { font-family: var(--display); font-size: 15px; }
+.flow span { font-size: 14px; color: var(--muted); line-height: 1.4; }
+.flow em { font-style: normal; font-family: var(--display); font-size: 12px; color: var(--navy); letter-spacing: 1px; }
+
+.rule { border-radius: 8px; padding: 14px 16px; display: flex; flex-direction: column; gap: 4px; max-width: 76ch; }
+.rule.key { background: var(--brand-soft); border-left: 5px solid var(--brand); }
+.rule.warn { background: var(--warn-soft); border-left: 5px solid var(--warn); }
+.rule.ok { background: var(--ok-soft); border-left: 5px solid var(--ok); }
+.rule .t { font-family: var(--display); font-weight: 600; }
+
+.example { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }
+.calc { font-family: var(--mono); font-size: 14.5px; font-variant-numeric: tabular-nums; background: var(--bg); border-radius: 6px; padding: 10px 12px; overflow-x: auto; white-space: pre; line-height: 1.7; }
+
+.tbl-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 15.5px; }
+th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-family: var(--display); font-weight: 600; font-size: 13px; letter-spacing: .8px; text-transform: uppercase; color: var(--muted); background: var(--bg); }
+tr:last-child td { border-bottom: 0; }
+td.num { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+
+.two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 700px) { .two { grid-template-columns: minmax(0, 1fr); } }
+
+.check { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.check label { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
+.check input { width: 18px; height: 18px; margin-top: 4px; accent-color: var(--navy); flex: none; }
+.check input:checked + span { color: var(--muted); text-decoration: line-through; }
+.small { font-size: 14.5px; color: var(--muted); }
+footer { font-size: 14px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 18px; }
+@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+</style>
+
+<div class="wrap">
+  <nav class="toc" aria-label="Índice">
+    <div class="brand"><span class="cube" aria-hidden="true"></span>Guia do sistema</div>
+    <a href="#fluxo">O fluxo completo</a>
+    <a href="#regras">Regras de ouro</a>
+    <a href="#configuracao">1. Configuração inicial</a>
+    <a href="#insumos">2. Cadastro de insumos</a>
+    <a href="#compras">3. Compras</a>
+    <a href="#estoque">4. Estoque</a>
+    <a href="#orcamento">5. Orçamento</a>
+    <a href="#producao">6. Produção</a>
+    <a href="#venda">7. Venda e entrega</a>
+    <a href="#financeiro">8. Financeiro</a>
+    <a href="#erros">Erros comuns</a>
+    <a href="#rotina">Rotina diária</a>
+  </nav>
+
+  <main>
+    <header class="hero">
+      <span class="eyebrow">Ideia Cúbica · Gestão 3D · versão 1.7</span>
+      <h1>Como preencher o sistema, do filamento à entrega</h1>
+      <p class="lead">Este guia mostra a ordem certa de uso e o que digitar em cada campo. Seguindo a ordem, o custo de cada peça sai certo, o estoque bate com a prateleira e o financeiro fecha sozinho.</p>
+    </header>
+
+    <section id="fluxo">
+      <h2>O fluxo completo</h2>
+      <p>Cada etapa alimenta a próxima. O preço do orçamento depende da compra; a produção baixa o estoque; a venda gera o recebimento.</p>
+      <div class="flow" role="list">
+        <div role="listitem"><em>UMA VEZ</em><b>Parâmetros</b><span>Energia, mão de obra, impressora, markup, canal</span></div>
+        <div role="listitem"><em>CADASTRO</em><b>Insumos</b><span>Filamentos, embalagens, kits de entrega</span></div>
+        <div role="listitem"><em>ENTRADA</em><b>Compras</b><span>Gera estoque, custo do lote e conta a pagar</span></div>
+        <div role="listitem"><em>VENDA</em><b>Orçamento</b><span>Modelos, 1 peça × quantidade</span></div>
+        <div role="listitem"><em>FÁBRICA</em><b>Produção</b><span>Reserva, imprime e baixa o filamento</span></div>
+        <div role="listitem"><em>SAÍDA</em><b>Venda</b><span>Entrega, kit e conta a receber</span></div>
+        <div role="listitem"><em>CONTROLE</em><b>Financeiro</b><span>Pagar, receber, resultado</span></div>
+      </div>
+    </section>
+
+    <section id="regras">
+      <h2>Regras de ouro</h2>
+      <div class="rule key"><span class="t">Filamento é sempre em gramas</span><span>Na compra, no estoque inicial, no peso da peça e nos kits. Um carretel de 1 kg é <b>1000 g</b>. O sistema mostra ao lado “1000 g = 1 kg = 1 carretel” para você conferir. Só o <b>preço</b> é em R$/kg.</span></div>
+      <div class="rule key"><span class="t">No orçamento, preencha 1 peça</span><span>Peso, tempo e custos são de <b>uma</b> peça. A “quantidade deste modelo” multiplica tudo.</span></div>
+      <div class="rule key"><span class="t">O preço do filamento vem da última compra</span><span>Depois que existe uma compra registrada, o orçamento usa o custo dela (com frete e desconto). Se o preço estiver errado, corrija a <b>compra</b>, não só o cadastro.</span></div>
+      <div class="rule warn"><span class="t">Alerta vermelho de “custo improvável”</span><span>Filamento abaixo de R$ 20/kg ou acima de R$ 800/kg quase sempre é quantidade digitada errada. Pare e confira antes de salvar.</span></div>
+    </section>
+
+    <section id="configuracao">
+      <div class="step-head"><span class="num">1</span><h2>Configuração inicial</h2></div>
+      <p>Faça uma vez e revise quando a conta de luz, o valor da hora ou as taxas mudarem.</p>
+      <ol class="steps">
+        <li><span class="path">Configurações → Contas</span> cadastre as contas de onde sai e entra dinheiro (PIX, banco, caixa).</li>
+        <li><span class="path">Parâmetros de Custos → Gerais</span> tarifa de energia (R$/kWh), custo da hora de mão de obra, horas produtivas por mês, markup padrão e o <b>CEP de saída</b> dos envios.</li>
+        <li><span class="path">Parâmetros de Custos → Impressoras</span> valor de aquisição, vida útil em horas, consumo (kWh/h) e manutenção por hora. Isso forma a depreciação que entra em cada orçamento.</li>
+        <li><span class="path">Parâmetros de Custos → Canais</span> impostos e taxas de cada canal de venda (direto, marketplace, cartão).</li>
+        <li><span class="path">Parâmetros de Custos → Despesas indiretas</span> aluguel, internet, assinaturas. São rateadas pelas horas de máquina.</li>
+      </ol>
+    </section>
+
+    <section id="insumos">
+      <div class="step-head"><span class="num">2</span><h2>Cadastro de insumos</h2></div>
+      <div class="two">
+        <div class="example">
+          <h3>Um filamento por vez</h3>
+          <ol class="steps">
+            <li><span class="path">Cadastros → Materiais → Novo material</span></li>
+            <li>Categoria <b>Filamentos</b>, nome, tipo (PLA, PETG…) e <b>cor</b>. A cor aparece em todas as listas.</li>
+            <li>Peso líquido do carretel e carretel vazio, em <b>gramas</b>.</li>
+            <li>Preço do filamento em <b>R$/kg</b> (vale até a primeira compra).</li>
+          </ol>
+        </div>
+        <div class="example">
+          <h3>Vários de uma vez (importação)</h3>
+          <ol class="steps">
+            <li><span class="path">Cadastros → Materiais → Importar filamentos</span></li>
+            <li>Baixe o modelo e preencha no Excel: uma linha por cor/tipo.</li>
+            <li>Envie o .csv ou copie as células e cole na tela.</li>
+            <li>Confira a coluna <b>Situação</b>: só as linhas “novo” são gravadas. Linhas com erro dizem o que corrigir.</li>
+          </ol>
+        </div>
+      </div>
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>Coluna da planilha</th><th>O que colocar</th><th>Exemplo</th></tr></thead>
+        <tbody>
+          <tr><td><b>nome</b> *</td><td>Nome como você chama o filamento</td><td>PLA Basic Preto</td></tr>
+          <tr><td><b>tipo</b> *</td><td>Material</td><td>PLA, PETG, TPU, PLA Silk</td></tr>
+          <tr><td><b>cor</b> *</td><td>Cor do filamento</td><td>Preto</td></tr>
+          <tr><td>cor_hex</td><td>Amostra da cor (opcional)</td><td>#111111</td></tr>
+          <tr><td>marca / fabricante</td><td>Criados automaticamente se não existirem</td><td>Bambu Lab</td></tr>
+          <tr><td>peso_liquido_g</td><td>Peso do filamento no carretel, em gramas</td><td>1000</td></tr>
+          <tr><td>carretel_vazio_g</td><td>Peso do carretel vazio, em gramas</td><td>250</td></tr>
+          <tr><td>preco_kg</td><td>Preço por quilo</td><td>89,90</td></tr>
+          <tr><td>estoque_minimo_g</td><td>Abaixo disso o sistema avisa para repor</td><td>500</td></tr>
+        </tbody>
+      </table></div>
+      <p class="small">* obrigatórias. Embalagens, saquinhos e cartões são cadastrados em Materiais com a unidade “un”. Monte os <b>kits de entrega</b> em <span class="path">Cadastros → Kits de entrega</span>.</p>
+    </section>
+
+    <section id="compras">
+      <div class="step-head"><span class="num">3</span><h2>Compras</h2></div>
+      <p>Toda compra entra aqui: filamento, embalagem e equipamento. Uma compra cria o lote no estoque com o custo real e o lançamento no financeiro.</p>
+      <ol class="steps">
+        <li><span class="path">Compras → Registrar compra</span>, escolha o insumo.</li>
+        <li><b>Quantidade recebida em gramas</b> (2 carretéis de 1 kg = 2000).</li>
+        <li><b>Valor pago no item</b> é o preço cheio do item, sem frete.</li>
+        <li>Frete, outros custos e <b>desconto</b> vão nos campos de baixo. O sistema divide entre os itens pelo valor.</li>
+        <li>Confira a linha “Entra no estoque: … · custo R$ …/kg” antes de registrar.</li>
+      </ol>
+      <div class="example">
+        <h3>Exemplo: 2 carretéis com frete e cupom</h3>
+        <div class="calc">PLA Preto ........ 2000 g ........ R$ 180,00
+Frete ...................................... R$  12,00
+Desconto ................................... R$  10,00
+Custo do lote = (180 + 12 − 10) ÷ 2000 g = R$ 0,091/g = R$ 91,00/kg</div>
+      </div>
+      <div class="rule ok"><span class="t">Digitou errado?</span><span>Abra a compra e use <b>Editar compra</b> (corrige e recalcula tudo) ou <b>Excluir e relançar</b> (apaga e abre uma nova já preenchida). Também dá para corrigir pelo insumo: <span class="path">Cadastros → Materiais → Editar cadastro → Custo das compras → Corrigir</span>.</span></div>
+    </section>
+
+    <section id="estoque">
+      <div class="step-head"><span class="num">4</span><h2>Estoque</h2></div>
+      <ul class="plain">
+        <li><span class="path">Estoque → Saldo por insumo</span> mostra a conta completa: comprado − usado na produção − perdas = saldo. É aqui que você confere se o sistema bate com a prateleira.</li>
+        <li><b>Lançar estoque inicial</b>: para filamento que você já tinha antes do sistema. Pese o carretel e desconte o carretel vazio; informe em gramas.</li>
+        <li><b>Inventário</b>: abra o lote e informe a contagem real. A diferença vira um ajuste rastreável.</li>
+        <li><span class="path">Estoque → Peças produzidas</span> lista as peças prontas para venda, com custo, preço previsto e dias paradas.</li>
+      </ul>
+    </section>
+
+    <section id="orcamento">
+      <div class="step-head"><span class="num">5</span><h2>Orçamento</h2></div>
+      <p>Um orçamento tem um ou mais <b>modelos</b>. Cada peça diferente é um modelo; peças iguais ficam no mesmo modelo, com a quantidade.</p>
+      <ol class="steps">
+        <li><span class="path">Orçamentos → Novo orçamento</span> e escolha o cliente.</li>
+        <li><b>Nome do modelo</b> e <b>quantidade deste modelo</b> (quantas peças iguais).</li>
+        <li><b>Dimensões</b> (altura, largura, profundidade): opcionais. Marque a caixa só se quiser mostrar ao cliente.</li>
+        <li><b>Filamento de 1 peça</b>: escolha o filamento e o peso de <b>uma</b> peça em gramas, como mostra o fatiador. Peça com duas cores: “+ Adicionar outro filamento”.</li>
+        <li><b>Tempo de 1 peça</b> em horas e minutos, e a impressora. Um arquivo 3MF fatiado preenche peso e tempo sozinho.</li>
+        <li><b>Parâmetros e outros custos</b> (opcional): markup, canal, mão de obra e custos por peça como ímã ou parafuso.</li>
+        <li>Outro modelo? <b>+ Adicionar modelo</b>. Peça que já está pronta? <b>+ Peça do estoque</b>.</li>
+        <li><b>Frete</b> (opcional): calcule e escolha se o cliente paga ou a empresa paga. <b>Kit de entrega</b> (opcional): o custo entra no preço e não aparece para o cliente. As duas seções podem ser ocultadas.</li>
+        <li>Confira o painel da direita e o quadro vermelho “Confira antes de enviar”, se aparecer. Clique em <b>Salvar</b>.</li>
+        <li><b>Orçamento para o cliente</b> gera o documento sem mostrar custos.</li>
+      </ol>
+      <div class="example">
+        <h3>Exemplo: 10 chaveiros + 10 vasos</h3>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Modelo</th><th>Preenchido (1 peça)</th><th class="num">Qtd.</th><th class="num">1 peça</th><th class="num">Total</th></tr></thead>
+          <tbody>
+            <tr><td>Chaveiro</td><td>12 g de PLA · 30 min</td><td class="num">10</td><td class="num">R$ 2,04</td><td class="num">R$ 20,40</td></tr>
+            <tr><td>Vaso</td><td>80 g de PETG · 2 h</td><td class="num">10</td><td class="num">R$ 11,45</td><td class="num">R$ 114,50</td></tr>
+            <tr><td><b>Orçamento</b></td><td></td><td class="num"><b>20</b></td><td></td><td class="num"><b>R$ 134,90</b></td></tr>
+          </tbody>
+        </table></div>
+        <p class="small">Valores ilustrativos; os seus dependem dos parâmetros e das compras.</p>
+      </div>
+      <ul class="plain">
+        <li>Cliente respondeu? Em cada modelo: <b>Cliente aprovou</b> ou <b>Cliente recusou</b>.</li>
+        <li>Vários orçamentos para o mesmo cliente? <span class="path">Orçamentos → Juntar orçamentos (kit)</span> une tudo num só, com os mesmos valores.</li>
+        <li>Aviso “os custos mudaram”: o orçamento continua com o valor salvo até você clicar em <b>Atualizar para os custos de hoje</b>.</li>
+      </ul>
+    </section>
+
+    <section id="producao">
+      <div class="step-head"><span class="num">6</span><h2>Produção</h2></div>
+      <ol class="steps">
+        <li>No orçamento aprovado: <b>Enviar para produção</b> e informe a <b>data de entrega</b>. Vira um pedido (PED-…) no quadro, ordenado pela entrega.</li>
+        <li><b>Reservar material</b>: separa o filamento no estoque (os lotes mais antigos primeiro).</li>
+        <li><b>Iniciar</b> e, ao terminar, <b>Concluir</b> com o consumo real, as horas e as peças aprovadas e rejeitadas. Só aqui o filamento sai do estoque.</li>
+      </ol>
+      <div class="two">
+        <div class="example"><h3>Peças para estoque</h3><p><span class="path">Produção → Nova produção para estoque</span>. Escolha <b>Vou produzir</b> (entra no quadro) ou <b>Já produzi</b> (baixa o filamento na hora e lança as peças prontas).</p></div>
+        <div class="example"><h3>Mudou algo?</h3><p><b>Retornar para o orçamento</b> devolve o pedido para edição. <b>Excluir</b> apaga um pedido lançado por engano e devolve o filamento ao estoque.</p></div>
+      </div>
+    </section>
+
+    <section id="venda">
+      <div class="step-head"><span class="num">7</span><h2>Venda e entrega</h2></div>
+      <ol class="steps">
+        <li>No pedido pronto (ou em <span class="path">Financeiro → Registrar venda</span>), escolha o orçamento, o pedido ou a peça do estoque. Produto, quantidade e preço vêm preenchidos.</li>
+        <li>Confira o canal, o frete e a forma de recebimento (à vista ou parcelado).</li>
+        <li><b>Kit de entrega</b>: vem sugerido do orçamento. Os itens do kit saem do estoque nesta venda.</li>
+        <li>Imprima o <b>cartão de agradecimento</b> pelo pedido.</li>
+      </ol>
+      <p class="small">Errou a venda? Clique nela para <b>Editar</b> enquanto não houver recebimento registrado.</p>
+    </section>
+
+    <section id="financeiro">
+      <div class="step-head"><span class="num">8</span><h2>Financeiro</h2></div>
+      <ul class="plain">
+        <li>Compras a prazo viram <b>contas a pagar</b>; vendas a prazo viram <b>contas a receber</b>. Pagar ou receber é só <b>liquidar</b> o título. Não lance a despesa de novo.</li>
+        <li>Despesas avulsas (aluguel, internet): <b>Novo lançamento</b>.</li>
+        <li><b>Resultado</b> mostra receita, custos, margem e lucro do período. Compras de estoque e impressoras não entram como despesa do mês.</li>
+        <li>Título lançado errado: abra e use <b>Editar</b>. Pagamento errado: <b>Estornar</b>.</li>
+      </ul>
+    </section>
+
+    <section id="erros">
+      <h2>Erros comuns e como corrigir</h2>
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>O que aparece</th><th>Causa provável</th><th>Como corrigir</th></tr></thead>
+        <tbody>
+          <tr><td>Filamento a R$ 91.770/kg</td><td>Quantidade digitada como “1” (1 g) em vez de 1000 g</td><td>Compras → abrir a compra → Editar compra (ou Excluir e relançar) com 1000 g</td></tr>
+          <tr><td>Mudei o preço no cadastro e o orçamento não mudou</td><td>Com compra registrada, vale o custo da última compra</td><td>Corrija a compra, ou marque “Usar este preço do cadastro nos orçamentos”</td></tr>
+          <tr><td>Orçamento com valor antigo</td><td>Orçamento salvo mantém o valor da época</td><td>Abrir o orçamento → Atualizar para os custos de hoje → Salvar</td></tr>
+          <tr><td>Estoque diferente da prateleira</td><td>Produção não concluída, perda não registrada ou compra faltando</td><td>Estoque → Saldo por insumo; ajuste pelo inventário do lote</td></tr>
+          <tr><td>“Material insuficiente” ao iniciar</td><td>Falta compra ou estoque inicial</td><td>Registrar a compra; o pedido fica “Aguardando material” até lá</td></tr>
+          <tr><td>Edição ou exclusão bloqueada</td><td>Já existe pagamento/recebimento, ou o material já foi usado</td><td>Estorne o pagamento em Financeiro, ou use Editar em vez de Excluir</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="rotina">
+      <h2>Rotina diária</h2>
+      <p class="small">Marque conforme for fazendo. As marcações ficam só neste navegador.</p>
+      <ul class="check" id="checklist">
+        <li><label><input type="checkbox" id="c1"><span>Registrar as compras que chegaram (em gramas, com frete e desconto)</span></label></li>
+        <li><label><input type="checkbox" id="c2"><span>Responder os orçamentos: aprovar ou recusar cada modelo</span></label></li>
+        <li><label><input type="checkbox" id="c3"><span>Enviar os aprovados para produção com a data de entrega</span></label></li>
+        <li><label><input type="checkbox" id="c4"><span>Reservar material e iniciar as impressões do quadro</span></label></li>
+        <li><label><input type="checkbox" id="c5"><span>Concluir as produções com o consumo real</span></label></li>
+        <li><label><input type="checkbox" id="c6"><span>Registrar as vendas entregues, com o kit de entrega</span></label></li>
+        <li><label><input type="checkbox" id="c7"><span>Liquidar o que foi pago e recebido no Financeiro</span></label></li>
+        <li><label><input type="checkbox" id="c8"><span>Olhar Estoque → Reposição e o aviso de custo improvável em Compras</span></label></li>
+      </ul>
+    </section>
+
+    <footer>Ideia Cúbica · guia de uso do sistema de gestão, versão 1.7. Dúvidas sobre um cálculo: em cada orçamento, “Como cada valor foi calculado” mostra a conta.</footer>
+  </main>
+</div>
+
+<script>
+(function () {
+  var KEY = 'ic-guia-rotina';
+  var saved = {};
+  try { saved = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) { saved = {}; }
+  var boxes = document.querySelectorAll('#checklist input');
+  boxes.forEach(function (b) {
+    if (saved[b.id]) b.checked = true;
+    b.addEventListener('change', function () {
+      saved[b.id] = b.checked;
+      try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch (e) { /* armazenamento indisponível */ }
+    });
+  });
+})();
+</script>

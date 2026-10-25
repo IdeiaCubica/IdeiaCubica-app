@@ -4,12 +4,13 @@ import { useStore } from '../store';
 import { navigate } from '../App';
 import type { OrderStatus, ProductionOrder, Project } from '../../domain/types';
 import {
-  ORDER_STATUS_LABEL, QUEUE_STATUSES, addProjectFileVersion, byDelivery, cancelOrder, checkAvailability, compareOrder, completeOrder, createManualOrder, deleteOrder, orderDeleteBlock, produceForStockNow,
+  ORDER_STATUS_LABEL, QUEUE_STATUSES, addProjectFileVersion, byDelivery, cancelOrder, checkAvailability, compareOrder, completeOrder, createManualOrder, deleteOrder, orderDeleteBlock, produceForStockNow, setOrderImage,
   moveOrderStatus, orderDelivery, orderReservations, productionQueue, queueShortages, reserveOrderMaterials, returnOrderToQuote,
   saveProject, startOrder, stockEstimate, updateOrderPlanning,
 } from '../../domain/production';
 import { lotBalance, lotLabel, reorderAnalysis } from '../../domain/inventory';
 import { materialLabel } from '../../domain/catalog';
+import { ImagePicker } from '../components/ImagePicker';
 import { saleEconomics } from '../../domain/sales';
 import { quoteItemAt, quoteItems } from '../../domain/quotes';
 import { clientQuoteSettings } from '../../domain/clientQuote';
@@ -387,6 +388,8 @@ function OrderModal({ order, onClose }: { order: ProductionOrder; onClose: () =>
           <span>Custo estimado por peça: <b>{fmtBRL(o.estimate.summary.unitCost)}</b></span>
           <span>Valor sugerido de venda: <b>{fmtBRL(o.estimate.summary.unitPrice)}</b></span>
         </div>}
+        {purposeOf(o) === 'estoque' && o.status !== 'cancelada' && <ImagePicker value={o.image ?? db.finishedGoods.find((g) => g.id === o.finishedGoodId)?.image ?? null}
+          onChange={(img) => run((d) => setOrderImage(d, o.id, img), img ? 'Foto salva.' : 'Foto removida.')} hint="Vai também para as peças prontas desta produção." />}
         {o.finishedGoodId && <Alert tone="success">Peças aprovadas enviadas ao estoque ({db.finishedGoods.find((g) => g.id === o.finishedGoodId)?.code}). <a href="#/estoque/pecas">Ver peças produzidas</a></Alert>}
         <h3>Material previsto</h3>
         <div className="card"><table className="tbl"><thead><tr><th>Material</th><th className="num">Previsto</th><th className="num">Disponível p/ esta OP</th><th>Situação</th></tr></thead><tbody>
@@ -511,6 +514,7 @@ function StockProductionForm({ onClose }: { onClose: () => void }) {
   const { db, run } = useStore();
   const [f, set] = useForm({ description: '', projectId: '', printerId: db.settings.defaultPrinterId ?? db.printers[0]?.id ?? '', qty: '1', hoursPerUnit: null as number | null, notes: '', done: false, location: '' });
   const [mats, setMats] = useState([{ materialId: db.materials.find((m) => m.active && m.filament)?.id ?? '', qtyPerUnit: '' }]);
+  const [image, setImage] = useState<string | null>(null);
   const qty = num(f.qty) ?? 0;
   const matOpts = db.materials.filter((m) => m.active).map((m) => {
     const r = reorderAnalysis(db, m);
@@ -523,7 +527,7 @@ function StockProductionForm({ onClose }: { onClose: () => void }) {
     try { return stockEstimate(db, { qtyPlanned: qty, plannedMaterials: planned, plannedHours, printerId: f.printerId || undefined }); } catch { return null; }
   }, [db, qty, JSON.stringify(planned), plannedHours, f.printerId]);
   const submit = () => {
-    const input = { description: f.description, purpose: 'estoque' as const, projectId: f.projectId || undefined, printerId: f.printerId || undefined, qtyPlanned: qty, plannedMaterials: planned, plannedHours, notes: f.notes };
+    const input = { description: f.description, purpose: 'estoque' as const, projectId: f.projectId || undefined, printerId: f.printerId || undefined, qtyPlanned: qty, plannedMaterials: planned, plannedHours, notes: f.notes, image };
     run((d) => f.done ? produceForStockNow(d, { ...input, location: f.location }) : createManualOrder(d, input),
       f.done ? 'Peças lançadas em Estoque → Peças produzidas e material baixado do estoque.' : 'Produção para estoque criada: custo e valor sugerido calculados.').then((r) => r.ok && onClose());
   };
@@ -545,6 +549,7 @@ function StockProductionForm({ onClose }: { onClose: () => void }) {
           <SelectField label="Projeto" value={f.projectId} onChange={set('projectId')} placeholder="— nenhum —" options={db.projects.map((p) => ({ value: p.id, label: p.name }))} />
           {f.done && <TextField label="Onde estão guardadas" value={f.location} onChange={set('location')} placeholder="Ex.: prateleira 2" />}
         </div>
+        <ImagePicker value={image} onChange={setImage} hint="Opcional. Vai para Estoque → Peças produzidas e para os orçamentos feitos com esta peça." />
         <p className="section-title">Material por peça</p>
         {mats.map((m, i) => (
           <div key={i} className="line-item">

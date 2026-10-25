@@ -99,7 +99,7 @@ export function resolveParams(db: DB, input: QuoteInput): CostParams {
     lots[id] = { label: lotLabel(db, lot), unitCost: lot.unitCost, unit: mat?.unit ?? 'un', materialId: lot.materialId };
   }
   const materials: NonNullable<CostParams['materials']> = {};
-  for (const line of input.materials) {
+  for (const line of [...input.materials, ...input.extras.filter((e) => e.materialId && !e.lotId)]) {
     const id = lineMaterialId(db, line);
     const mat = db.materials.find((m) => m.id === id);
     if (!mat || materials[mat.id]) continue;
@@ -138,7 +138,7 @@ export function perHour(ev: QuoteEvaluation): { costPerHour: Decimal | null; pri
   return { costPerHour: ev.costs.total.div(h), pricePerHour: ev.pricing.analysis ? ev.pricing.analysis.revenue.div(h) : null };
 }
 
-const MAX_IMAGE_CHARS = 600_000; // ~450 KB por imagem: protege o limite do armazenamento
+export const MAX_IMAGE_CHARS = 600_000; // ~450 KB por imagem: protege o limite do armazenamento
 
 export function summarize(ev: QuoteEvaluation): QuoteSummary {
   const { costs, pricing } = ev;

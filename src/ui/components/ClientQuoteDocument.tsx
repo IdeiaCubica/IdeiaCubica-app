@@ -64,6 +64,7 @@ export function ClientQuoteDocument({ doc }: { doc: ClientQuoteDoc }) {
             <h2>{single.description}</h2>
             <ul className="cq-chips">
               {single.materials.length > 0 && <li><span>Material</span>{single.materials.join(' + ')}</li>}
+              {single.dimensions && <li><span>Dimensões aprox.</span>{single.dimensions}</li>}
               <li><span>Quantidade</span>{qty} {qty === 1 ? 'peça' : 'peças'}</li>
               <li><span>Produção</span>{single.ready ? 'Pronta-entrega' : 'Impressão 3D sob medida'}</li>
             </ul>
@@ -77,7 +78,7 @@ export function ClientQuoteDocument({ doc }: { doc: ClientQuoteDoc }) {
               {it.image && <div className="cq-thumb"><img src={it.image} alt={it.description} /></div>}
               <div className="cq-row-info">
                 <b>{it.description}</b>
-                <span>{[it.materials.join(' + '), it.ready ? 'pronta-entrega' : 'sob medida'].filter(Boolean).join(' · ')}</span>
+                <span>{[it.materials.join(' + '), it.dimensions && `aprox. ${it.dimensions}`, it.ready ? 'pronta-entrega' : 'sob medida'].filter(Boolean).join(' · ')}</span>
               </div>
               <div className="cq-row-qty">{it.quantity} × {fmtBRL(it.unitPrice)}</div>
               <div className="cq-row-total">{fmtBRL(cents(it.unitPrice.times(it.quantity)))}{it.discount.gt(0) && <small>− {fmtBRL(it.discount)} ({fmtNum(it.discountPct)}%)</small>}</div>

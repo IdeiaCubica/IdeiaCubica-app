@@ -155,7 +155,9 @@ export function summarize(ev: QuoteEvaluation): QuoteSummary {
 
 export interface QuoteItemDraft { itemId?: ID; name: string; image?: string | null; input: QuoteInput; finishedGoodId?: ID }
 
-const sameInput = (a: QuoteInput, b: QuoteInput) => JSON.stringify({ overrides: {}, ...a }) === JSON.stringify({ overrides: {}, ...b });
+/** Mesma entrada de custo (dimensões são só informativas e não mudam o preço). */
+const sameInput = (a: QuoteInput, b: QuoteInput) =>
+  JSON.stringify({ overrides: {}, ...a, dimensionsCm: undefined }) === JSON.stringify({ overrides: {}, ...b, dimensionsCm: undefined });
 
 /**
  * Parâmetros para exibir/recalcular uma peça. Regra única para todas as telas:
@@ -238,7 +240,9 @@ export function saveQuote(db: DB, meta: { quoteId?: ID; name?: string; projectId
     // Peça não alterada mantém os custos e o valor salvos (não muda de preço sozinha);
     // só recalcula com os custos atuais se foi alterada ou se o usuário pediu.
     if (old && !meta.refreshCosts && sameInput(old.input, input)) {
-      return { ...structuredClone(old), name, image: d.image ?? null, finishedGoodId: d.finishedGoodId };
+      const kept = { ...structuredClone(old), name, image: d.image ?? null, finishedGoodId: d.finishedGoodId };
+      kept.input.dimensionsCm = input.dimensionsCm ? structuredClone(input.dimensionsCm) : undefined;
+      return kept;
     }
     const params = resolveParams(db, input);
     return { itemId, name, image: d.image ?? null, input: structuredClone(input), params, summary: summarize(evaluateQuote(input, params)), finishedGoodId: d.finishedGoodId };

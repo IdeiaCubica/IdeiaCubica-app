@@ -401,6 +401,8 @@ export interface QuoteInput {
   failureSource: 'historico' | 'manual';
   extras: QuoteExtraLine[];
   freightSubsidyPerOrder: DecStr | null;
+  /** Dimensões aproximadas de 1 peça (opcional; aparecem no orçamento do cliente). */
+  dimensionsCm?: { height: number | null; width: number | null; depth: number | null } | null;
   /** Parte do custo do kit de entrega do pedido atribuída a esta peça (custo interno, oculto ao cliente). */
   deliveryKitShare?: DecStr | null;
   /** Envio deste orçamento: caixa da peça e CEPs. Novo orçamento parte do padrão de Parâmetros → Envios. */

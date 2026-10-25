@@ -79,17 +79,23 @@ const newRow = (kind: ItemRow['kind'], materialId = '', unit: RowUnit = 'un'): I
   description: '', printerLink: 'nenhuma', printerId: '', printerName: '', manufacturer: '', model: '',
 });
 
-/** Unidade de digitação padrão: filamento por carretel (ou kg), nunca grama — evita o erro de 1.000×. */
+/**
+ * Unidade de digitação: filamento é SEMPRE em gramas (padrão da empresa; o custo aparece em R$/kg).
+ * O erro de 1.000× é barrado pelo alerta de custo improvável e pela conversão mostrada ao lado.
+ */
 export function defaultPurchaseUnit(m: Material | undefined): RowUnit {
   if (!m) return 'un';
-  if (m.unit === 'g') return m.filament?.netWeightG ? 'carretel' : 'kg';
   return m.unit;
 }
 function unitOptions(m: Material) {
-  const units: { value: RowUnit; label: string }[] = [];
-  if (m.unit === 'g' && m.filament?.netWeightG) units.push({ value: 'carretel', label: `carretel (${fmtNum(m.filament.netWeightG)} g)` });
-  for (const u of compatibleUnits(m.unit)) units.push({ value: u, label: u === 'g' ? 'g (gramas)' : u === 'kg' ? 'kg (quilos)' : u });
-  return units;
+  if (m.filament) return [{ value: 'g' as RowUnit, label: 'g (gramas)' }];
+  return compatibleUnits(m.unit).map((u) => ({ value: u as RowUnit, label: u === 'g' ? 'g (gramas)' : u === 'kg' ? 'kg (quilos)' : u }));
+}
+/** "1.000 g = 1 kg = 1 carretel" para conferir a quantidade digitada em gramas. */
+function gramsHint(m: Material, grams: number | null) {
+  if (!grams || grams <= 0) return m.filament?.netWeightG ? `Em gramas. 1 carretel = ${fmtNum(m.filament.netWeightG)} g` : 'Em gramas (1 kg = 1.000 g)';
+  const spools = m.filament?.netWeightG ? grams / m.filament.netWeightG : null;
+  return `${fmtNum(grams)} g = ${fmtNum(grams / 1000, 3)} kg${spools ? ` = ${fmtNum(spools, 2)} carretel(is)` : ''}`;
 }
 /** Quantidade digitada → quantidade e unidade aceitas pelo domínio. */
 function rowQty(it: ItemRow, m: Material | undefined): { qty: number; unit: Unit } | null {
@@ -103,7 +109,7 @@ function rowQty(it: ItemRow, m: Material | undefined): { qty: number; unit: Unit
 function rowsFromPurchase(db: DB, p: Purchase, asNew = false): ItemRow[] {
   const rows: ItemRow[] = p.items.filter((it) => db.materials.some((m) => m.id === it.materialId)).map((it) => {
     const m = db.materials.find((x) => x.id === it.materialId);
-    const kg = m?.unit === 'g';
+    const kg = m?.unit === 'g' && !m.filament; // filamento fica em gramas
     return { ...newRow('insumo', it.materialId, kg ? 'kg' : (m?.unit ?? 'un')), qty: toInputBR(kg ? it.qty / 1000 : it.qty), price: toInputBR(it.price, 2),
       batchNumber: it.batchNumber ?? '', ...(asNew ? {} : { lotId: it.lotId, locked: purchaseLotUsed(db, it.lotId) }) };
   });
@@ -221,8 +227,9 @@ function PurchaseForm({ onClose, purchase, template }: { onClose: () => void; pu
                     <Combobox ariaLabel="Insumo" value={it.materialId} onChange={(v) => !it.locked && pickMaterial(i, v)} placeholder="— digite para buscar —" options={materialOptions} />
                   </Field>
                   <div className="row" style={{ alignItems: 'end', flexWrap: 'nowrap', gap: 8 }}>
-                    <NumField label="Quantidade recebida" value={it.qty} onChange={(v) => setItem(i, { qty: v })} />
-                    {m && <div className="field" style={{ width: 150, flexShrink: 0 }}><Combobox ariaLabel="Unidade" value={it.unit} onChange={(v) => v && setItem(i, { unit: v as RowUnit })}
+                    <NumField label={m?.filament ? 'Quantidade recebida (g)' : 'Quantidade recebida'} value={it.qty} onChange={(v) => setItem(i, { qty: v })}
+                      suffix={m?.filament ? 'g' : undefined} hint={m?.filament ? gramsHint(m, num(it.qty)) : undefined} />
+                    {m && !m.filament && <div className="field" style={{ width: 150, flexShrink: 0 }}><Combobox ariaLabel="Unidade" value={it.unit} onChange={(v) => v && setItem(i, { unit: v as RowUnit })}
                       options={unitOptions(m)} /></div>}
                   </div>
                   <NumField label="Valor pago no item (total)" suffix="R$" value={it.price} onChange={(v) => setItem(i, { price: v })} hint="Preço cheio do item; o desconto da compra vai no campo abaixo" />

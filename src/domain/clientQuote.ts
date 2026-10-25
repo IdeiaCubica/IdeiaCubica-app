@@ -4,7 +4,7 @@
  * nem dados internos. Valores vêm da versão SALVA do orçamento, recalculada
  * com o snapshot de parâmetros dela (mesmos números da tela).
  */
-import type { ClientQuoteSettings, DB, ID, Quote } from './types';
+import type { ClientQuoteSettings, DB, ID, Quote, QuoteInput } from './types';
 import { D, Decimal, ZERO, cents } from './money';
 import { addDays, todayISO } from './core';
 import { evaluateQuote, itemState, latestVersion } from './quotes';
@@ -27,6 +27,8 @@ export interface ClientQuoteDocItem {
   description: string;
   image: string | null;
   materials: string[];
+  /** Dimensões aproximadas de 1 peça, ex.: "10 × 5 × 3 cm (A × L × P)"; null = não informadas. */
+  dimensions: string | null;
   quantity: number;
   unitPrice: Decimal;
   /** Valor da peça já com desconto. */
@@ -63,6 +65,15 @@ const deliveryText = (min: number | null, max: number | null) =>
  * Monta o documento com as peças escolhidas (padrão: todas as não recusadas).
  * Permite enviar ao cliente o orçamento de todas as peças ou só de algumas.
  */
+/** "10 × 5 × 3 cm (A × L × P)" com as medidas informadas; null quando nenhuma foi preenchida. */
+export function formatDimensions(d: QuoteInput['dimensionsCm']): string | null {
+  if (!d) return null;
+  const parts = [['A', d.height], ['L', d.width], ['P', d.depth]].filter(([, v]) => v !== null && v !== undefined && Number(v) > 0) as [string, number][];
+  if (!parts.length) return null;
+  const n = (v: number) => v.toLocaleString('pt-BR', { maximumFractionDigits: 1 });
+  return `${parts.map(([, v]) => n(v)).join(' × ')} cm (${parts.map(([k]) => k).join(' × ')})`;
+}
+
 export function buildClientQuote(db: DB, quote: Quote, opts: Partial<ClientQuoteSettings> = {}, today = todayISO(), itemIds?: ID[]): ClientQuoteDoc {
   const v = latestVersion(quote);
   const chosen = v.items.filter((it) => (itemIds ? itemIds.includes(it.itemId) : itemState(db, quote, it.itemId) !== 'recusado'));
@@ -81,7 +92,7 @@ export function buildClientQuote(db: DB, quote: Quote, opts: Partial<ClientQuote
     }).filter((x): x is string => !!x))];
     const discount = gross.minus(a.revenue);
     return {
-      description: it.name, image: it.image ?? null, materials, quantity: qty, unitPrice: a.unitPrice, total: a.revenue,
+      description: it.name, image: it.image ?? null, materials, dimensions: formatDimensions(it.input.dimensionsCm), quantity: qty, unitPrice: a.unitPrice, total: a.revenue,
       discountPct: a.discountPct, discount: discount.gt(0) ? discount : ZERO, ready: !!it.finishedGoodId,
     };
   });

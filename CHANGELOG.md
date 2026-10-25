@@ -2,6 +2,22 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.7.0 — 24/10/2026
+
+### Novidades
+- **Importar filamentos** (Cadastros → Materiais): baixe o modelo, preencha no Excel/Google Planilhas (uma linha por cor/tipo)
+  e envie o .csv ou cole as células. A tela confere cada linha antes de gravar (cor, tipo, peso em gramas, preço R$/kg fora do
+  normal, nomes repetidos), cria marcas e fabricantes que faltam e pode atualizar os filamentos já cadastrados.
+- **Dimensões aproximadas da peça** (altura, largura, profundidade) no orçamento, opcionais. Aparecem no orçamento do cliente
+  e não alteram o preço salvo.
+- **Excluir pedido/produção por completo** (Produção → abrir o pedido → Excluir): desfaz reservas e baixas de material
+  (o filamento volta ao estoque), apaga as peças produzidas por ele e, se veio de orçamento, a peça volta a “Aprovada”.
+  Bloqueado só se houver venda ou se as peças já foram vendidas/separadas.
+
+### Ajuste
+- **Filamento sempre em gramas** na compra e na correção de custo (o custo continua em R$/kg). Ao lado da quantidade aparece a
+  conferência “1.000 g = 1 kg = 1 carretel”, e custos fora do normal continuam com alerta.
+
 ## v1.6.3 — 24/10/2026
 
 ### Orçamento por modelo: preencha 1 peça, a quantidade multiplica

@@ -576,6 +576,35 @@ export function cancelOrder(db: DB, orderId: ID, reason: string) {
   audit(db, 'OP cancelada', `${o.number} — ${reason}`);
 }
 
+/** Motivo pelo qual o pedido/produção não pode ser excluído (null = pode). */
+export function orderDeleteBlock(db: DB, o: ProductionOrder): string | null {
+  if (db.sales.some((s) => s.orderId === o.id && s.status === 'ativa')) return 'Há venda registrada deste pedido. Cancele a venda antes de excluir.';
+  const fg = o.finishedGoodId ? db.finishedGoods.find((g) => g.id === o.finishedGoodId) : undefined;
+  if (fg && !isUntouchedFinishedGood(db, fg.id)) return `As peças produzidas (${fg.code}) já foram vendidas, baixadas, separadas ou orçadas. Desfaça isso antes de excluir.`;
+  return null;
+}
+
+/**
+ * Exclui um pedido/produção por completo (lançado por engano): apaga reservas e baixas de
+ * material (o filamento volta ao estoque), as peças prontas geradas e o próprio registro.
+ * Pedido de orçamento: a peça volta a "aprovada" no orçamento.
+ */
+export function deleteOrder(db: DB, orderId: ID, reason: string) {
+  const o = byId(db.orders, orderId, 'Pedido/produção');
+  const why = requireText(reason, 'o motivo da exclusão');
+  const block = orderDeleteBlock(db, o);
+  if (block) throw new BusinessError(block);
+  db.movements = db.movements.filter((m) => !(m.ref.kind === 'op' && m.ref.id === o.id));
+  if (o.finishedGoodId) db.finishedGoods = db.finishedGoods.filter((g) => g.id !== o.finishedGoodId);
+  db.orders = db.orders.filter((x) => x.id !== o.id);
+  const q = o.quoteId ? db.quotes.find((x) => x.id === o.quoteId) : undefined;
+  if (q && o.status !== 'cancelada') {
+    if (o.quoteItemId) q.itemStatus = { ...q.itemStatus, [o.quoteItemId]: 'aprovado' };
+    refreshQuoteStatus(db, q);
+  }
+  audit(db, 'Pedido/produção excluído', `${o.number} ${o.description} — ${why}`);
+}
+
 /* ---------------- Previsto × realizado ---------------- */
 export interface OrderComparison {
   estimated: { total: Decimal | null; unit: Decimal | null; materialQty: Decimal; hours: Decimal | null; complete: boolean };

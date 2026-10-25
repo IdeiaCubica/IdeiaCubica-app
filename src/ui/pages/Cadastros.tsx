@@ -8,6 +8,7 @@ import { lotBalance, materialBalance, reorderAnalysis } from '../../domain/inven
 import { materialCostPolicy } from '../../domain/quotes';
 import { correctLot, purchaseEditBlock, unusualUnitCost } from '../../domain/purchases';
 import { deleteDeliveryKit, kitUnitCost, saveDeliveryKit } from '../../domain/deliveryKits';
+import { filamentTemplateCsv, importFilaments, previewFilamentImport } from '../../domain/filamentImport';
 import { UNIT_LABEL, fmtDate, fmtDocument, fmtPhone } from '../../domain/core';
 import { D, Decimal, fmtBRL, fmtNum, parseBR, toInputBR } from '../../domain/money';
 import { perGramToPerKg, perKgToPerGram } from '../../domain/conversions';
@@ -180,12 +181,65 @@ function DeliveryKitForm({ kit, onClose }: { kit?: DeliveryKit; onClose: () => v
   );
 }
 
+/* ---------------- Importação de filamentos ---------------- */
+function ImportFilamentsModal({ onClose }: { onClose: () => void }) {
+  const { db, run } = useStore();
+  const [text, setText] = useState('');
+  const [update, setUpdate] = useState(false);
+  const preview = text.trim() ? previewFilamentImport(db, text) : null;
+  const rows = preview?.rows ?? [];
+  const ok = rows.filter((r) => r.status === 'novo' || (update && r.status === 'existe'));
+  const download = () => {
+    const url = URL.createObjectURL(new Blob([filamentTemplateCsv()], { type: 'text/csv;charset=utf-8' }));
+    const a = document.createElement('a'); a.href = url; a.download = 'modelo-importacao-filamentos.csv'; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+  const onFile = async (f: File) => setText(await f.text());
+  const submit = () => run((d) => importFilaments(d, rows, { updateExisting: update }), 'Importação concluída.')
+    .then((r) => { if (r.ok) onClose(); });
+  return (
+    <Modal wide title="Importar filamentos" subtitle="Cadastre vários filamentos de uma vez a partir de uma planilha (Excel ou Google Planilhas). Pesos sempre em gramas; preço em R$/kg." onClose={onClose}
+      footer={<><span className="muted" style={{ marginRight: 'auto' }}>{rows.length ? `${ok.length} para gravar · ${rows.filter((r) => r.status === 'erro').length} com erro` : ''}</span>
+        <button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={submit} disabled={!ok.length}>Importar {ok.length || ''} filamento(s)</button></>}>
+      <div className="stack">
+        <ol className="small" style={{ margin: 0, paddingLeft: 18 }}>
+          <li><button type="button" className="link-btn" onClick={download}>Baixe o modelo da planilha</button> e preencha uma linha por filamento (cor e tipo diferentes = linhas diferentes).</li>
+          <li>Colunas: <b>nome, tipo, cor</b> (obrigatórias), cor_hex (#RRGGBB), marca, fabricante, peso_liquido_g, carretel_vazio_g, preco_kg, estoque_minimo_g, observacoes.</li>
+          <li>Escolha o arquivo .csv salvo, ou copie as células no Excel e cole abaixo (com o cabeçalho).</li>
+        </ol>
+        <div className="row" style={{ gap: 8 }}>
+          <label className="btn secondary">Escolher arquivo .csv<input type="file" accept=".csv,.txt,text/csv" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) onFile(f); e.target.value = ''; }} /></label>
+          {text && <button type="button" className="btn ghost" onClick={() => setText('')}>Limpar</button>}
+        </div>
+        <TextArea label="Ou cole aqui as células da planilha" value={text} onChange={setText} />
+        {preview && preview.missingColumns.length > 0 && <Alert tone="error" title="Faltam colunas obrigatórias">Não encontrei: {preview.missingColumns.join(', ')}. A primeira linha precisa ser o cabeçalho (use o modelo).</Alert>}
+        {rows.some((r) => r.status === 'existe') && <Check label="Atualizar os filamentos já cadastrados com os dados da planilha (preço de referência, pesos, cor, marca)" checked={update} onChange={setUpdate} />}
+        {rows.length > 0 && <div className="card"><table className="tbl"><thead><tr><th>Linha</th><th>Filamento</th><th>Marca</th><th className="num">Peso líquido</th><th className="num">Preço</th><th>Situação</th></tr></thead><tbody>
+          {rows.map((r) => (
+            <tr key={r.line}>
+              <td className="mono">{r.line}</td>
+              <td>{r.colorHex && <i className="swatch" style={{ background: r.colorHex }} />}<b>{r.name || '—'}</b><div className="muted small">{r.materialType} · {r.color}</div></td>
+              <td>{r.brand ?? '—'}</td>
+              <td className="num">{r.netWeightG ? `${fmtNum(r.netWeightG)} g` : '—'}</td>
+              <td className="num">{r.pricePerKg ? `${fmtBRL(r.pricePerKg)}/kg` : '—'}</td>
+              <td>{r.status === 'erro' ? <><Badge tone="error">erro</Badge><div className="small err-text">{r.message}</div></>
+                : r.status === 'existe' ? <><Badge tone={update ? 'info' : 'neutral'}>{update ? 'vai atualizar' : 'já existe — ignorado'}</Badge><div className="small muted">{r.message}</div></>
+                : <Badge tone="success">novo</Badge>}</td>
+            </tr>))}
+        </tbody></table></div>}
+        <p className="small muted" style={{ margin: 0 }}>Marcas e fabricantes que ainda não existem são cadastrados automaticamente. O preço da planilha vira o preço de referência do cadastro (usado nos orçamentos até a primeira compra).</p>
+      </div>
+    </Modal>
+  );
+}
+
 /* ---------------- Materiais ---------------- */
 function Materiais() {
   const { db, run } = useStore();
   const [edit, setEdit] = useState<Material | 'novo' | null>(null);
   const [view, setView] = useState<Material | null>(null);
   const [copyOf, setCopyOf] = useState<Material | null>(null);
+  const [importing, setImporting] = useState(false);
   const [cats, setCats] = useState(false);
   const [cat, setCat] = useState('');
   const rows = db.materials.filter((m) => !cat || m.categoryId === cat);
@@ -193,7 +247,7 @@ function Materiais() {
     <div className="card">
       <div className="card-head">
         <div><h2>Materiais</h2><p className="muted small">Filamentos e demais insumos. O preço usado no orçamento vem da última compra ou, sem compras, do preço de referência. Saldos ficam em <a href="#/estoque">Estoque → Saldo por insumo</a>.</p></div>
-        <div className="row"><button className="btn secondary" onClick={() => setCats(true)}>Categorias</button><button className="btn primary" onClick={() => setEdit('novo')}>Novo material</button></div>
+        <div className="row"><button className="btn secondary" onClick={() => setCats(true)}>Categorias</button><button className="btn secondary" onClick={() => setImporting(true)}>Importar filamentos</button><button className="btn primary" onClick={() => setEdit('novo')}>Novo material</button></div>
       </div>
       <DataTable rows={rows} rowKey={(m) => m.id} onRowClick={setView}
         search={(m) => `${m.code} ${m.name} ${materialDesc(db, m)}`}
@@ -218,6 +272,7 @@ function Materiais() {
       {view && <MaterialDetail material={view} onClose={() => setView(null)} onEdit={() => { setEdit(view); setView(null); }}
         onRelaunch={(copy) => { setView(null); setCopyOf(copy); }} />}
       {cats && <CategoriesModal onClose={() => setCats(false)} />}
+      {importing && <ImportFilamentsModal onClose={() => setImporting(false)} />}
     </div>
   );
 }
@@ -302,7 +357,9 @@ function MaterialLotCosts({ material }: { material: Material }) {
     const l = lots.find((x) => x.id === lotId)!;
     const it = db.purchases.find((p) => p.id === l.purchaseId)?.items.find((i) => i.lotId === l.id);
     const goods = it?.price ?? D(l.unitCost).times(l.initialQty).toDecimalPlaces(2).toString();
-    setEdit({ lotId, qty: toInputBR(grams ? l.initialQty / 1000 : l.initialQty), unit: grams ? 'kg' : material.unit, price: toInputBR(goods, 2) });
+    // Filamento: sempre em gramas. Outros insumos em gramas: digitados em kg.
+    const inKg = grams && !material.filament;
+    setEdit({ lotId, qty: toInputBR(inKg ? l.initialQty / 1000 : l.initialQty), unit: inKg ? 'kg' : material.unit, price: toInputBR(goods, 2) });
   };
   const qtyStock = edit ? (num(edit.qty) ?? 0) * (edit.unit === 'kg' ? 1000 : edit.unit === 'carretel' ? (material.filament?.netWeightG ?? 0) : 1) : 0;
   const prevCost = edit && qtyStock > 0 && parseBR(edit.price) ? parseBR(edit.price)!.div(qtyStock) : null;
@@ -332,9 +389,10 @@ function MaterialLotCosts({ material }: { material: Material }) {
         <b>Corrigir lote {lots.find((l) => l.id === edit.lotId)?.code}</b>
         <div className="grid g3" style={{ alignItems: 'end' }}>
           <div className="row" style={{ alignItems: 'end', flexWrap: 'nowrap', gap: 8 }}>
-            <NumField label="Quantidade recebida" value={edit.qty} onChange={(v) => setEdit({ ...edit, qty: v })} />
-            {grams && <div className="field" style={{ width: 150, flexShrink: 0 }}><Combobox ariaLabel="Unidade" value={edit.unit} onChange={(v) => v && setEdit({ ...edit, unit: v })}
-              options={[...(material.filament?.netWeightG ? [{ value: 'carretel', label: `carretel (${fmtNum(material.filament.netWeightG)} g)` }] : []), { value: 'kg', label: 'kg (quilos)' }, { value: 'g', label: 'g (gramas)' }]} /></div>}
+            <NumField label={material.filament ? 'Quantidade recebida (g)' : 'Quantidade recebida'} value={edit.qty} onChange={(v) => setEdit({ ...edit, qty: v })} suffix={material.filament ? 'g' : undefined}
+              hint={material.filament ? `${fmtNum(qtyStock)} g = ${fmtNum(qtyStock / 1000, 3)} kg${material.filament.netWeightG ? ` = ${fmtNum(qtyStock / material.filament.netWeightG, 2)} carretel(is)` : ''}` : undefined} />
+            {grams && !material.filament && <div className="field" style={{ width: 150, flexShrink: 0 }}><Combobox ariaLabel="Unidade" value={edit.unit} onChange={(v) => v && setEdit({ ...edit, unit: v })}
+              options={[{ value: 'kg', label: 'kg (quilos)' }, { value: 'g', label: 'g (gramas)' }]} /></div>}
           </div>
           <NumField label="Valor pago pela mercadoria" suffix="R$" value={edit.price} onChange={(v) => setEdit({ ...edit, price: v })} hint="Sem frete (o frete da compra é rateado automaticamente)" />
           <Field label="Novo custo (sem frete)"><div className="readonly-value">{prevCost ? perUnit(prevCost) : '—'}</div></Field>

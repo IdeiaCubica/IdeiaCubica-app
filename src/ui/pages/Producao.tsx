@@ -4,7 +4,7 @@ import { useStore } from '../store';
 import { navigate } from '../App';
 import type { OrderStatus, ProductionOrder, Project } from '../../domain/types';
 import {
-  ORDER_STATUS_LABEL, QUEUE_STATUSES, addProjectFileVersion, byDelivery, cancelOrder, checkAvailability, compareOrder, completeOrder, createManualOrder, produceForStockNow,
+  ORDER_STATUS_LABEL, QUEUE_STATUSES, addProjectFileVersion, byDelivery, cancelOrder, checkAvailability, compareOrder, completeOrder, createManualOrder, deleteOrder, orderDeleteBlock, produceForStockNow,
   moveOrderStatus, orderDelivery, orderReservations, productionQueue, queueShortages, reserveOrderMaterials, returnOrderToQuote,
   saveProject, startOrder, stockEstimate, updateOrderPlanning,
 } from '../../domain/production';
@@ -334,6 +334,14 @@ function OrderModal({ order, onClose }: { order: ProductionOrder; onClose: () =>
     const reason = await confirm({ title: `Cancelar ${o.number}?`, danger: true, confirmLabel: 'Cancelar', reasonLabel: 'Motivo', text: 'As reservas de material serão liberadas.' });
     if (reason) run((d) => cancelOrder(d, o.id, reason), 'Cancelado e reservas liberadas.');
   };
+  const delBlock = orderDeleteBlock(db, o);
+  const remove = async () => {
+    const reason = await confirm({ title: `Excluir ${o.number} por completo?`, danger: true, confirmLabel: 'Excluir definitivamente', reasonLabel: 'Motivo da exclusão',
+      text: `${o.number} · ${o.description} sai do sistema: reservas e baixas de material são desfeitas (o filamento volta ao estoque)${o.finishedGoodId ? ', as peças produzidas desta produção são apagadas' : ''}${o.quoteId ? ' e a peça volta a “Aprovada” no orçamento' : ''}. Fica registrado só na trilha de auditoria.` });
+    if (!reason) return;
+    const r = await run((d) => deleteOrder(d, o.id, reason), `${o.number} excluído.`);
+    if (r.ok) onClose();
+  };
   const backToQuote = async () => {
     const reason = await confirm({ title: `Retornar ${o.number} para o orçamento?`, confirmLabel: 'Retornar para o orçamento', reasonLabel: 'Motivo (ex.: cliente mudou a cor)',
       text: 'O pedido é cancelado, o material reservado é liberado e a peça volta a ficar “Aprovada” e editável no orçamento. Depois é só enviar para produção de novo.' });
@@ -352,6 +360,7 @@ function OrderModal({ order, onClose }: { order: ProductionOrder; onClose: () =>
     <Modal wide title={`${o.number} · ${o.description}`} subtitle={`${kind} · ${ORDER_STATUS_LABEL[o.status]} · ${db.printers.find((p) => p.id === o.printerId)?.name ?? 'sem impressora'} · ${o.qtyPlanned} peça(s)`} onClose={onClose}
       footer={<>
         <button className="btn ghost" onClick={onClose}>Fechar</button>
+        <button className="btn ghost danger-text" onClick={remove} disabled={!!delBlock} title={delBlock ?? 'Apaga este pedido/produção do sistema'}>Excluir</button>
         {open && o.quoteId && <button className="btn secondary" onClick={backToQuote}>Retornar para o orçamento</button>}
         {open && !o.quoteId && <button className="btn danger" onClick={cancel}>Cancelar</button>}
         {purposeOf(o) === 'pedido' && o.status !== 'cancelada' && <button className="btn ghost" onClick={() => setCard(true)}>Cartão de agradecimento</button>}

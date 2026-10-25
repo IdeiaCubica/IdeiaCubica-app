@@ -465,6 +465,16 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
                   <button type="button" className="btn ghost sm" onClick={removeItem} disabled={items.length === 1}>Remover este modelo</button>
                 </div>
               </div>
+              <div className="stack" style={{ gap: 8 }}>
+                <Check label="Informar as dimensões aproximadas de 1 peça (opcional — aparecem no orçamento do cliente)" checked={!!input.dimensionsCm}
+                  onChange={(v) => patch({ dimensionsCm: v ? { height: null, width: null, depth: null } : null })} />
+                {input.dimensionsCm && <div className="grid g3">
+                  <DecField label="Altura" suffix="cm" value={input.dimensionsCm.height} onChange={(v) => patch({ dimensionsCm: { ...input.dimensionsCm!, height: v === null ? null : Number(v) } })} />
+                  <DecField label="Largura" suffix="cm" value={input.dimensionsCm.width} onChange={(v) => patch({ dimensionsCm: { ...input.dimensionsCm!, width: v === null ? null : Number(v) } })} />
+                  <DecField label="Profundidade" suffix="cm" value={input.dimensionsCm.depth} onChange={(v) => patch({ dimensionsCm: { ...input.dimensionsCm!, depth: v === null ? null : Number(v) } })}
+                    hint="Preencha só as medidas que quiser" />
+                </div>}
+              </div>
               <Field label="Imagem da peça" hint="Opcional. Vai no orçamento do cliente. A imagem é reduzida automaticamente antes de salvar.">
                 <div className="image-drop">
                   {cur.image ? <img src={cur.image} alt="Imagem da peça" /> : <span className="muted">Nenhuma imagem</span>}

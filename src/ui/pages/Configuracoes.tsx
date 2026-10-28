@@ -145,14 +145,14 @@ function Snapshots() {
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const restore = async (s: Snapshot) => {
     const ok = await confirm({ title: `Restaurar a versão ${s.version}?`, danger: true, confirmLabel: 'Restaurar esta versão',
-      text: <>Os dados voltarão a ser como estavam em <b>{fmtDateTime(s.savedAt)}</b>. A situação atual não é perdida: ela continua no histórico e pode ser restaurada depois.</> });
+      text: <>Os dados voltarão a ser como estavam em <b>{fmtDateTime(s.savedAt)}</b>. O histórico guarda uma cópia a cada 10 minutos de uso; se quiser guardar a situação exata de agora, exporte um backup antes (aba Backup).</> });
     if (ok === null) return;
     try { await replaceAll(await repo.loadSnapshot!(s.id)); toast('success', `Versão ${s.version} restaurada.`); load(); }
     catch (e) { toast('error', e instanceof Error ? e.message : 'Falha ao restaurar.'); }
   };
   return (
     <div className="card">
-      <div className="card-head"><div><h2>Histórico de versões dos dados</h2><p className="muted small">Cada gravação gera uma cópia no banco. São mantidas as 100 mais recentes.</p></div>
+      <div className="card-head"><div><h2>Histórico de versões dos dados</h2><p className="muted small">Uma cópia completa a cada 10 minutos de uso. São mantidas as 30 mais recentes.</p></div>
         <button className="btn ghost sm" onClick={load}>Atualizar</button></div>
       {error ? <div className="card-body"><Alert tone="error">{error}</Alert></div> : !rows ? <div className="card-body muted">Carregando…</div> : (
         <DataTable rows={rows} rowKey={(s) => String(s.id)} empty={<Empty title="Nenhuma versão gravada ainda" />}
@@ -195,7 +195,7 @@ function Backup() {
   const importLocal = async () => {
     if (!local) return;
     const ok = await confirm({ title: 'Importar dados deste navegador para a nuvem?', danger: true, confirmLabel: 'Importar e substituir',
-      text: <>Os dados da nuvem serão substituídos pelos que estavam salvos neste navegador ({local.materials.length} materiais, {local.quotes.length} orçamentos, {local.parties.length} cadastros). A versão atual da nuvem continua no histórico e pode ser restaurada.</> });
+      text: <>Os dados da nuvem serão substituídos pelos que estavam salvos neste navegador ({local.materials.length} materiais, {local.quotes.length} orçamentos, {local.parties.length} cadastros). Se quiser guardar a versão atual da nuvem, exporte um backup antes.</> });
     if (ok === null) return;
     try { await replaceAll(local); toast('success', 'Dados do navegador importados para a nuvem.'); }
     catch (e) { toast('error', e instanceof Error ? e.message : 'Falha ao importar.'); }

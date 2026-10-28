@@ -13,7 +13,7 @@ import { D, Decimal, ZERO, sum } from './money';
 import { BusinessError, assert, audit, byId, newId, nextCode, nowISO, requireNonNegative, requireText, toLocalDate, todayISO } from './core';
 import { addMovement, lotBalance, releaseAll, reserve } from './inventory';
 import { materialLabel } from './catalog';
-import { MAX_IMAGE_CHARS, deleteQuote, emptyQuoteInput, evaluateQuote, isItemLocked, itemState, latestVersion, quoteItem, quoteItemAt, quoteItems, refreshQuoteStatus, resolveParams, saveQuote, summarize, type QuoteItemDraft } from './quotes';
+import { MAX_IMAGE_CHARS, emptyQuoteInput, quoteItemImage, evaluateQuote, isItemLocked, itemState, latestVersion, quoteItem, quoteItemAt, quoteItems, refreshQuoteStatus, resolveParams, saveQuote, summarize, type QuoteItemDraft } from './quotes';
 import { computeCosts, laborTotals, type CostResult } from './costing';
 
 export const ORDER_STATUS_LABEL: Record<OrderStatus, string> = {
@@ -398,7 +398,7 @@ function addFinishedGoodFromOrder(db: DB, o: ProductionOrder, location?: string)
     qtyProduced: a.qtyApproved, unitCost: unit ? unit.toDecimalPlaces(4).toString() : null,
     costStatus: unit ? (cmp.real!.laborEstimated ? 'estimado' : 'realizado') : 'pendente',
     suggestedPrice: price, producedAt: toLocalDate(o.finishedAt!), location: location?.trim() || undefined,
-    image: o.image ?? item?.image ?? null, adjustments: [], allocations: [], createdAt: nowISO(),
+    image: o.image ?? item?.image ?? (q ? quoteItemImage(q, o.quoteItemId) : null), adjustments: [], allocations: [], createdAt: nowISO(),
     production: {
       materials: [...byMat.entries()].map(([mid, qty]) => { const m = db.materials.find((x) => x.id === mid); return { label: m ? (m.filament ? `${m.name} (${m.filament.materialType} ${m.filament.color})` : m.name) : 'Material removido', qty, unit: m?.unit ?? '' }; }),
       hours: a.hours + a.failures.reduce((s, f) => s + f.hoursLost, 0),
@@ -519,10 +519,11 @@ export function quoteFromFinishedGood(db: DB, fgId: ID, opts: { customerId?: ID;
 
 /**
  * Orçamento kit: junta peças de vários orçamentos (inclusive peças do estoque) num único
- * orçamento. Peças recusadas ficam de fora; peças em produção ou separadas impedem a junção.
- * Os valores salvos de cada peça são mantidos (mesmo preço dos orçamentos de origem).
+ * orçamento NOVO. Peças recusadas ficam de fora; peças em produção ou separadas impedem a junção
+ * (a cópia poderia ser produzida duas vezes). Os valores salvos de cada peça são mantidos e os
+ * orçamentos de origem nunca são excluídos.
  */
-export function mergeQuotes(db: DB, quoteIds: ID[], opts: { name?: string; customerId?: ID; deleteSources: boolean }): Quote {
+export function mergeQuotes(db: DB, quoteIds: ID[], opts: { name?: string; customerId?: ID }): Quote {
   const ids = [...new Set(quoteIds)];
   assert(ids.length >= 2, 'Selecione ao menos dois orçamentos para juntar.');
   const sources = ids.map((id) => byId(db.quotes, id, 'Orçamento'));
@@ -550,7 +551,7 @@ export function mergeQuotes(db: DB, quoteIds: ID[], opts: { name?: string; custo
     const src = picked[i].it;
     if (JSON.stringify(src.input) === JSON.stringify(item.input)) { item.params = structuredClone(src.params); item.summary = structuredClone(src.summary); }
   });
-  if (opts.deleteSources) for (const q of sources) deleteQuote(db, q.id, `Juntado no orçamento ${merged.number}`);
+  // Os orçamentos de origem ficam intactos (regra da empresa): a junção sempre cria um orçamento novo.
   audit(db, 'Orçamentos juntados', `${sources.map((q) => q.number).join(' + ')} → ${merged.number}`);
   return merged;
 }

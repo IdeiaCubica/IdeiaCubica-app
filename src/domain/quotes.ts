@@ -259,6 +259,7 @@ export function saveQuote(db: DB, meta: { quoteId?: ID; name?: string; projectId
   if (prev) {
     version.version = prev.versions.length + 1;
     prev.versions.push(version);
+    compactQuoteImages(prev);
     Object.assign(prev, { name, projectId: meta.projectId ?? prev.projectId, customerId: meta.customerId });
     const keep = new Set(items.map((x) => x.itemId));
     prev.itemStatus = Object.fromEntries(Object.entries(prev.itemStatus ?? {}).filter(([k]) => keep.has(k)));
@@ -276,6 +277,24 @@ export function saveQuote(db: DB, meta: { quoteId?: ID; name?: string; projectId
 }
 
 export const latestVersion = (q: Quote) => q.versions[q.versions.length - 1];
+
+/**
+ * Fotos só na versão mais recente: as versões antigas usam a foto atual da mesma peça.
+ * Antes, cada versão guardava uma cópia de cada foto (centenas de KB cada), e os dados
+ * cresciam a ponto de a gravação no banco estourar o tempo limite.
+ */
+export function compactQuoteImages(q: Quote) {
+  const latest = latestVersion(q);
+  for (const v of q.versions) {
+    if (v === latest) continue;
+    for (const it of v.items) if (it.image) delete it.image;
+  }
+}
+
+/** Foto de uma peça do orçamento (a da versão atual). */
+export function quoteItemImage(q: Quote, itemId: ID | undefined): string | null {
+  return latestVersion(q).items.find((x) => x.itemId === itemId)?.image ?? null;
+}
 export const quoteItems = (q: Quote) => latestVersion(q).items;
 
 export function quoteItem(q: Quote, itemId?: ID): QuoteVersionItem {

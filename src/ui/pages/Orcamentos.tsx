@@ -4,7 +4,7 @@ import { navigate } from '../App';
 import type { DB, Quote, QuoteDeliveryKit, QuoteExtraLine, QuoteInput, QuoteItemStatus, QuoteShipping, QuoteStatus, QuoteVersion, QuoteVersionItem, RoundingRule } from '../../domain/types';
 import {
   ITEM_STATE_LABEL, deleteQuote, emptyQuoteInput, evaluateQuote, isItemLocked, itemOrder, itemState, latestVersion, materialCostPolicy, perHour, quoteItems, quoteTotal,
-  paramsForItem, quoteSanity, saveQuote, setItemStatus, setQuoteStatus, staleItems, withKitShares, type ItemState, type QuoteEvaluation, type QuoteItemDraft,
+  paramsForItem, quoteItemImage, quoteSanity, saveQuote, setItemStatus, setQuoteStatus, staleItems, withKitShares, type ItemState, type QuoteEvaluation, type QuoteItemDraft,
 } from '../../domain/quotes';
 import { kitUnitCost, quoteKit } from '../../domain/deliveryKits';
 import { isLockedComponent, laborTotals, type CompStatus, type CostComponent } from '../../domain/costing';
@@ -196,7 +196,6 @@ function MergeQuotesDialog({ onClose }: { onClose: () => void }) {
   const [sel, setSel] = useState<string[]>([]);
   const [name, setName] = useState('');
   const [customerId, setCustomerId] = useState('');
-  const [del, setDel] = useState(true);
   const [q, setQ] = useState('');
   const customer = (id?: string) => db.parties.find((p) => p.id === id)?.name;
   const candidates = [...db.quotes].reverse().filter((x) => quoteItems(x).some((it) => itemState(db, x, it.itemId) !== 'recusado'))
@@ -205,16 +204,15 @@ function MergeQuotesDialog({ onClose }: { onClose: () => void }) {
   const chosen = db.quotes.filter((x) => sel.includes(x.id));
   const total = chosen.reduce((s, x) => s.plus(quoteTotal(db, x).price), new Decimal(0));
   const toggle = (id: string) => setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
-  const submit = () => run((d) => mergeQuotes(d, sel, { name, customerId: customerId || undefined, deleteSources: del }), 'Orçamento kit criado.')
+  const submit = () => run((d) => mergeQuotes(d, sel, { name, customerId: customerId || undefined }), 'Novo orçamento kit criado. Os orçamentos de origem continuam como estavam.')
     .then((r) => { if (r.ok) { onClose(); navigate(`orcamentos/${r.value.id}`); } });
   return (
-    <Modal wide title="Juntar orçamentos num kit" subtitle="As peças em aberto dos orçamentos escolhidos vão para um orçamento único, com os mesmos valores. Ideal para o cliente que compra várias peças do estoque." onClose={onClose}
+    <Modal wide title="Juntar orçamentos num kit" subtitle="Cria um orçamento NOVO com as peças em aberto dos orçamentos escolhidos, com os mesmos valores. Os orçamentos de origem não são alterados nem excluídos." onClose={onClose}
       footer={<><span className="muted" style={{ marginRight: 'auto' }}>{sel.length} selecionado(s) · total {fmtBRL(total)}</span><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={submit} disabled={sel.length < 2}>Criar orçamento kit</button></>}>
       <div className="stack">
-        <div className="grid g3">
-          <TextField label="Nome do orçamento kit" value={name} onChange={setName} placeholder="Ex.: Kit decoração da Ana" />
+        <div className="grid g2">
+          <TextField label="Nome do novo orçamento kit" value={name} onChange={setName} placeholder="Ex.: Kit decoração da Ana" />
           <SelectField label="Cliente" value={customerId} onChange={setCustomerId} placeholder="— o mesmo dos orçamentos —" options={db.parties.filter((p) => p.kind === 'cliente').map((p) => ({ value: p.id, label: p.name }))} />
-          <Check label="Excluir os orçamentos de origem depois de juntar" checked={del} onChange={setDel} />
         </div>
         <input type="search" className="search-lg" placeholder="Buscar orçamento…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Buscar orçamentos" />
         <div className="card"><table className="tbl"><thead><tr><th></th><th>Orçamento</th><th>Peças</th><th>Cliente</th><th className="num">Valor</th></tr></thead><tbody>
@@ -620,7 +618,7 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
           <DeliveryKitSection db={db} kit={kit} setKit={setKit} items={items} />
 
           {quote && <Section title="Observação desta versão" collapsible="observacao" summary={meta.note || 'Sem observação'}><TextField label="O que mudou (opcional)" value={meta.note} onChange={(v) => setMeta((m) => ({ ...m, note: v }))} /></Section>}
-          {quote && <VersionHistory quote={quote} onLoad={(v) => { setItems(v.items.map((it) => ({ itemId: it.itemId, name: it.name, image: it.image ?? null, input: { overrides: {}, ...structuredClone(it.input) }, finishedGoodId: it.finishedGoodId }))); setActive(0); if (v.shipping) setShipping(structuredClone(v.shipping)); setKit(v.deliveryKit ? structuredClone(v.deliveryKit) : null); }} />}
+          {quote && <VersionHistory quote={quote} onLoad={(v) => { setItems(v.items.map((it) => ({ itemId: it.itemId, name: it.name, image: it.image ?? quoteItemImage(quote, it.itemId), input: { overrides: {}, ...structuredClone(it.input) }, finishedGoodId: it.finishedGoodId }))); setActive(0); if (v.shipping) setShipping(structuredClone(v.shipping)); setKit(v.deliveryKit ? structuredClone(v.deliveryKit) : null); }} />}
           </>}
         </div>
 

@@ -30,7 +30,11 @@ Supabase → **SQL Editor → New query** → cole todo o conteúdo de
 `supabase/migrations/20261020000000_v1_app_state.sql` → **Run**. Deve terminar com "Success".
 
 Isso cria: `app_members` (usuários liberados), `app_state` (dados do sistema), `app_state_history`
-(cópia de cada gravação, últimas 100) e a função `save_app_state` (gravação segura com controle de versão).
+(cópias de segurança) e a função `save_app_state` (gravação segura com controle de versão).
+
+Depois, na mesma tela (**New query**), rode também `supabase/migrations/20261028000000_v1_9_gravacao_rapida.sql`
+(v1.9): aumenta o tempo limite para 30 s e grava no histórico no máximo uma cópia a cada 10 minutos (mantém as 30 mais
+recentes). Corrige o erro “canceling statement due to statement timeout” ao salvar.
 
 ## Passo 3 — Criar o usuário e bloquear novos cadastros
 

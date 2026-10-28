@@ -110,6 +110,9 @@ export class SupabaseRepository implements Repository {
 }
 
 function friendly(msg: string): string {
+  if (/statement timeout|canceling statement/i.test(msg)) {
+    return 'O banco demorou demais para gravar e cancelou a operação — nada foi gravado. Tente de novo; se continuar, aplique a atualização do banco supabase/migrations/20261028000000_v1_9_gravacao_rapida.sql (docs/DEPLOY.md).';
+  }
   if (/failed to fetch|network/i.test(msg)) return 'Sem conexão com o servidor. Verifique a internet e tente novamente — nada foi gravado.';
   if (/permission|denied|42501|row-level security/i.test(msg)) return 'Seu usuário não tem permissão para acessar os dados. Verifique o cadastro em app_members (docs/DEPLOY.md).';
   if (/relation .* does not exist|function .* does not exist|schema cache/i.test(msg)) return 'O banco ainda não foi preparado. Execute a migration do Supabase (docs/DEPLOY.md, passo 2).';

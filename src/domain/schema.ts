@@ -8,7 +8,7 @@
 import type { Category, DB, FinCategory } from './types';
 import { BusinessError, newId } from './core';
 import { ensureCategorySiglas } from './catalog';
-import { migrateQuoteItems } from './quotes';
+import { compactQuoteImages, migrateQuoteItems } from './quotes';
 
 const cat = (name: string, isFilament = false): Category => ({ id: newId(), name, isFilament, active: true });
 const fin = (name: string, direction: 'in' | 'out', nature: FinCategory['nature'], system = false): FinCategory =>
@@ -108,10 +108,17 @@ export function migrate(raw: unknown): DB {
     db.counters.quote = Math.max(db.counters.quote ?? 0, 202);
     db.settings.codeDigits = { ...db.settings.codeDigits, quote: 8 };
   });
+  // Idempotente e barato: roda sempre, para que dados antigos e importações fiquem compactos.
+  compactAllQuoteImages(db);
   return db;
 }
 
 /** Executa uma migração de dados uma única vez por banco. */
+/** Fotos repetidas nas versões antigas dos orçamentos (ver compactQuoteImages). */
+function compactAllQuoteImages(db: DB) {
+  for (const q of db.quotes) compactQuoteImages(q);
+}
+
 function once(db: DB, key: string, fn: () => void) {
   const done = db.settings.appliedMigrations ?? [];
   if (done.includes(key)) return;

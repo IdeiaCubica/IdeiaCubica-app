@@ -5,7 +5,7 @@ import { deleteMaterial, materialUsage, saveAccount, saveChannel, saveMaterial, 
 import { correctLot, deletePurchase, purchaseDeleteBlock, registerPurchase } from './purchases';
 import { accountBalance, createManualTitle, settleTitle, updateTitle } from './finance';
 import { lotBalance, materialStatement } from './inventory';
-import { emptyQuoteInput, latestVersion, materialCostPolicy, quoteSanity, quoteTotal, resolveParams, evaluateQuote, saveQuote, withKitShares } from './quotes';
+import { emptyQuoteInput, latestVersion, materialCostPolicy, quoteItemImage, quoteSanity, quoteTotal, resolveParams, evaluateQuote, saveQuote, withKitShares } from './quotes';
 import { finishedGoodBalance, mergeQuotes, produceForStockNow, quoteFromFinishedGood } from './production';
 import { consumeKit, deleteDeliveryKit, kitUnitCost, quoteKit, saveDeliveryKit } from './deliveryKits';
 import { cancelSale, registerSale, saleEconomics, saleEditBlock, updateSale } from './sales';
@@ -106,13 +106,28 @@ describe('Orçamento kit', () => {
     const a = quoteFromFinishedGood(db, fg.id, { customerId: cli.id, qty: 2 });
     const b = saveQuote(db, { customerId: cli.id, name: 'Chaveiro' }, [{ name: 'Chaveiro', input: base }]);
     const sum = quoteTotal(db, a).price.plus(quoteTotal(db, b).price);
-    const merged = mergeQuotes(db, [a.id, b.id], { name: 'Kit da Ana', deleteSources: true });
+    const before = JSON.stringify([a, b]);
+    const merged = mergeQuotes(db, [a.id, b.id], { name: 'Kit da Ana' });
     expect(merged.customerId).toBe(cli.id);
     expect(latestVersion(merged).items.map((i) => i.name)).toEqual(['Dragão', 'Chaveiro']);
     expect(quoteTotal(db, merged).price.toString()).toBe(sum.toString());
-    expect(db.quotes.map((q) => q.id)).toEqual([merged.id]);
+    // Sempre cria um orçamento novo; os de origem ficam intactos.
+    expect(db.quotes.map((q) => q.id)).toEqual([a.id, b.id, merged.id]);
+    expect(JSON.stringify([a, b])).toBe(before);
+    expect(merged.number).not.toBe(a.number);
     expect(latestVersion(merged).items[0].finishedGoodId).toBe(fg.id);
     expect(finishedGoodBalance(db, fg.id).available).toBe(3);
+  });
+
+  it('fotos ficam só na versão atual do orçamento (dados menores, gravação mais rápida)', () => {
+    const base = quoteBase();
+    const img = 'data:image/jpeg;base64,' + 'A'.repeat(1000);
+    const q = saveQuote(db, { name: 'Com foto' }, [{ name: 'Peça', image: img, input: base }]);
+    const id = latestVersion(q).items[0].itemId;
+    saveQuote(db, { quoteId: q.id }, [{ itemId: id, name: 'Peça', image: img, input: { ...base, quantity: 2 } }]);
+    saveQuote(db, { quoteId: q.id }, [{ itemId: id, name: 'Peça', image: img, input: { ...base, quantity: 3 } }]);
+    expect(q.versions.map((v) => !!v.items[0].image)).toEqual([false, false, true]);
+    expect(quoteItemImage(q, id)).toBe(img);
   });
 });
 

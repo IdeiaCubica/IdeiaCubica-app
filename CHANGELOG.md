@@ -2,6 +2,21 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.9.0 — 28/10/2026
+
+### Correção: “canceling statement due to statement timeout” ao gravar
+- Causa: o sistema grava todos os dados num único registro e, a cada gravação, guardava uma cópia completa no histórico.
+  As fotos das peças eram repetidas em cada versão de cada orçamento, e juntar orçamentos copiava as fotos de novo; os dados
+  ficaram grandes a ponto de a gravação passar do tempo limite do Supabase (8 s) e ser cancelada (nada é gravado pela metade).
+- Fotos dos orçamentos agora ficam só na versão atual (as versões antigas usam a foto atual). Os dados existentes são
+  compactados automaticamente na próxima gravação.
+- Banco (rodar uma vez `supabase/migrations/20261028000000_v1_9_gravacao_rapida.sql` no SQL Editor): tempo limite de 30 s e
+  histórico com no máximo 1 cópia a cada 10 minutos (mantém as 30 mais recentes).
+- Mensagem clara quando o banco cancela por tempo.
+
+### Juntar orçamentos
+- Sempre cria um orçamento **novo**; os orçamentos de origem nunca são excluídos nem alterados. A opção de excluir saiu da tela.
+
 ## v1.8.0 — 25/10/2026
 
 ### Correção de cálculo: arredondamento distorcia o valor de peças pequenas

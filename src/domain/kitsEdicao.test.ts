@@ -10,6 +10,7 @@ import { finishedGoodBalance, mergeQuotes, produceForStockNow, quoteFromFinished
 import { consumeKit, deleteDeliveryKit, kitUnitCost, quoteKit, saveDeliveryKit } from './deliveryKits';
 import { cancelSale, registerSale, saleEconomics, saleEditBlock, updateSale } from './sales';
 import type { DB } from './types';
+import { buildClientQuote } from './clientQuote';
 import { D } from './money';
 
 let db: DB;
@@ -117,6 +118,21 @@ describe('Orçamento kit', () => {
     expect(merged.number).not.toBe(a.number);
     expect(latestVersion(merged).items[0].finishedGoodId).toBe(fg.id);
     expect(finishedGoodBalance(db, fg.id).available).toBe(3);
+  });
+
+  it('dimensões de cada peça (nova e do estoque) aparecem na proposta do orçamento juntado', () => {
+    const base = quoteBase();
+    db.settings.defaultChannelId = base.channelId;
+    db.settings.defaultMarkupPct = '40';
+    const o = produceForStockNow(db, { description: 'Dragão', qtyPlanned: 2, plannedMaterials: [{ materialId: filamentId, qty: 100 }], plannedHours: 2, dimensionsCm: { height: 12, width: 6, depth: 4 } });
+    const fg = db.finishedGoods.find((g) => g.orderId === o.id)!;
+    expect(fg.dimensionsCm).toEqual({ height: 12, width: 6, depth: 4 });
+    fg.suggestedPrice = '35';
+    const a = quoteFromFinishedGood(db, fg.id, { qty: 1 });
+    const b = saveQuote(db, { name: 'Chaveiro' }, [{ name: 'Chaveiro', input: { ...base, dimensionsCm: { height: 5, width: 3, depth: null } } }]);
+    const merged = mergeQuotes(db, [a.id, b.id], { name: 'Kit' });
+    const doc = buildClientQuote(db, merged, {}, '2026-10-28');
+    expect(doc.items.map((i) => [i.description, i.dimensions])).toEqual([['Dragão', '12 × 6 × 4 cm (A × L × P)'], ['Chaveiro', '5 × 3 cm (A × L)']]);
   });
 
   it('fotos ficam só na versão atual do orçamento (dados menores, gravação mais rápida)', () => {

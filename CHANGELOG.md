@@ -2,6 +2,16 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.9.1 — 28/10/2026
+
+### Dimensões da peça na proposta
+- No orçamento, cada modelo tem os campos **Altura, Largura e Profundidade** (cm) sempre visíveis, sem caixa de marcar.
+  São opcionais: medidas em branco não aparecem para o cliente.
+- **Peças do estoque** também têm dimensões (ao lançar a produção para estoque e em Estoque → Peças produzidas → Editar);
+  elas vão automaticamente para o orçamento feito com a peça.
+- Ao **juntar orçamentos**, cada peça leva as suas dimensões para o novo orçamento, e a proposta do cliente mostra
+  “Dimensões aprox.” em destaque em cada peça. As dimensões também aparecem na lista de “Juntar orçamentos” e no comparador.
+
 ## v1.9.0 — 28/10/2026
 
 ### Correção: “canceling statement due to statement timeout” ao gravar

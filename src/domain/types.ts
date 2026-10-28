@@ -407,7 +407,7 @@ export interface QuoteInput {
   extras: QuoteExtraLine[];
   freightSubsidyPerOrder: DecStr | null;
   /** Dimensões aproximadas de 1 peça (opcional; aparecem no orçamento do cliente). */
-  dimensionsCm?: { height: number | null; width: number | null; depth: number | null } | null;
+  dimensionsCm?: PieceDimensions | null;
   /** Parte do custo do kit de entrega do pedido atribuída a esta peça (custo interno, oculto ao cliente). */
   deliveryKitShare?: DecStr | null;
   /** Envio deste orçamento: caixa da peça e CEPs. Novo orçamento parte do padrão de Parâmetros → Envios. */
@@ -426,6 +426,9 @@ export interface QuoteInput {
   /** Valores de rubricas ajustados manualmente pelo usuário (total do pedido), por chave do componente. */
   overrides?: Record<string, DecStr>;
 }
+
+/** Altura × largura × profundidade aproximadas de 1 peça, em cm (cada medida é opcional). */
+export interface PieceDimensions { height: number | null; width: number | null; depth: number | null }
 
 /** Parâmetros resolvidos no momento do cálculo — gravados em cada versão (snapshot). */
 export interface CostParams {
@@ -578,6 +581,8 @@ export interface ProductionOrder {
   finishedGoodId?: ID;
   /** Foto da peça (produção para estoque); passa para as peças prontas ao concluir. */
   image?: string | null;
+  /** Dimensões de 1 peça (produção para estoque); passam para as peças prontas. */
+  dimensionsCm?: PieceDimensions | null;
 }
 
 /**
@@ -605,6 +610,8 @@ export interface FinishedGood {
   allocations?: { id: ID; quoteId: ID; itemId: ID; qty: number; customerId?: ID; dueDate?: ISODate; createdAt: ISODateTime }[];
   /** Consumo real da produção (total do lote produzido), para consulta no estoque. */
   production?: { materials: { label: string; qty: number; unit: string }[]; hours: number; qtyMade: number };
+  /** Dimensões aproximadas de 1 peça; vão para o orçamento feito a partir desta peça. */
+  dimensionsCm?: PieceDimensions | null;
   notes?: string;
   createdAt: ISODateTime;
 }

@@ -25,6 +25,8 @@ import { lookupCep } from '../../io/cep';
 import { fmtCep, isValidCep } from '../../domain/address';
 import { quoteFreight, type FreightOption } from '../../io/api';
 import { ClientQuoteExport } from '../components/ClientQuoteExport';
+import { DimensionsFields } from '../components/DimensionsFields';
+import { formatDimensions } from '../../domain/clientQuote';
 import { PartyForm, priceLabel } from './Cadastros';
 
 export const QUOTE_STATUS: Record<QuoteStatus, { label: string; tone: Tone }> = {
@@ -132,6 +134,7 @@ function CompareQuotesDialog({ onClose }: { onClose: () => void }) {
   const matText = (x: NonNullable<typeof A>) => x.ev.costs.materialLines.map((l) => `${l.label}: ${fmtNum(l.qtyOrder.div(x.it.input.quantity))} g × ${l.unitCost ? `${fmtBRL(perGramToPerKg(l.unitCost))}/kg` : 'sem preço'}`).join(' + ') || '—';
   add('Quantidade do modelo', (x) => `${x.it.input.quantity} peça(s)`);
   add('Filamento de 1 peça', matText);
+  add('Dimensões de 1 peça', (x) => formatDimensions(x.it.input.dimensionsCm) ?? 'não informadas');
   add('Tempo de 1 peça', (x) => (x.it.input.printHoursPerUnit ? fmtDuration(x.it.input.printHoursPerUnit) : 'não informado'));
   add('Impressora', (x) => x.it.params.printer?.name ?? '—');
   add('Mão de obra por orçamento', (x) => `${fmtNum(laborTotals(x.it.input.labor).perOrder)} min`);
@@ -220,7 +223,7 @@ function MergeQuotesDialog({ onClose }: { onClose: () => void }) {
             <tr key={x.id} className={b ? 'muted' : ''}>
               <td><input type="checkbox" aria-label={`Selecionar ${x.number}`} checked={sel.includes(x.id)} disabled={b} onChange={() => toggle(x.id)} /></td>
               <td><span className="mono">{x.number}</span><div className="small">{x.name}</div></td>
-              <td className="small">{quoteItems(x).filter((it) => itemState(db, x, it.itemId) !== 'recusado').map((it) => `${it.name}${it.finishedGoodId ? ' (estoque)' : ''}`).join(', ')}{b && <div className="small">tem peça em produção/separada</div>}</td>
+              <td className="small">{quoteItems(x).filter((it) => itemState(db, x, it.itemId) !== 'recusado').map((it) => `${it.name}${it.finishedGoodId ? ' (estoque)' : ''}${formatDimensions(it.input.dimensionsCm) ? ` — ${formatDimensions(it.input.dimensionsCm)}` : ''}`).join(', ')}{b && <div className="small">tem peça em produção/separada</div>}</td>
               <td>{customer(x.customerId) ?? '—'}</td>
               <td className="num">{fmtBRL(quoteTotal(db, x).price)}</td>
             </tr>); })}
@@ -550,7 +553,7 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
           {cur.finishedGoodId && <Alert tone="info" title="Peça a pronta-entrega">Vem do estoque de peças prontas ({db.finishedGoods.find((g) => g.id === cur.finishedGoodId)?.code}). Ao aprovar, vira “Pedido aprovado” e as peças são separadas; não precisa produzir.</Alert>}
 
           <fieldset disabled={curLocked} className="stack">
-            <Section title={`3. Modelo: ${cur.name || `Modelo ${idx + 1}`}`} collapsible="modelo" summary={`${input.quantity} peça${input.quantity === 1 ? '' : 's'}${input.dimensionsCm ? ' · com dimensões' : ''}${cur.image ? ' · com foto' : ''}`} subtitle="Preencha tudo para 1 peça deste modelo (peso, tempo, custos por peça). A quantidade multiplica e forma o valor total do modelo." right={quote && cur.itemId && !curLocked ? (
+            <Section title={`3. Modelo: ${cur.name || `Modelo ${idx + 1}`}`} collapsible="modelo" summary={`${input.quantity} peça${input.quantity === 1 ? '' : 's'}${formatDimensions(input.dimensionsCm) ? ` · ${formatDimensions(input.dimensionsCm)}` : ' · sem dimensões'}${cur.image ? ' · com foto' : ''}`} subtitle="Preencha tudo para 1 peça deste modelo (peso, tempo, custos por peça). A quantidade multiplica e forma o valor total do modelo." right={quote && cur.itemId && !curLocked ? (
               <div className="row">
                 {curState !== 'aprovado' && <button type="button" className="btn secondary sm" onClick={() => setStatus(cur, 'aprovado')}>{cur.finishedGoodId ? 'Pedido aprovado' : 'Cliente aprovou'}</button>}
                 {curState !== 'recusado' && <button type="button" className="btn ghost sm" onClick={() => setStatus(cur, 'recusado')}>Cliente recusou</button>}
@@ -571,16 +574,7 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
                   <button type="button" className="btn ghost sm" onClick={removeItem} disabled={items.length === 1}>Remover este modelo</button>
                 </div>
               </div>
-              <div className="stack" style={{ gap: 8 }}>
-                <Check label="Informar as dimensões aproximadas de 1 peça (opcional — aparecem no orçamento do cliente)" checked={!!input.dimensionsCm}
-                  onChange={(v) => patch({ dimensionsCm: v ? { height: null, width: null, depth: null } : null })} />
-                {input.dimensionsCm && <div className="grid g3">
-                  <DecField label="Altura" suffix="cm" value={input.dimensionsCm.height} onChange={(v) => patch({ dimensionsCm: { ...input.dimensionsCm!, height: v === null ? null : Number(v) } })} />
-                  <DecField label="Largura" suffix="cm" value={input.dimensionsCm.width} onChange={(v) => patch({ dimensionsCm: { ...input.dimensionsCm!, width: v === null ? null : Number(v) } })} />
-                  <DecField label="Profundidade" suffix="cm" value={input.dimensionsCm.depth} onChange={(v) => patch({ dimensionsCm: { ...input.dimensionsCm!, depth: v === null ? null : Number(v) } })}
-                    hint="Preencha só as medidas que quiser" />
-                </div>}
-              </div>
+              <DimensionsFields value={input.dimensionsCm} onChange={(v) => patch({ dimensionsCm: v })} />
               <Field label="Imagem da peça" hint="Opcional. Vai no orçamento do cliente. A imagem é reduzida automaticamente antes de salvar.">
                 <div className="image-drop">
                   {cur.image ? <img src={cur.image} alt="Imagem da peça" /> : <span className="muted">Nenhuma imagem</span>}

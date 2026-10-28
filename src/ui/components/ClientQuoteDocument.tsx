@@ -78,7 +78,8 @@ export function ClientQuoteDocument({ doc }: { doc: ClientQuoteDoc }) {
               {it.image && <div className="cq-thumb"><img src={it.image} alt={it.description} /></div>}
               <div className="cq-row-info">
                 <b>{it.description}</b>
-                <span>{[it.materials.join(' + '), it.dimensions && `aprox. ${it.dimensions}`, it.ready ? 'pronta-entrega' : 'sob medida'].filter(Boolean).join(' · ')}</span>
+                <span>{[it.materials.join(' + '), it.ready ? 'pronta-entrega' : 'sob medida'].filter(Boolean).join(' · ')}</span>
+                {it.dimensions && <span className="cq-dim">Dimensões aprox.: <b>{it.dimensions}</b></span>}
               </div>
               <div className="cq-row-qty">{it.quantity} × {fmtBRL(it.unitPrice)}</div>
               <div className="cq-row-total">{fmtBRL(cents(it.unitPrice.times(it.quantity)))}{it.discount.gt(0) && <small>− {fmtBRL(it.discount)} ({fmtNum(it.discountPct)}%)</small>}</div>

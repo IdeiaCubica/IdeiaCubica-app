@@ -8,7 +8,7 @@
  *     concluir duas vezes ou clicar repetidamente não baixa o material de novo.
  *   - Cancelar libera as reservas; OP concluída não pode ser cancelada.
  */
-import type { CostParams, DB, FinishedGood, ID, OrderStatus, ProductionOrder, Project, Quote, QuoteInput, QuoteVersionItem } from './types';
+import type { CostParams, DB, FinishedGood, ID, OrderStatus, PieceDimensions, ProductionOrder, Project, Quote, QuoteInput, QuoteVersionItem } from './types';
 import { D, Decimal, ZERO, sum } from './money';
 import { BusinessError, assert, audit, byId, newId, nextCode, nowISO, requireNonNegative, requireText, toLocalDate, todayISO } from './core';
 import { addMovement, lotBalance, releaseAll, reserve } from './inventory';
@@ -164,7 +164,7 @@ export function createManualOrder(db: DB, input: {
   /** Com lote: reserva daquele lote. Só com material: lotes por ordem de entrada. */
   plannedMaterials: { materialId?: ID; lotId?: ID; qty: number }[];
   plannedHours: number | null; responsible?: string; notes?: string;
-  purpose?: 'pedido' | 'estoque'; customerId?: ID; dueDate?: string; image?: string | null;
+  purpose?: 'pedido' | 'estoque'; customerId?: ID; dueDate?: string; image?: string | null; dimensionsCm?: PieceDimensions | null;
 }): ProductionOrder {
   const description = requireText(input.description, 'a descrição da ordem');
   if (input.image) assert(input.image.length <= MAX_IMAGE_CHARS, 'A foto é grande demais. Use uma imagem menor.');
@@ -399,6 +399,7 @@ function addFinishedGoodFromOrder(db: DB, o: ProductionOrder, location?: string)
     costStatus: unit ? (cmp.real!.laborEstimated ? 'estimado' : 'realizado') : 'pendente',
     suggestedPrice: price, producedAt: toLocalDate(o.finishedAt!), location: location?.trim() || undefined,
     image: o.image ?? item?.image ?? (q ? quoteItemImage(q, o.quoteItemId) : null), adjustments: [], allocations: [], createdAt: nowISO(),
+    dimensionsCm: o.dimensionsCm ?? item?.input.dimensionsCm ?? null,
     production: {
       materials: [...byMat.entries()].map(([mid, qty]) => { const m = db.materials.find((x) => x.id === mid); return { label: m ? (m.filament ? `${m.name} (${m.filament.materialType} ${m.filament.color})` : m.name) : 'Material removido', qty, unit: m?.unit ?? '' }; }),
       hours: a.hours + a.failures.reduce((s, f) => s + f.hoursLost, 0),
@@ -413,6 +414,7 @@ function addFinishedGoodFromOrder(db: DB, o: ProductionOrder, location?: string)
 /** Cadastra peças prontas já existentes (produzidas antes do sistema). */
 export function registerFinishedGood(db: DB, input: {
   description: string; projectId?: ID; qty: number; unitCost: string | null; suggestedPrice?: string | null; producedAt: string; location?: string; notes?: string; image?: string | null;
+  dimensionsCm?: PieceDimensions | null;
 }): FinishedGood {
   const description = requireText(input.description, 'a descrição da peça');
   if (input.image) assert(input.image.length <= MAX_IMAGE_CHARS, 'A foto é grande demais. Use uma imagem menor.');
@@ -423,7 +425,7 @@ export function registerFinishedGood(db: DB, input: {
   const fg: FinishedGood = {
     id: newId(), code: nextCode(db, 'finished', 'PC'), description, projectId: input.projectId, qtyProduced: input.qty,
     unitCost: cost ? cost.toString() : null, costStatus: cost ? 'estimado' : 'pendente', suggestedPrice: input.suggestedPrice || null,
-    producedAt: input.producedAt, location: input.location?.trim() || undefined, notes: input.notes, image: input.image ?? null, adjustments: [], createdAt: nowISO(),
+    producedAt: input.producedAt, location: input.location?.trim() || undefined, notes: input.notes, image: input.image ?? null, dimensionsCm: input.dimensionsCm ?? null, adjustments: [], createdAt: nowISO(),
   };
   db.finishedGoods.push(fg);
   audit(db, 'Peças prontas cadastradas', `${fg.code}: ${fg.qtyProduced} un.`);
@@ -444,12 +446,14 @@ export function isUntouchedFinishedGood(db: DB, fgId: ID) {
  */
 export function updateFinishedGood(db: DB, fgId: ID, input: {
   description: string; location?: string; suggestedPrice?: string | null; notes?: string; qty?: number; unitCost?: string | null; producedAt?: string;
-  /** Foto: sempre pode ser trocada (undefined = mantém). */
+  /** Foto e dimensões: sempre podem ser trocadas (undefined = mantém). */
   image?: string | null;
+  dimensionsCm?: PieceDimensions | null;
 }) {
   const fg = byId(db.finishedGoods, fgId, 'Peça pronta');
   if (input.image) assert(input.image.length <= MAX_IMAGE_CHARS, 'A foto é grande demais. Use uma imagem menor.');
   if (input.image !== undefined) fg.image = input.image;
+  if (input.dimensionsCm !== undefined) fg.dimensionsCm = input.dimensionsCm;
   const description = requireText(input.description, 'a descrição da peça');
   if (input.suggestedPrice) assert(D(input.suggestedPrice).gte(0), 'O preço não pode ser negativo.');
   const changesCore = (input.qty !== undefined && input.qty !== fg.qtyProduced)
@@ -507,6 +511,8 @@ export function finishedGoodDraft(db: DB, fgId: ID, opts: { qty: number; unitPri
   const base = order ? orderBaseInput(db, order).input : emptyQuoteInput(db.settings);
   const input: QuoteInput = { ...structuredClone(base), quantity: opts.qty, labor: { perOrder: 0, perUnit: 0 }, overrides: {} };
   delete input.deliveryKitShare;
+  // Dimensões da peça pronta vão para o orçamento (o cliente vê o tamanho do que está comprando).
+  if (fg.dimensionsCm) input.dimensionsCm = structuredClone(fg.dimensionsCm);
   // Custos seguem o mesmo motor (para a margem); o preço ao cliente é o preço sugerido da peça, ou o informado.
   input.manualPriceUnit = opts.unitPrice ?? fg.suggestedPrice ?? null;
   return { name: fg.description, image: fg.image ?? null, input, finishedGoodId: fg.id };

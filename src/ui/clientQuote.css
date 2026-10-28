@@ -117,6 +117,8 @@
 .cq-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .cq-row-info b { display: block; font-size: 11pt; font-weight: 600; line-height: 1.25; }
 .cq-row-info span { display: block; font-size: 8.5pt; color: var(--cq-muted); }
+.cq-row-info .cq-dim { margin-top: 1mm; font-size: 9pt; color: inherit; }
+.cq-row-info .cq-dim b { display: inline; font-size: inherit; font-weight: 600; }
 .cq-row-qty { font-size: 9.5pt; color: #2a3642; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .cq-row-total { text-align: right; font-size: 11pt; font-weight: 700; font-variant-numeric: tabular-nums; }
 .cq-row-total small { display: block; font-size: 8pt; font-weight: 500; color: #0f7a3d; }

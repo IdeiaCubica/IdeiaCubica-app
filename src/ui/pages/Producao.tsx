@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useStore } from '../store';
 import { navigate } from '../App';
-import type { OrderStatus, ProductionOrder, Project } from '../../domain/types';
+import type { OrderStatus, PieceDimensions, ProductionOrder, Project } from '../../domain/types';
 import {
   ORDER_STATUS_LABEL, QUEUE_STATUSES, addProjectFileVersion, byDelivery, cancelOrder, checkAvailability, compareOrder, completeOrder, createManualOrder, deleteOrder, orderDeleteBlock, produceForStockNow, setOrderImage,
   moveOrderStatus, orderDelivery, orderReservations, productionQueue, queueShortages, reserveOrderMaterials, returnOrderToQuote,
@@ -11,6 +11,7 @@ import {
 import { lotBalance, lotLabel, reorderAnalysis } from '../../domain/inventory';
 import { materialLabel } from '../../domain/catalog';
 import { ImagePicker } from '../components/ImagePicker';
+import { DimensionsFields } from '../components/DimensionsFields';
 import { saleEconomics } from '../../domain/sales';
 import { quoteItemAt, quoteItems } from '../../domain/quotes';
 import { clientQuoteSettings } from '../../domain/clientQuote';
@@ -515,6 +516,7 @@ function StockProductionForm({ onClose }: { onClose: () => void }) {
   const [f, set] = useForm({ description: '', projectId: '', printerId: db.settings.defaultPrinterId ?? db.printers[0]?.id ?? '', qty: '1', hoursPerUnit: null as number | null, notes: '', done: false, location: '' });
   const [mats, setMats] = useState([{ materialId: db.materials.find((m) => m.active && m.filament)?.id ?? '', qtyPerUnit: '' }]);
   const [image, setImage] = useState<string | null>(null);
+  const [dims, setDims] = useState<PieceDimensions | null>(null);
   const qty = num(f.qty) ?? 0;
   const matOpts = db.materials.filter((m) => m.active).map((m) => {
     const r = reorderAnalysis(db, m);
@@ -527,7 +529,7 @@ function StockProductionForm({ onClose }: { onClose: () => void }) {
     try { return stockEstimate(db, { qtyPlanned: qty, plannedMaterials: planned, plannedHours, printerId: f.printerId || undefined }); } catch { return null; }
   }, [db, qty, JSON.stringify(planned), plannedHours, f.printerId]);
   const submit = () => {
-    const input = { description: f.description, purpose: 'estoque' as const, projectId: f.projectId || undefined, printerId: f.printerId || undefined, qtyPlanned: qty, plannedMaterials: planned, plannedHours, notes: f.notes, image };
+    const input = { description: f.description, purpose: 'estoque' as const, projectId: f.projectId || undefined, printerId: f.printerId || undefined, qtyPlanned: qty, plannedMaterials: planned, plannedHours, notes: f.notes, image, dimensionsCm: dims };
     run((d) => f.done ? produceForStockNow(d, { ...input, location: f.location }) : createManualOrder(d, input),
       f.done ? 'Peças lançadas em Estoque → Peças produzidas e material baixado do estoque.' : 'Produção para estoque criada: custo e valor sugerido calculados.').then((r) => r.ok && onClose());
   };
@@ -549,6 +551,7 @@ function StockProductionForm({ onClose }: { onClose: () => void }) {
           <SelectField label="Projeto" value={f.projectId} onChange={set('projectId')} placeholder="— nenhum —" options={db.projects.map((p) => ({ value: p.id, label: p.name }))} />
           {f.done && <TextField label="Onde estão guardadas" value={f.location} onChange={set('location')} placeholder="Ex.: prateleira 2" />}
         </div>
+        <DimensionsFields value={dims} onChange={setDims} />
         <ImagePicker value={image} onChange={setImage} hint="Opcional. Vai para Estoque → Peças produzidas e para os orçamentos feitos com esta peça." />
         <p className="section-title">Material por peça</p>
         {mats.map((m, i) => (

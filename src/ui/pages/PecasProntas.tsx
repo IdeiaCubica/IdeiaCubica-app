@@ -5,7 +5,7 @@
 import { useState } from 'react';
 import { useStore } from '../store';
 import { navigate } from '../App';
-import type { FinishedGood } from '../../domain/types';
+import type { FinishedGood, PieceDimensions } from '../../domain/types';
 import { daysInStock, deleteFinishedGood, finishedGoodBalance, isUntouchedFinishedGood, quoteFromFinishedGood, registerFinishedGood, updateFinishedGood, writeOffFinishedGood } from '../../domain/production';
 import { fmtDuration } from '../../domain/conversions';
 import { fmtDate, todayISO } from '../../domain/core';
@@ -13,6 +13,7 @@ import { D, ZERO, fmtBRL, fmtNum, toInputBR } from '../../domain/money';
 import { Badge, Check, Combobox, DateField, Empty, Field, Kpi, Modal, NumField, SelectField, TextArea, TextField, dec, num, useConfirm, useForm, type Tone } from '../components/ui';
 import { SaleForm } from './Financeiro';
 import { ImagePicker } from '../components/ImagePicker';
+import { DimensionsFields } from '../components/DimensionsFields';
 
 export function finishedStockSummary(db: ReturnType<typeof useStore>['db']) {
   const rows = db.finishedGoods.map((g) => ({ g, b: finishedGoodBalance(db, g.id) })).filter((r) => r.b.available > 0);
@@ -153,12 +154,13 @@ function FinishedGoodForm({ onClose, fg }: { onClose: () => void; fg?: FinishedG
     producedAt: fg?.producedAt ?? todayISO(), location: fg?.location ?? '', notes: fg?.notes ?? '',
   });
   const [image, setImage] = useState<string | null>(fg?.image ?? null);
+  const [dims, setDims] = useState<PieceDimensions | null>(fg?.dimensionsCm ?? null);
   const submit = () => run((d) => (editing
-    ? updateFinishedGood(d, fg!.id, { description: f.description, location: f.location, suggestedPrice: dec(f.suggestedPrice), notes: f.notes, image,
+    ? updateFinishedGood(d, fg!.id, { description: f.description, location: f.location, suggestedPrice: dec(f.suggestedPrice), notes: f.notes, image, dimensionsCm: dims,
       ...(coreEditable ? { qty: num(f.qty) ?? 0, unitCost: dec(f.unitCost), producedAt: f.producedAt } : {}) })
     : registerFinishedGood(d, {
       description: f.description, projectId: f.projectId || undefined, qty: num(f.qty) ?? 0, unitCost: dec(f.unitCost), suggestedPrice: dec(f.suggestedPrice),
-      producedAt: f.producedAt, location: f.location, notes: f.notes, image,
+      producedAt: f.producedAt, location: f.location, notes: f.notes, image, dimensionsCm: dims,
     })), editing ? 'Peças atualizadas.' : 'Peças cadastradas no estoque.').then((r) => r.ok && onClose());
   return (
     <Modal title={editing ? `Editar ${fg!.code}` : 'Cadastrar peças prontas já existentes'} subtitle={editing ? (coreEditable ? 'Cadastro manual ainda não movimentado: tudo pode ser corrigido.' : 'Quantidade, custo e data vêm da produção ou já tiveram movimento; o restante pode ser alterado.') : 'Para peças produzidas antes de usar o sistema. Não movimenta o estoque de materiais.'} onClose={onClose}
@@ -172,6 +174,7 @@ function FinishedGoodForm({ onClose, fg }: { onClose: () => void; fg?: FinishedG
         <NumField label="Valor previsto de venda" suffix="R$" value={f.suggestedPrice} onChange={set('suggestedPrice')} />
         <TextField label="Local de armazenamento" value={f.location} onChange={set('location')} placeholder="Ex.: prateleira A" />
       </div>
+      <div style={{ marginTop: 12 }}><DimensionsFields value={dims} onChange={setDims} /></div>
       <div style={{ marginTop: 12 }}><ImagePicker value={image} onChange={setImage} hint="Aparece no estoque de peças e no orçamento feito a partir desta peça." /></div>
       <div style={{ marginTop: 12 }}><TextArea label="Observações" value={f.notes} onChange={set('notes')} /></div>
     </Modal>

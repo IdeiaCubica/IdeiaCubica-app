@@ -126,3 +126,4 @@ Para testar sem nuvem e sem login, use `VITE_STORAGE_DRIVER=local`.
 | "Acesso não liberado" | O usuário entrou, mas não está em `app_members`. Rode o passo 4 com o e-mail correto. |
 | "E-mail ou senha incorretos" | Confira em Authentication → Users; redefina a senha por lá se precisar. |
 | "Os dados foram alterados em outra aba ou dispositivo" | Outra aba gravou antes. Recarregue (F5); nada foi perdido. |
+| "Failed to fetch" / "O servidor do banco de dados (Supabase) não respondeu" | O projeto no Supabase está pausado, reiniciando ou sobrecarregado (erro 522). Supabase → abra o projeto → veja o aviso no topo da página inicial: se estiver **Paused**, clique em **Restore project**; senão, **Project Settings → General → Restart project** (ou o botão de reiniciar no menu do projeto). Espere 2–5 min e entre de novo. Em **Reports / Observability** veja se CPU, memória ou disco estão no limite. |

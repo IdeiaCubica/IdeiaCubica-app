@@ -12,6 +12,15 @@ import type { Session } from '@supabase/supabase-js';
 import { forceLocalSignOut, getSupabase, missingSupabaseConfig, usesSupabase, withTimeout } from '../data/supabase';
 import { Alert, TextField } from './components/ui';
 
+/** Mensagem clara para falhas de comunicação (o "Failed to fetch" do navegador não diz nada ao usuário). */
+function authMessage(msg: string): string {
+  if (/invalid login|invalid credentials/i.test(msg)) return 'E-mail ou senha incorretos.';
+  if (/failed to fetch|networkerror|load failed|fetch failed|timeout|522|gateway/i.test(msg)) {
+    return 'O servidor do banco de dados (Supabase) não respondeu. Se a internet estiver funcionando, o projeto no Supabase pode estar pausado ou sobrecarregado: abra o painel do Supabase e reinicie o projeto (veja docs/DEPLOY.md → Problemas comuns). Seus dados não foram afetados.';
+  }
+  return msg;
+}
+
 interface AuthCtx { email: string | null; signOut: () => Promise<void> }
 const Ctx = createContext<AuthCtx>({ email: null, signOut: async () => {} });
 export const useAuth = () => useContext(Ctx);
@@ -76,7 +85,7 @@ function SupabaseGate({ children }: { children: ReactNode }) {
       'O servidor demorou para responder ao verificar suas permissões.')
       .then(({ data, error }) => {
         if (!alive) return;
-        if (error) setCheckError(`Não foi possível verificar suas permissões: ${error.message}`);
+        if (error) setCheckError(`Não foi possível verificar suas permissões: ${authMessage(error.message)}`);
         else setMember(!!data);
       })
       .catch((e: unknown) => { if (alive) setCheckError(e instanceof Error ? e.message : 'Falha ao verificar permissões.'); });
@@ -142,14 +151,14 @@ function Login() {
     setBusy(true); setError(null); setInfo(null);
     const { error } = await sb.auth.signInWithPassword({ email: email.trim(), password });
     setBusy(false);
-    if (error) setError(/invalid/i.test(error.message) ? 'E-mail ou senha incorretos.' : error.message);
+    if (error) setError(/invalid/i.test(error.message) && !/fetch/i.test(error.message) ? 'E-mail ou senha incorretos.' : authMessage(error.message));
   };
   const forgot = async () => {
     if (!email.trim()) { setError('Digite seu e-mail para receber o link de redefinição.'); return; }
     setBusy(true); setError(null);
     const { error } = await sb.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin });
     setBusy(false);
-    if (error) setError(error.message); else setInfo('Se o e-mail estiver cadastrado, você receberá um link para criar uma nova senha.');
+    if (error) setError(authMessage(error.message)); else setInfo('Se o e-mail estiver cadastrado, você receberá um link para criar uma nova senha.');
   };
 
   return (

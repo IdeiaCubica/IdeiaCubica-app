@@ -2,6 +2,11 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.10.1 — 30/10/2026
+
+- Login: quando o Supabase não responde (“Failed to fetch”, erro 522), a tela explica que o servidor do banco está fora do ar
+  e como reiniciar o projeto, em vez da mensagem técnica do navegador.
+
 ## v1.10.0 — 29/10/2026
 
 ### Usuários (Configurações → Usuários)

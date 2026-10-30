@@ -6,21 +6,23 @@ import { saveAccount } from '../../domain/catalog';
 import { accountBalance } from '../../domain/finance';
 import { migrate } from '../../domain/schema';
 import { readLocalBrowserData, type Snapshot } from '../../data/repository';
+import { Usuarios } from './Usuarios';
 import { BusinessError, fmtDate, fmtDateTime, newId, todayISO } from '../../domain/core';
 import { fmtBRL, fmtNum, toInputBR } from '../../domain/money';
 import { Alert, Badge, Check, DataTable, DateField, Empty, Modal, NumField, PageHead, SelectField, Tabs, TextField, dec, useConfirm, useForm } from '../components/ui';
 
-type Tab = 'contas' | 'categorias' | 'backup';
+type Tab = 'contas' | 'categorias' | 'backup' | 'usuarios';
 
 export function Configuracoes({ param }: { param?: string }) {
   const tab = (param as Tab) || 'contas';
   return (
     <>
-      <PageHead eyebrow="Configurações" title="Configurações" text="Contas financeiras, categorias do financeiro, backup e trilha de auditoria." />
+      <PageHead eyebrow="Configurações" title="Configurações" text="Contas financeiras, categorias do financeiro, usuários, backup e trilha de auditoria." />
       <Tabs<Tab> value={tab} onChange={(t) => navigate(`config/${t}`)} tabs={[
         { id: 'contas', label: 'Contas financeiras' },
-        { id: 'categorias', label: 'Categorias financeiras' }, { id: 'backup', label: 'Backup e auditoria' },
+        { id: 'categorias', label: 'Categorias financeiras' }, { id: 'usuarios', label: 'Usuários' }, { id: 'backup', label: 'Backup e auditoria' },
       ]} />
+      {tab === 'usuarios' && <Usuarios />}
       {tab === 'contas' && <Contas />}
       {tab === 'categorias' && <Categorias />}
       {tab === 'backup' && <Backup />}

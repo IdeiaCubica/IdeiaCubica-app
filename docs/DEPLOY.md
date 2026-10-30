@@ -79,6 +79,23 @@ O token é **secreto**: fica só nas variáveis de ambiente da Vercel, **sem** o
 Marque **Production** (e Preview, se quiser testar em previews) e faça **Redeploy**. A função `/api/frete` só atende
 usuários logados e liberados em `app_members`; sem a variável, a tela mostra o aviso “não configurada”.
 
+### Usuários adicionais (v1.10)
+
+A tela **Configurações → Usuários** cria logins, define senhas e remove acessos. Configuração (uma vez):
+
+1. **Banco**: Supabase → SQL Editor → New query → cole `supabase/migrations/20261029000000_v1_10_usuarios.sql` → **Run**.
+   Cria os papéis *dono* (owner, administra usuários) e *usuário* (member, usa o sistema).
+2. **Chave de administração** (só no servidor): Supabase → **Project Settings → API Keys** → em **Secret keys**, crie/copie
+   uma chave secreta (`sb_secret_…`; ou, na aba *Legacy*, a `service_role`).
+   Vercel → projeto → **Settings → Environment Variables** → **Add**: nome `SUPABASE_SERVICE_ROLE_KEY`, valor = a chave,
+   ambiente **Production** (sem o prefixo `VITE_`) → Save → **Deployments → Redeploy**.
+   Essa chave dá acesso total ao banco: não cole em chat, e-mail ou no código; ela só fica na Vercel.
+3. No sistema, entre com o usuário dono → Configurações → Usuários → **Novo usuário** (nome, e-mail e senha).
+
+Sem a chave, ainda é possível criar o usuário pelo painel: Supabase → Authentication → Users → Add user → Create new user
+(marque *Auto Confirm User*, defina a senha) e depois, no SQL Editor:
+`insert into public.app_members (user_id, role) select id, 'member' from auth.users where email = 'email-da-pessoa@exemplo.com';`
+
 ## Passo 6 — Trazer os dados que estavam no navegador (opcional)
 
 Se você já usou o sistema localmente (`npm run dev`) e quer levar esses dados para a nuvem: abra o sistema **no mesmo

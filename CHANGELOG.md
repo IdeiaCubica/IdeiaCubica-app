@@ -2,6 +2,16 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.10.0 — 29/10/2026
+
+### Usuários (Configurações → Usuários)
+- O **dono** do sistema cria usuários (nome, e-mail e senha), define a senha de qualquer usuário e remove acessos,
+  tudo por dentro do sistema. Cada usuário pode **trocar a própria senha**.
+- Papéis: **dono** (acesso total + administra usuários) e **usuário** (acesso total aos dados, sem administrar usuários).
+- A criação de login usa a chave secreta do Supabase **só no servidor** (Vercel, `SUPABASE_SERVICE_ROLE_KEY`); ela nunca vai
+  para o navegador nem para o código.
+- Configuração única: rodar `supabase/migrations/20261029000000_v1_10_usuarios.sql` e cadastrar a chave na Vercel (docs/DEPLOY.md).
+
 ## v1.9.1 — 28/10/2026
 
 ### Dimensões da peça na proposta

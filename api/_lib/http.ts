@@ -51,6 +51,22 @@ export async function requireMember(request: Request): Promise<{ userId: string;
   return { userId: user.id, email: user.email ?? null };
 }
 
+/** Exige que o usuário logado seja o DONO do sistema (papel owner em app_members). */
+export async function requireOwner(request: Request): Promise<{ userId: string; email: string | null }> {
+  const who = await requireMember(request);
+  const url = env('SUPABASE_URL', 'VITE_SUPABASE_URL')!;
+  const anon = env('SUPABASE_ANON_KEY', 'VITE_SUPABASE_ANON_KEY')!;
+  const token = (request.headers.get('authorization') ?? '').slice(7).trim();
+  const res = await fetch(`${url}/rest/v1/rpc/is_owner`, {
+    method: 'POST',
+    headers: { apikey: anon, authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: '{}',
+  });
+  if (res.status === 404) throw new HttpError(503, 'O banco ainda não tem a atualização de usuários. Rode supabase/migrations/20261029000000_v1_10_usuarios.sql no SQL Editor do Supabase.');
+  if (!res.ok || (await res.json()) !== true) throw new HttpError(403, 'Somente o dono do sistema pode administrar usuários.');
+  return who;
+}
+
 /** Envolve o handler: converte erros em respostas JSON com mensagem amigável. */
 export function handle(fn: (request: Request) => Promise<Response>) {
   return async (request: Request): Promise<Response> => {

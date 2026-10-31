@@ -29,6 +29,8 @@ export interface Repository {
   /** Histórico de versões dos dados (somente no Supabase). */
   listSnapshots?(): Promise<Snapshot[]>;
   loadSnapshot?(id: number): Promise<DB>;
+  /** Supabase: separa as fotos de um documento antigo, uma única vez, logo após carregar. */
+  compactIfNeeded?(db: DB): Promise<boolean>;
 }
 
 const KEY = 'ideia-cubica:db:v1';
@@ -133,13 +135,32 @@ export class SupabaseRepository implements Repository {
     return withImageRefs(db, this.idOf);
   }
 
+  /** O documento carregado ainda tinha fotos dentro (gravado antes da v1.11). */
+  private inlineOnLoad = false;
+
   async load(): Promise<DB> {
     const { data, error } = await getSupabase().from('app_state').select('data, version').eq('id', 1).maybeSingle();
     if (error) throw new Error(friendly(error.message));
     if (!data) { this.version = 0; return createEmptyDB(); }
     this.version = data.version;
+    this.inlineOnLoad = collectInlineImages(data.data).size > 0;
     await this.hydrate(data.data);
     return migrate(data.data);
+  }
+
+  /**
+   * Compactação única: se o documento ainda tem fotos dentro e o banco já tem a tabela de fotos,
+   * grava uma vez com as fotos separadas. Silenciosa; se não der, tenta de novo na próxima abertura.
+   */
+  async compactIfNeeded(db: DB): Promise<boolean> {
+    if (!this.inlineOnLoad || this.imagesTable === false) return false;
+    try {
+      const { error } = await getSupabase().from('app_images').select('id').limit(1);
+      if (error) { this.imagesTable = false; return false; }
+      await this.save(db);
+      this.inlineOnLoad = false;
+      return true;
+    } catch { return false; }
   }
 
   async save(db: DB): Promise<void> {

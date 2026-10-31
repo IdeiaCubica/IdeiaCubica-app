@@ -34,7 +34,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     withTimeout(repoRef.current.load(), 30000, 'O servidor demorou demais para enviar os dados. Verifique a internet e tente novamente.')
-      .then((d) => { dbRef.current = d; setDb(d); }).catch((e) => setLoadError(String(e?.message ?? e)));
+      .then((d) => {
+        dbRef.current = d; setDb(d);
+        // Dados antigos com fotos dentro: separa as fotos em segundo plano (gravações seguintes ficam leves).
+        setTimeout(() => { if (dbRef.current === d) repoRef.current.compactIfNeeded?.(d); }, 3000);
+      }).catch((e) => setLoadError(String(e?.message ?? e)));
     if (repoRef.current.kind === 'local') requestPersistentStorage().then(setPersistent);
   }, []);
 

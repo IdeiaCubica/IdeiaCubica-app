@@ -2,6 +2,16 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.11.1 — 30/10/2026
+
+### Lentidão no login (“Verificando permissões…”)
+- Causa: o banco ficou lento (consultas simples levando até 15 s) por excesso de leitura/escrita em disco: cada gravação enviava
+  vários MB (fotos dentro dos dados) e o histórico guardava cópias completas. A tabela de fotos da v1.11 ainda não tinha sido criada.
+- Novo arquivo único `supabase/CORRIGIR_LENTIDAO.sql`: aplica de uma vez as atualizações v1.9, v1.10 e v1.11, deixa o histórico
+  com as 10 cópias mais recentes e mostra os tamanhos no final.
+- Ao abrir o sistema, se os dados ainda tiverem fotos dentro e o banco já tiver a tabela de fotos, o sistema separa as fotos
+  sozinho, uma única vez, em segundo plano.
+
 ## v1.11.0 — 30/10/2026
 
 ### Gravação mais rápida

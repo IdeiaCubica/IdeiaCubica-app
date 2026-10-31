@@ -2,6 +2,18 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.11.0 — 30/10/2026
+
+### Gravação mais rápida
+- Causa da lentidão: cada gravação (salvar orçamento, compra, venda…) enviava o sistema inteiro ao banco, **com todas as fotos**.
+  Quanto mais peças com foto, mais lenta cada gravação, mesmo para uma alteração pequena.
+- Agora cada foto é guardada **uma única vez** numa tabela própria (`app_images`), identificada pelo conteúdo, e o documento do
+  sistema guarda só a referência. A gravação envia só os dados (pequenos); uma foto nova sobe uma vez só.
+- Transparente para o uso: ao abrir o sistema, as fotos são carregadas normalmente. Restaurar uma versão do histórico também funciona.
+- Aviso **“Salvando…”** quando a gravação passa de meio segundo.
+- Configuração única: rodar `supabase/migrations/20261030000000_v1_11_fotos_separadas.sql` no SQL Editor (sem ele, o sistema
+  continua funcionando do jeito antigo).
+
 ## v1.10.1 — 30/10/2026
 
 - Login: quando o Supabase não responde (“Failed to fetch”, erro 522), a tela explica que o servidor do banco está fora do ar

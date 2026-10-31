@@ -44,18 +44,24 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === 'error' ? 7000 : 3500);
   }, []);
 
+  // "Salvando…" aparece só se a gravação passar de meio segundo (gravações rápidas não piscam a tela).
+  const [saving, setSaving] = useState(false);
+  const savingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const run = useCallback<StoreCtx['run']>(async (fn, success) => {
     const current = dbRef.current;
     if (!current) return { ok: false, error: 'Dados ainda não carregados.' };
     const draft = structuredClone(current);
+    savingTimer.current = setTimeout(() => setSaving(true), 500);
+    const done = () => { if (savingTimer.current) clearTimeout(savingTimer.current); setSaving(false); };
     try {
       const value = fn(draft);
-      await repoRef.current.save(draft);
+      await repoRef.current.save(draft).finally(done);
       dbRef.current = draft;
       setDb(draft);
       if (success) toast('success', success);
       return { ok: true, value };
     } catch (e) {
+      done();
       const msg = e instanceof Error ? e.message : String(e);
       toast('error', msg);
       return { ok: false, error: msg };
@@ -82,6 +88,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     <Ctx.Provider value={{ db, repo: repoRef.current, persistent, run, replaceAll, toast }}>
       {children}
       <div className="toast-zone" role="status" aria-live="polite">
+        {saving && <div className="alert toast a-info">Salvando…</div>}
         {toasts.map((t) => (
           <div key={t.id} className={`alert toast a-${t.kind}`}>{t.text}</div>
         ))}

@@ -16,6 +16,7 @@
 import type { DB } from '../domain/types';
 import { createEmptyDB, migrate } from '../domain/schema';
 import { getSupabase, usesSupabase } from './supabase';
+import { collectImageRefs, collectInlineImages, hydrateImages, sha256Hex, withImageRefs } from './images';
 
 export interface Snapshot { id: number; version: number; savedAt: string; bytes: number }
 
@@ -73,20 +74,77 @@ export function readLocalBrowserData(): DB | null {
 
 export class SupabaseRepository implements Repository {
   readonly kind = 'supabase' as const;
-  readonly description = 'Dados salvos no banco Supabase (nuvem), acessíveis de qualquer dispositivo após o login. Cada gravação gera uma cópia no histórico.';
+  readonly description = 'Dados salvos no banco Supabase (nuvem), acessíveis de qualquer dispositivo após o login. O histórico guarda cópias de segurança periódicas.';
   /** Versão do estado carregado; a gravação só é aceita se o banco ainda estiver nesta versão. */
   private version = 0;
+  /** Fotos separadas (tabela app_images): null = ainda não sabemos se a tabela existe; false = não existe (modo antigo). */
+  private imagesTable: boolean | null = null;
+  /** Foto (data URL) → id (SHA-256), para não recalcular a cada gravação. */
+  private idOf = new Map<string, string>();
+  /** Ids de fotos que já estão no banco. */
+  private stored = new Set<string>();
+
+  /** Troca as referências img:… pelas fotos guardadas na tabela app_images. */
+  private async hydrate(raw: unknown): Promise<void> {
+    const ids = [...collectImageRefs(raw)];
+    if (!ids.length) return;
+    const images = new Map<string, string>();
+    for (let i = 0; i < ids.length; i += 40) {
+      const { data, error } = await getSupabase().from('app_images').select('id, data').in('id', ids.slice(i, i + 40));
+      if (error) throw new Error(friendly(error.message));
+      for (const r of data ?? []) images.set(r.id as string, r.data as string);
+    }
+    hydrateImages(raw, images);
+    for (const [id, data] of images) { this.idOf.set(data, id); this.stored.add(id); }
+    this.imagesTable = true;
+  }
+
+  /** Envia as fotos que ainda não estão no banco. Retorna false se a tabela não existe (banco sem a v1.11). */
+  private async uploadImages(rows: { id: string; data: string }[]): Promise<boolean> {
+    let batch: typeof rows = [], size = 0;
+    const flush = async () => {
+      if (!batch.length) return true;
+      const { error } = await getSupabase().from('app_images')
+        .upsert(batch.map((r) => ({ id: r.id, data: r.data, bytes: r.data.length })), { onConflict: 'id', ignoreDuplicates: true });
+      if (error) {
+        if (/does not exist|schema cache|PGRST205|42P01/i.test(`${error.code} ${error.message}`)) return false;
+        throw new Error(friendly(error.message));
+      }
+      batch.forEach((r) => this.stored.add(r.id));
+      batch = []; size = 0;
+      return true;
+    };
+    for (const r of rows) {
+      if (size + r.data.length > 2_000_000 && !(await flush())) return false;
+      batch.push(r); size += r.data.length;
+    }
+    return flush();
+  }
+
+  /** Documento a gravar: fotos trocadas por referências (se o banco já tem a tabela de fotos). */
+  private async payload(db: DB): Promise<unknown> {
+    if (this.imagesTable === false) return db;
+    const inline = collectInlineImages(db);
+    if (!inline.size) return db;
+    for (const s of inline) if (!this.idOf.has(s)) this.idOf.set(s, await sha256Hex(s));
+    const missing = [...inline].map((s) => ({ id: this.idOf.get(s)!, data: s })).filter((r) => !this.stored.has(r.id));
+    if (missing.length && !(await this.uploadImages(missing))) { this.imagesTable = false; return db; }
+    this.imagesTable = true;
+    return withImageRefs(db, this.idOf);
+  }
 
   async load(): Promise<DB> {
     const { data, error } = await getSupabase().from('app_state').select('data, version').eq('id', 1).maybeSingle();
     if (error) throw new Error(friendly(error.message));
     if (!data) { this.version = 0; return createEmptyDB(); }
     this.version = data.version;
+    await this.hydrate(data.data);
     return migrate(data.data);
   }
 
   async save(db: DB): Promise<void> {
-    const { data, error } = await getSupabase().rpc('save_app_state', { p_data: db, p_expected_version: this.version });
+    const p_data = await this.payload(db);
+    const { data, error } = await getSupabase().rpc('save_app_state', { p_data, p_expected_version: this.version });
     if (error) {
       if (error.code === '40001' || /conflito/i.test(error.message)) {
         throw new Error('Os dados foram alterados em outra aba ou dispositivo. Recarregue a página (F5) para ver a versão mais recente — nada foi gravado.');
@@ -105,6 +163,7 @@ export class SupabaseRepository implements Repository {
   async loadSnapshot(id: number): Promise<DB> {
     const { data, error } = await getSupabase().from('app_state_history').select('data').eq('id', id).single();
     if (error) throw new Error(friendly(error.message));
+    await this.hydrate(data.data);
     return migrate(data.data);
   }
 }

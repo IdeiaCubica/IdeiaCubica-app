@@ -36,6 +36,10 @@ Depois, na mesma tela (**New query**), rode também `supabase/migrations/2026102
 (v1.9): aumenta o tempo limite para 30 s e grava no histórico no máximo uma cópia a cada 10 minutos (mantém as 30 mais
 recentes). Corrige o erro “canceling statement due to statement timeout” ao salvar.
 
+E rode `supabase/migrations/20261030000000_v1_11_fotos_separadas.sql` (v1.11): cria a tabela `app_images`, onde cada foto
+fica guardada uma única vez. As gravações passam a enviar só os dados (sem as fotos), o que deixa salvar bem mais rápido.
+Sem esse arquivo o sistema continua funcionando do jeito antigo.
+
 ## Passo 3 — Criar o usuário e bloquear novos cadastros
 
 1. **Authentication → Users → Add user → Create new user**: seu e-mail e uma senha forte; marque

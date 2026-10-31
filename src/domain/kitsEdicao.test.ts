@@ -5,8 +5,8 @@ import { deleteMaterial, materialUsage, saveAccount, saveChannel, saveMaterial, 
 import { correctLot, deletePurchase, purchaseDeleteBlock, registerPurchase } from './purchases';
 import { accountBalance, createManualTitle, settleTitle, updateTitle } from './finance';
 import { lotBalance, materialStatement } from './inventory';
-import { emptyQuoteInput, latestVersion, materialCostPolicy, quoteItemImage, quoteSanity, quoteTotal, resolveParams, evaluateQuote, saveQuote, withKitShares } from './quotes';
-import { finishedGoodBalance, mergeQuotes, produceForStockNow, quoteFromFinishedGood } from './production';
+import { emptyQuoteInput, itemState, latestVersion, materialCostPolicy, quoteItemImage, quoteSanity, quoteTotal, resolveParams, evaluateQuote, saveQuote, setItemStatus, withKitShares } from './quotes';
+import { duplicateQuote, finishedGoodBalance, mergeQuotes, produceForStockNow, quoteFromFinishedGood } from './production';
 import { consumeKit, deleteDeliveryKit, kitUnitCost, quoteKit, saveDeliveryKit } from './deliveryKits';
 import { cancelSale, registerSale, saleEconomics, saleEditBlock, updateSale } from './sales';
 import type { DB } from './types';
@@ -133,6 +133,26 @@ describe('Orçamento kit', () => {
     const merged = mergeQuotes(db, [a.id, b.id], { name: 'Kit' });
     const doc = buildClientQuote(db, merged, {}, '2026-10-28');
     expect(doc.items.map((i) => [i.description, i.dimensions])).toEqual([['Dragão', '12 × 6 × 4 cm (A × L × P)'], ['Chaveiro', '5 × 3 cm (A × L)']]);
+  });
+
+  it('duplicar orçamento: novo número, novo cliente, mesmas peças e valores; original intacto', () => {
+    const base = quoteBase();
+    const ana = saveParty(db, { kind: 'cliente', name: 'Ana' });
+    const bia = saveParty(db, { kind: 'cliente', name: 'Bia' });
+    const img = 'data:image/jpeg;base64,' + 'C'.repeat(800);
+    const src = saveQuote(db, { name: 'Vaso', customerId: ana.id }, [{ name: 'Vaso', image: img, input: { ...base, quantity: 3, dimensionsCm: { height: 10, width: 8, depth: 8 } } }]);
+    setItemStatus(db, src.id, latestVersion(src).items[0].itemId, 'aprovado');
+    const before = JSON.stringify(src);
+    const copy = duplicateQuote(db, src.id, { customerId: bia.id });
+    expect(copy.number).not.toBe(src.number);
+    expect(copy.customerId).toBe(bia.id);
+    expect(copy.status).toBe('rascunho');
+    const [a, b] = [latestVersion(src).items[0], latestVersion(copy).items[0]];
+    expect(b.itemId).not.toBe(a.itemId);
+    expect([b.name, b.image, b.input.quantity, b.input.dimensionsCm]).toEqual([a.name, img, 3, { height: 10, width: 8, depth: 8 }]);
+    expect(b.summary.orderPrice).toBe(a.summary.orderPrice);
+    expect(itemState(db, copy, b.itemId)).toBe('aberto');
+    expect(JSON.stringify(src)).toBe(before);
   });
 
   it('fotos ficam só na versão atual do orçamento (dados menores, gravação mais rápida)', () => {

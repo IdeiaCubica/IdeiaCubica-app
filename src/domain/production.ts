@@ -562,6 +562,30 @@ export function mergeQuotes(db: DB, quoteIds: ID[], opts: { name?: string; custo
   return merged;
 }
 
+/**
+ * Duplica um orçamento (ex.: outro cliente quer a mesma peça): orçamento NOVO, com número novo,
+ * as mesmas peças, fotos, dimensões, valores salvos e kit de entrega. Todas as peças começam
+ * "aguardando cliente". O frete não é copiado, porque depende do endereço de cada cliente.
+ */
+export function duplicateQuote(db: DB, quoteId: ID, opts: { name?: string; customerId?: ID } = {}): Quote {
+  const src = byId(db.quotes, quoteId, 'Orçamento');
+  const v = latestVersion(src);
+  const drafts: QuoteItemDraft[] = v.items.map((it) => ({ name: it.name, image: it.image ?? null, input: structuredClone(it.input), finishedGoodId: it.finishedGoodId }));
+  const shipping = v.shipping ? { ...structuredClone(v.shipping), destCep: null, clientFreight: null } : undefined;
+  for (const d of drafts) if (d.input.freightSubsidyPerOrder) d.input.freightSubsidyPerOrder = null;
+  const copy = saveQuote(db, {
+    name: opts.name?.trim() || src.name, customerId: opts.customerId, projectId: src.projectId,
+    deliveryKit: v.deliveryKit ? structuredClone(v.deliveryKit) : null, note: `Cópia de ${src.number}`,
+  }, drafts, shipping);
+  // Mesmos custos e preço da origem (o aviso "os custos mudaram" aparece se o custo de hoje for outro).
+  latestVersion(copy).items.forEach((item, i) => {
+    const from = v.items[i];
+    if (JSON.stringify(from.input) === JSON.stringify(item.input)) { item.params = structuredClone(from.params); item.summary = structuredClone(from.summary); }
+  });
+  audit(db, 'Orçamento duplicado', `${src.number} → ${copy.number}`);
+  return copy;
+}
+
 /** Baixa manual (avaria, brinde, uso próprio). */
 export function writeOffFinishedGood(db: DB, fgId: ID, qty: number, reason: string, date = todayISO()) {
   const fg = byId(db.finishedGoods, fgId, 'Peça pronta');

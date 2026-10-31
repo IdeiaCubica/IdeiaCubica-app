@@ -2,6 +2,14 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.12.0 — 31/10/2026
+
+### Duplicar orçamento
+- Novo botão **Duplicar orçamento** dentro do orçamento: cria um orçamento novo (número novo) com as mesmas peças, fotos,
+  dimensões, valores salvos e kit de entrega, para outro cliente (escolhido na hora ou cadastrado ali mesmo).
+- Na cópia, todas as peças começam “aguardando cliente”; o original não muda. O frete não é copiado, porque depende do endereço
+  do novo cliente.
+
 ## v1.11.1 — 30/10/2026
 
 ### Lentidão no login (“Verificando permissões…”)

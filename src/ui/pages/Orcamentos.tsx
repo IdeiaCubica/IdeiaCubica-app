@@ -9,7 +9,7 @@ import {
 import { kitUnitCost, quoteKit } from '../../domain/deliveryKits';
 import { isLockedComponent, laborTotals, type CompStatus, type CostComponent } from '../../domain/costing';
 import { ROUNDING_LABEL } from '../../domain/pricing';
-import { createOrdersFromQuote, finishedGoodBalance, finishedGoodDraft, mergeQuotes } from '../../domain/production';
+import { createOrdersFromQuote, duplicateQuote, finishedGoodBalance, finishedGoodDraft, mergeQuotes } from '../../domain/production';
 import { allocate } from '../../domain/purchases';
 import { materialLabel, saveParty } from '../../domain/catalog';
 import { fmtDate, fmtDateTime, fmtPhone, newId } from '../../domain/core';
@@ -341,6 +341,7 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
   const [exporting, setExporting] = useState(false);
   const [producing, setProducing] = useState(false);
   const [addingStock, setAddingStock] = useState(false);
+  const [duplicating, setDuplicating] = useState(false);
   // Novo orçamento começa sem modelo: o usuário escolhe "Criar nova peça" ou "Peça do estoque".
   const [blankStart, setBlankStart] = useState(!quote);
   const isPristine = (it: DraftItem) => !it.itemId && !it.name.trim() && !it.finishedGoodId && !it.image
@@ -469,6 +470,7 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
           {quote && <button className="btn ghost danger-text" onClick={remove}>Excluir</button>}
           {quote && <Badge tone={QUOTE_STATUS[quote.status].tone}>{QUOTE_STATUS[quote.status].label}</Badge>}
           {quote && (quote.status === 'rascunho' || quote.status === 'enviado') && <button className="btn ghost" onClick={() => run((d) => setQuoteStatus(d, quote.id, quote.status === 'enviado' ? 'rascunho' : 'enviado'), 'Situação atualizada.')}>{quote.status === 'enviado' ? 'Voltar para rascunho' : 'Marcar como enviado'}</button>}
+          {quote && <button className="btn secondary" onClick={() => (unsavedAll ? toast('warning', 'Salve as alterações antes de duplicar (a cópia usa a versão salva).') : setDuplicating(true))}>Duplicar orçamento</button>}
           {quote && <button className="btn secondary" onClick={() => setExporting(true)}>Orçamento para o cliente</button>}
           {quote && <button className="btn navy" onClick={() => (unsavedAll ? toast('warning', 'Salve as alterações antes de enviar para produção.') : setProducing(true))} disabled={producible.length === 0}>Enviar para produção</button>}
           <button className="btn primary" onClick={save}>{quote ? 'Salvar alterações' : 'Salvar orçamento'}</button>
@@ -647,6 +649,7 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
         onSave={(v) => run((d) => saveParty(d, v), 'Cliente cadastrado.').then((r) => { if (r.ok) { setMeta((m) => ({ ...m, customerId: r.value.id })); setNewClient(false); } })} />}
       {exporting && quote && <ClientQuoteExport quote={quote} onClose={() => setExporting(false)} unsaved={unsavedAll} />}
       {producing && quote && <ProduceDialog quote={quote} onClose={() => setProducing(false)} />}
+      {duplicating && quote && <DuplicateQuoteDialog quote={quote} onClose={() => setDuplicating(false)} />}
       {addingStock && <StockPieceDialog db={db} exclude={items.map((it) => it.finishedGoodId).filter(Boolean) as string[]} onClose={() => setAddingStock(false)}
         onAdd={(d) => {
           const piece = { name: d.name, image: d.image ?? null, input: d.input, finishedGoodId: d.finishedGoodId };
@@ -657,6 +660,38 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
         }} />}
       {confirmEl}
     </>
+  );
+}
+
+/* ---------------- Duplicar orçamento ---------------- */
+function DuplicateQuoteDialog({ quote, onClose }: { quote: Quote; onClose: () => void }) {
+  const { db, run } = useStore();
+  const [name, setName] = useState(quote.name);
+  const [customerId, setCustomerId] = useState('');
+  const [newClient, setNewClient] = useState(false);
+  const v = latestVersion(quote);
+  const submit = () => run((d) => duplicateQuote(d, quote.id, { name, customerId: customerId || undefined }), 'Orçamento duplicado. Confira os dados e salve se mudar algo.')
+    .then((r) => { if (r.ok) { onClose(); navigate(`orcamentos/${r.value.id}`); } });
+  return (
+    <Modal title={`Duplicar ${quote.number}`} subtitle="Cria um orçamento novo, com número novo, as mesmas peças, fotos, dimensões, valores e kit de entrega. O original não muda." onClose={onClose}
+      footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={submit}>Duplicar</button></>}>
+      <div className="stack">
+        <Field label="Cliente da cópia">
+          <div className="row" style={{ flexWrap: 'nowrap', gap: 8 }}>
+            <Combobox className="grow" ariaLabel="Cliente da cópia" value={customerId} onChange={setCustomerId} placeholder="— escolha o cliente (opcional) —"
+              options={db.parties.filter((p) => p.kind === 'cliente').map((p) => ({ value: p.id, label: p.phone ? `${p.name} · ${fmtPhone(p.phone)}` : p.name }))} />
+            <button type="button" className="btn secondary" onClick={() => setNewClient(true)}>+ Novo</button>
+          </div>
+        </Field>
+        <TextField label="Nome do orçamento" value={name} onChange={setName} />
+        <p className="small muted" style={{ margin: 0 }}>
+          {v.items.length} peça(s): {v.items.map((it) => `${it.name} (${it.input.quantity})`).join(', ')}. Todas começam como “aguardando cliente”.
+          O frete não é copiado, porque depende do endereço do novo cliente: calcule de novo na cópia.
+        </p>
+      </div>
+      {newClient && <PartyForm kind="cliente" onClose={() => setNewClient(false)}
+        onSave={(p) => run((d) => saveParty(d, p), 'Cliente cadastrado.').then((r) => { if (r.ok) { setCustomerId(r.value.id); setNewClient(false); } })} />}
+    </Modal>
   );
 }
 

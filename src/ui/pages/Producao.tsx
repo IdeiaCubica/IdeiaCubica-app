@@ -4,7 +4,7 @@ import { useStore } from '../store';
 import { navigate } from '../App';
 import type { OrderStatus, PieceDimensions, ProductionOrder, Project } from '../../domain/types';
 import {
-  ORDER_STATUS_LABEL, QUEUE_STATUSES, addProjectFileVersion, byDelivery, cancelOrder, checkAvailability, compareOrder, completeOrder, createManualOrder, deleteOrder, orderDeleteBlock, produceForStockNow, setOrderImage,
+  ORDER_STATUS_LABEL, QUEUE_STATUSES, addProjectFileVersion, byDelivery, cancelOrder, checkAvailability, compareOrder, completeOrder, createManualOrder, deleteOrder, orderDeleteBlock, orderDestination, produceForStockNow, sendOrderToStock, setOrderImage,
   moveOrderStatus, orderDelivery, orderReservations, productionQueue, queueShortages, reserveOrderMaterials, returnOrderToQuote,
   saveProject, startOrder, stockEstimate, updateOrderPlanning,
 } from '../../domain/production';
@@ -69,8 +69,10 @@ const COLUMNS: { id: Column; title: string; hint: string }[] = [
   { id: 'fila', title: 'A produzir', hint: 'Pela data de entrega: as próximas entregas ficam no topo.' },
   { id: 'producao', title: 'Em produção', hint: 'Imprimindo agora.' },
   { id: 'acabamento', title: 'Acabamento / inspeção', hint: 'Pós-processo e conferência.' },
-  { id: 'concluidas', title: 'Produzidas', hint: 'Concluídas nos últimos 30 dias.' },
+  { id: 'concluidas', title: 'Produzidas', hint: 'Clique na peça: vai para o estoque ou foi entregue.' },
 ];
+/** A partir desta data (v1.13) toda peça concluída espera a decisão estoque/entregue no quadro. */
+const DESTINATION_SINCE = '2026-11-01';
 const columnOf = (o: ProductionOrder): Column | null =>
   QUEUE_STATUSES.includes(o.status) ? 'fila' : o.status === 'em_producao' ? 'producao'
   : o.status === 'aguardando_acabamento' || o.status === 'em_inspecao' ? 'acabamento' : o.status === 'concluida' ? 'concluidas' : null;
@@ -79,14 +81,17 @@ function Quadro() {
   const { db, run, toast } = useStore();
   const [sel, setSel] = useState<ProductionOrder | null>(null);
   const [completing, setCompleting] = useState<ProductionOrder | null>(null);
+  const [deciding, setDeciding] = useState<ProductionOrder | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
   const [over, setOver] = useState<string | null>(null);
   const since = addDaysISO(todayISO(), -30);
+  // "Produzidas": só as que aguardam a decisão (estoque ou entregue). Concluídas antigas, sem decisão, ficam só no histórico.
+  const awaiting = (o: ProductionOrder) => o.status === 'concluida' && !orderDestination(db, o) && ((o.finishedAt ?? '') >= since || (o.finishedAt ?? '') >= DESTINATION_SINCE);
   const cards: Record<Column, ProductionOrder[]> = {
     fila: productionQueue(db),
     producao: db.orders.filter((o) => columnOf(o) === 'producao').sort(byDelivery),
     acabamento: db.orders.filter((o) => columnOf(o) === 'acabamento').sort(byDelivery),
-    concluidas: db.orders.filter((o) => o.status === 'concluida' && (o.finishedAt ?? '') >= since).sort((a, b) => (b.finishedAt ?? '').localeCompare(a.finishedAt ?? '')),
+    concluidas: db.orders.filter(awaiting).sort(byDelivery),
   };
   const queueHours = cards.fila.reduce((s, o) => s + (o.plannedHours ?? 0), 0);
 
@@ -117,7 +122,7 @@ function Quadro() {
         <Kpi label="Na fila" value={cards.fila.length} hint={queueHours ? `${fmtDuration(queueHours)} de impressão previstas` : 'sem horas previstas'} />
         <Kpi label="Em produção" value={cards.producao.length} />
         <Kpi label="Acabamento / inspeção" value={cards.acabamento.length} />
-        <Kpi label="Produzidas (30 dias)" value={cards.concluidas.reduce((s, o) => s + (o.actual?.qtyApproved ?? 0), 0)} hint="peças aprovadas" accent />
+        <Kpi label="Produzidas aguardando destino" value={cards.concluidas.length} hint="clique: estoque ou entregue" accent />
       </div>
       <div className="kanban">
         {COLUMNS.map((c) => (
@@ -132,7 +137,7 @@ function Quadro() {
               {cards[c.id].map((o) => (
                 <KanbanCard key={o.id} order={o} dragging={dragId === o.id}
                   onDragStart={() => setDragId(o.id)} onDragEnd={() => { setDragId(null); setOver(null); }}
-                  onOpen={() => setSel(o)} />
+                  onOpen={() => (c.id === 'concluidas' ? setDeciding(o) : setSel(o))} />
               ))}
             </div>
           </section>
@@ -140,11 +145,51 @@ function Quadro() {
       </div>
       <p className="small muted" style={{ marginTop: 12 }}>
         Cada coluna é ordenada pela data de entrega (próximas no topo; sem data por último). Arraste os cartões entre as colunas:
-        soltar em <b>Em produção</b> reserva o material e inicia; soltar em <b>Produzidas</b> abre a conclusão com o consumo real. No celular, abra o cartão para mudar o status.
+        soltar em <b>Em produção</b> reserva o material e inicia; soltar em <b>Produzidas</b> abre a conclusão com o consumo real.
+        Em <b>Produzidas</b>, clique na peça para mandar ao <b>estoque de peças produzidas</b> ou registrar a <b>entrega (venda)</b>; ela sai do quadro.
       </p>
       {sel && <OrderModal order={sel} onClose={() => setSel(null)} />}
+      {deciding && <DestinationDialog order={deciding} onClose={() => setDeciding(null)} onDetails={() => { setSel(deciding); setDeciding(null); }} />}
       {completing && <CompleteForm order={completing} onClose={() => setCompleting(null)} />}
     </>
+  );
+}
+
+/** Peça produzida: escolher o caminho — estoque de peças produzidas ou entregue (venda). */
+function DestinationDialog({ order: o, onClose, onDetails }: { order: ProductionOrder; onClose: () => void; onDetails: () => void }) {
+  const { db, run } = useStore();
+  const [step, setStep] = useState<'escolha' | 'estoque' | 'venda'>('escolha');
+  const [location, setLocation] = useState('');
+  const customer = db.parties.find((p) => p.id === o.customerId);
+  const qty = o.actual?.qtyApproved ?? o.qtyPlanned;
+  if (step === 'venda') {
+    return <SaleForm preset={{ orderId: o.id }} onClose={onClose} />;
+  }
+  const toStock = () => run((d) => sendOrderToStock(d, o.id, location), `${o.number}: peças no estoque (Estoque → Peças produzidas).`).then((r) => r.ok && onClose());
+  return (
+    <Modal title={`${o.number} · ${o.description}`} subtitle={`${qty} peça(s) produzida(s)${customer ? ` · cliente ${customer.name}` : ''}. Para onde vai?`} onClose={onClose}
+      footer={<><button className="btn ghost" onClick={onDetails}>Ver detalhes da produção</button><button className="btn ghost" onClick={onClose}>Agora não</button></>}>
+      {step === 'escolha' ? (
+        <div className="start-choice">
+          <button type="button" className="start-option" onClick={() => setStep('estoque')}>
+            <b>1 · Vai para o estoque</b>
+            <span>Peças ficam em Estoque → Peças produzidas.{o.quoteId ? ' Como é pedido de cliente, ficam separadas para ele até a entrega.' : ' Disponíveis para vender ou orçar.'}</span>
+          </button>
+          <button type="button" className="start-option" onClick={() => setStep('venda')}>
+            <b>2 · Peça entregue</b>
+            <span>Registra a venda (pago ou a pagar). A peça aparece no módulo Vendas.</span>
+          </button>
+        </div>
+      ) : (
+        <div className="stack">
+          <TextField label="Onde as peças ficam guardadas (opcional)" value={location} onChange={setLocation} placeholder="Ex.: prateleira 2" />
+          <div className="row" style={{ justifyContent: 'flex-end' }}>
+            <button className="btn ghost" onClick={() => setStep('escolha')}>Voltar</button>
+            <button className="btn primary" onClick={toStock}>Enviar {qty} peça(s) para o estoque</button>
+          </div>
+        </div>
+      )}
+    </Modal>
   );
 }
 

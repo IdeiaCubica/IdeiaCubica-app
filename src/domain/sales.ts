@@ -15,7 +15,7 @@ import { BusinessError, assert, audit, byId, isISODate, newId, nextCode, nowISO,
 import { categoryByName, cancelTitle, createTitlesFromTerms, titlePaid } from './finance';
 import { SYS_FIN } from './schema';
 import { channelRates } from './pricing';
-import { compareOrder, finishedGoodBalance } from './production';
+import { compareOrder, finishedGoodBalance, markOrderDelivered } from './production';
 import { quoteItem } from './quotes';
 import { addMovement } from './inventory';
 import { consumeKit } from './deliveryKits';
@@ -111,7 +111,13 @@ export function updateSale(db: DB, saleId: ID, input: Omit<SaleInput, 'quoteId' 
   return out;
 }
 
-function applySale(db: DB, input: SaleInput, existing?: Sale): Sale {
+function applySale(db: DB, inputIn: SaleInput, existing?: Sale): Sale {
+  let input = inputIn;
+  // Venda de um pedido cujas peças foram para o estoque: baixa as peças prontas desse pedido.
+  if (!existing && input.orderId && !input.finishedGoodId) {
+    const o = db.orders.find((x) => x.id === input.orderId);
+    if (o?.finishedGoodId) input = { ...input, finishedGoodId: o.finishedGoodId };
+  }
   assert(isISODate(input.date), 'Informe a data da venda.');
   const description = requireText(input.description, 'a descrição do produto vendido');
   assert(Number.isInteger(input.qty) && input.qty > 0, 'Quantidade deve ser um inteiro maior que zero.');
@@ -183,6 +189,8 @@ function applySale(db: DB, input: SaleInput, existing?: Sale): Sale {
     return existing;
   }
   db.sales.push(sale);
+  // Peça entregue: sai da coluna "Produzidas" do Kanban.
+  for (const oid of new Set([input.orderId, fgItem?.orderId].filter(Boolean) as ID[])) markOrderDelivered(db, oid);
   audit(db, 'Venda registrada', `${sale.number}: R$ ${gross.toFixed(2)}`);
   return sale;
 }
@@ -200,6 +208,12 @@ export function cancelSale(db: DB, saleId: ID, reason: string) {
   }
   s.status = 'cancelada';
   s.cancelReason = why;
+  // A peça volta para a coluna "Produzidas" (se não houver outra venda dela).
+  const fgOrder = s.finishedGoodId ? db.finishedGoods.find((g) => g.id === s.finishedGoodId)?.orderId : undefined;
+  for (const oid of new Set([s.orderId, fgOrder].filter(Boolean) as ID[])) {
+    const o = db.orders.find((x) => x.id === oid);
+    if (o?.destination === 'entregue' && !db.sales.some((x) => x.status === 'ativa' && x.orderId === o.id)) { delete o.destination; delete o.destinationAt; }
+  }
   audit(db, 'Venda cancelada', `${s.number} — ${why}`);
 }
 
@@ -212,6 +226,23 @@ export interface SaleEconomics {
   freightNet: Decimal;   // frete cobrado − frete pago (negativo = subsídio)
   cogs: Decimal | null;  // custo dos produtos vendidos (inclui o kit de entrega baixado na venda)
   contribution: Decimal | null;
+}
+
+/**
+ * Situação do recebimento da venda: "pago" quando o cliente já pagou tudo; "a_pagar" quando falta
+ * receber (com vencimento e atraso). Usa as contas a receber geradas pela venda.
+ */
+export function saleStatus(db: DB, s: Sale, today: ISODate): { status: 'pago' | 'a_pagar' | 'cancelada'; total: Decimal; received: Decimal; open: Decimal; nextDue: ISODate | null; overdue: boolean; titleIds: ID[] } {
+  const titles = db.titles.filter((t) => t.origin.kind === 'venda' && t.origin.id === s.id && t.direction === 'in' && t.status !== 'cancelado');
+  const total = sum(titles.map((t) => D(t.amount)));
+  const received = sum(titles.map((t) => titlePaid(t)));
+  const open = total.minus(received);
+  const pending = titles.filter((t) => t.status === 'aberto').sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+  const nextDue = pending[0]?.dueDate ?? null;
+  return {
+    status: s.status === 'cancelada' ? 'cancelada' : open.gt(0) ? 'a_pagar' : 'pago',
+    total, received, open, nextDue, overdue: !!nextDue && nextDue < today && open.gt(0), titleIds: pending.map((t) => t.id),
+  };
 }
 
 export function saleEconomics(s: Sale): SaleEconomics {

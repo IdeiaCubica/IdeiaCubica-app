@@ -4,16 +4,17 @@ import { navigate } from '../App';
 import type { FinTitle, PaymentTerms, Quote, Sale } from '../../domain/types';
 import { accountBalance, cancelTitle, cashBalance, cashFlowByMonth, cashNeed, createManualTitle, expensesByCategory, investedCapital, openTotals, reverseSettlement, settleTitle, titleOpen, titlePaid, updateTitle } from '../../domain/finance';
 import { finishedGoodBalance } from '../../domain/production';
-import { breakEven, cancelSale, managementResult, registerSale, resolveSaleCost, resultByProject, saleEconomics, saleEditBlock, saleGross, updateSale } from '../../domain/sales';
+import { breakEven, cancelSale, managementResult, registerSale, resolveSaleCost, resultByProject, saleEconomics, saleEditBlock, saleStatus, updateSale } from '../../domain/sales';
 import { channelRates } from '../../domain/pricing';
 import { itemState, latestVersion, quoteItem, quoteItemAt, quoteItems } from '../../domain/quotes';
 import { kitUnitCost } from '../../domain/deliveryKits';
 import { addDays, fmtDate, todayISO } from '../../domain/core';
-import { D, ZERO, cents, fmtBRL, fmtPct, parseBR } from '../../domain/money';
+import { D, ZERO, cents, fmtBRL, fmtPct, parseBR, sum } from '../../domain/money';
 import { Alert, Badge, Check, Combobox, DataTable, DateField, Empty, Field, Kpi, Modal, NumField, PageHead, SelectField, Tabs, TextArea, TextField, dec, num, useConfirm, useForm, type Tone } from '../components/ui';
 import { NATURE_LABEL } from './Configuracoes';
+import { Extrato, Fechamento } from './RelatoriosFinanceiros';
 
-type Tab = 'painel' | 'titulos' | 'vendas' | 'resultado';
+type Tab = 'painel' | 'extrato' | 'fechamento' | 'titulos' | 'vendas' | 'resultado';
 
 const monthRange = (ym: string) => {
   const [y, m] = ym.split('-').map(Number);
@@ -35,12 +36,15 @@ export function Financeiro({ param }: { param?: string }) {
         actions={<><button className="btn secondary" onClick={() => setManual(true)}>Novo lançamento</button><button className="btn primary" onClick={() => setSelling(true)}>Registrar venda</button></>} />
       {db.accounts.length === 0 && <div style={{ marginBottom: 16 }}><Alert tone="warning" title="Nenhuma conta financeira">Cadastre ao menos uma conta em <a href="#/config/contas">Configurações → Contas financeiras</a> para registrar pagamentos e recebimentos.</Alert></div>}
       <Tabs<Tab> value={tab} onChange={(t) => navigate(`financeiro/${t}`)} tabs={[
-        { id: 'painel', label: 'Painel' }, { id: 'titulos', label: 'Contas a pagar e receber', count: overdue || undefined },
+        { id: 'painel', label: 'Painel' }, { id: 'extrato', label: 'Extrato' }, { id: 'fechamento', label: 'Fechamento mensal' },
+        { id: 'titulos', label: 'Contas a pagar e receber', count: overdue || undefined },
         { id: 'vendas', label: 'Vendas', count: db.sales.length }, { id: 'resultado', label: 'Resultado por produto' },
       ]} />
       {tab === 'painel' && <Painel />}
+      {tab === 'extrato' && <Extrato />}
+      {tab === 'fechamento' && <Fechamento />}
       {tab === 'titulos' && <Titulos />}
-      {tab === 'vendas' && <Vendas onNew={() => setSelling(true)} />}
+      {tab === 'vendas' && <SalesList onNew={() => setSelling(true)} />}
       {tab === 'resultado' && <Resultado />}
       {manual && <ManualForm onClose={() => setManual(false)} />}
       {selling && <SaleForm onClose={() => setSelling(false)} />}
@@ -166,7 +170,7 @@ function Titulos() {
   );
 }
 
-function TitleModal({ title, onClose }: { title: FinTitle; onClose: () => void }) {
+export function TitleModal({ title, onClose }: { title: FinTitle; onClose: () => void }) {
   const { db, run } = useStore();
   const [confirm, confirmEl] = useConfirm();
   const t = db.titles.find((x) => x.id === title.id)!;
@@ -285,29 +289,60 @@ function ManualForm({ onClose }: { onClose: () => void }) {
 }
 
 /* ---------------- Vendas ---------------- */
-function Vendas({ onNew }: { onNew: () => void }) {
+const SALE_STATUS: Record<'pago' | 'a_pagar' | 'cancelada', { label: string; tone: Tone }> = {
+  pago: { label: 'Pago', tone: 'success' }, a_pagar: { label: 'A pagar', tone: 'warning' }, cancelada: { label: 'Cancelada', tone: 'neutral' },
+};
+
+/** Lista de vendas com situação do pagamento (usada no módulo Vendas e no Financeiro). */
+export function SalesList({ onNew }: { onNew: () => void }) {
   const { db, run } = useStore();
   const [confirm, confirmEl] = useConfirm();
   const [editing, setEditing] = useState<Sale | null>(null);
+  const [receiving, setReceiving] = useState<FinTitle | null>(null);
+  const [status, setStatus] = useState('');
+  const [ym, setYm] = useState('');
+  const today = todayISO();
+  const customer = (id?: string) => db.parties.find((p) => p.id === id)?.name ?? '';
+  const rows = [...db.sales].reverse().map((s) => ({ s, st: saleStatus(db, s, today) }))
+    .filter((r) => (!status || r.st.status === status) && (!ym || r.s.date.startsWith(ym)));
+  const active = rows.filter((r) => r.st.status !== 'cancelada');
   const cancel = async (s: Sale) => {
-    const reason = await confirm({ title: `Cancelar venda ${s.number}?`, danger: true, confirmLabel: 'Cancelar venda', reasonLabel: 'Motivo', text: 'Os títulos gerados serão cancelados. Recebimentos devem ser estornados antes.' });
+    const reason = await confirm({ title: `Cancelar venda ${s.number}?`, danger: true, confirmLabel: 'Cancelar venda', reasonLabel: 'Motivo', text: 'Os títulos gerados serão cancelados. Recebimentos devem ser estornados antes. A peça volta para “Produzidas” no quadro de produção.' });
     if (reason) run((d) => cancelSale(d, s.id, reason), 'Venda cancelada.');
   };
+  const receive = (titleIds: string[]) => { const t = db.titles.find((x) => x.id === titleIds[0]); if (t) setReceiving(t); };
   return (
-    <div className="card">
-      <DataTable rows={[...db.sales].reverse()} rowKey={(s) => s.id} onRowClick={(s) => { if (s.status === 'ativa') setEditing(s); }} search={(s) => `${s.number} ${s.description} ${db.parties.find((p) => p.id === s.customerId)?.name ?? ''}`}
-        empty={<Empty title="Nenhuma venda registrada" text="Ao registrar uma venda, o sistema gera contas a receber, encargos do canal e calcula a margem com o custo realizado (OP) ou estimado (orçamento)." action={<button className="btn primary" onClick={onNew}>Registrar venda</button>} />}
-        columns={[
-          { key: 'n', header: 'Venda', render: (s) => <span className="mono">{s.number}</span>, sort: (s) => s.number },
-          { key: 'd', header: 'Data', render: (s) => fmtDate(s.date), sort: (s) => s.date },
-          { key: 'p', header: 'Produto', render: (s) => <><b>{s.description}</b><div className="muted small">{s.qty} un · {db.parties.find((p) => p.id === s.customerId)?.name ?? ''} · {db.channels.find((c) => c.id === s.channelId)?.name ?? 'sem canal'}</div></> },
-          { key: 'r', header: 'Receita', num: true, render: (s) => fmtBRL(saleGross(s)) },
-          { key: 'f', header: 'Encargos', num: true, render: (s) => fmtBRL(s.fees.total) },
-          { key: 'c', header: 'Custo', num: true, render: (s) => { const e = saleEconomics(s); return e.cogs ? <>{fmtBRL(e.cogs)} <Badge tone={s.costStatus === 'realizado' ? 'success' : 'warning'}>{s.costStatus}</Badge></> : <Badge tone="error">pendente</Badge>; } },
-          { key: 'm', header: 'Contribuição', num: true, render: (s) => { const e = saleEconomics(s); return e.contribution ? <span style={{ color: e.contribution.isNegative() ? 'var(--error)' : undefined }}>{fmtBRL(e.contribution)} ({fmtPct(e.revenue.isZero() ? null : e.contribution.div(e.revenue))})</span> : '—'; } },
-          { key: 's', header: '', render: (s) => s.status === 'cancelada' ? <Badge>cancelada</Badge> : <span className="row" style={{ gap: 4, flexWrap: 'nowrap' }}><button className="btn ghost sm" onClick={(e) => { e.stopPropagation(); setEditing(s); }}>Editar</button><button className="btn ghost sm" onClick={(e) => { e.stopPropagation(); cancel(s); }}>Cancelar</button></span> },
-        ]} />
+    <div className="stack">
+      <div className="kpis">
+        <Kpi label="Vendido" value={fmtBRL(sum(active.map((r) => r.st.total)))} hint={`${active.length} venda(s)${ym ? ` em ${monthLabel(ym)}` : ''}`} accent />
+        <Kpi label="Recebido (pago)" value={fmtBRL(sum(active.map((r) => r.st.received)))} />
+        <Kpi label="A receber (a pagar pelo cliente)" value={fmtBRL(sum(active.map((r) => r.st.open)))}
+          hint={active.some((r) => r.st.overdue) ? <span style={{ color: 'var(--error)' }}>{active.filter((r) => r.st.overdue).length} em atraso</span> : 'nada em atraso'} />
+      </div>
+      <div className="card">
+        <DataTable rows={rows} rowKey={(r) => r.s.id} onRowClick={(r) => { if (r.s.status === 'ativa') setEditing(r.s); }}
+          search={(r) => `${r.s.number} ${r.s.description} ${customer(r.s.customerId)}`}
+          toolbar={<>
+            <Combobox compact ariaLabel="Situação do pagamento" value={status} onChange={setStatus} placeholder="Todas as situações" options={[{ value: 'pago', label: 'Pago' }, { value: 'a_pagar', label: 'A pagar' }, { value: 'cancelada', label: 'Canceladas' }]} />
+            <input type="month" aria-label="Mês da venda" value={ym} onChange={(e) => setYm(e.target.value)} className="month-input" />
+          </>}
+          empty={<Empty title="Nenhuma venda neste filtro" text="As vendas entram aqui quando a peça é entregue (quadro de produção → Produzidas → Peça entregue) ou pelo botão Registrar venda." action={<button className="btn primary" onClick={onNew}>Registrar venda</button>} />}
+          columns={[
+            { key: 'n', header: 'Venda', render: (r) => <span className="mono">{r.s.number}</span>, sort: (r) => r.s.number },
+            { key: 'd', header: 'Data', render: (r) => fmtDate(r.s.date), sort: (r) => r.s.date },
+            { key: 'p', header: 'Peça / cliente', render: (r) => <><b>{r.s.description}</b><div className="muted small">{r.s.qty} un · {customer(r.s.customerId) || 'sem cliente'} · {db.channels.find((c) => c.id === r.s.channelId)?.name ?? 'sem canal'}</div></> },
+            { key: 't', header: 'Valor', num: true, render: (r) => fmtBRL(r.st.total), sort: (r) => r.st.total.toNumber() },
+            { key: 'st', header: 'Pagamento', render: (r) => <><Badge tone={r.st.overdue ? 'error' : SALE_STATUS[r.st.status].tone}>{r.st.overdue ? 'A pagar · atrasado' : SALE_STATUS[r.st.status].label}</Badge>
+              {r.st.status === 'a_pagar' && <div className="muted small">{fmtBRL(r.st.open)}{r.st.nextDue ? ` · vence ${fmtDate(r.st.nextDue)}` : ''}</div>}</>, sort: (r) => r.st.status },
+            { key: 'm', header: 'Lucro', num: true, render: (r) => { const e = saleEconomics(r.s); return e.contribution ? <span style={{ color: e.contribution.isNegative() ? 'var(--error)' : undefined }}>{fmtBRL(e.contribution)} <span className="muted small">({fmtPct(e.revenue.isZero() ? null : e.contribution.div(e.revenue))})</span></span> : <Badge tone="error">custo pendente</Badge>; } },
+            { key: 'a', header: '', render: (r) => r.s.status === 'cancelada' ? null : <span className="row" style={{ gap: 4, flexWrap: 'nowrap', justifyContent: 'flex-end' }}>
+              {r.st.status === 'a_pagar' && <button className="btn secondary sm" onClick={(e) => { e.stopPropagation(); receive(r.st.titleIds); }}>Receber</button>}
+              <button className="btn ghost sm" onClick={(e) => { e.stopPropagation(); setEditing(r.s); }}>Editar</button>
+              <button className="btn ghost sm" onClick={(e) => { e.stopPropagation(); cancel(r.s); }}>Cancelar</button></span> },
+          ]} />
+      </div>
       {editing && <SaleForm sale={editing} onClose={() => setEditing(null)} />}
+      {receiving && <TitleModal title={receiving} onClose={() => setReceiving(null)} />}
       {confirmEl}
     </div>
   );
@@ -344,8 +379,10 @@ export function SaleForm({ onClose, preset, sale }: { onClose: () => void; prese
     if (o) {
       const q = db.quotes.find((x) => x.id === o.quoteId);
       const it = q ? quoteItemAt(q, o.quoteVersion, o.quoteItemId) : undefined;
-      const price = it?.summary.unitPrice ?? null;
-      return { ...base, orderId: o.id, quoteId: q?.id ?? '', quoteItemId: it?.itemId ?? '', description: o.description, projectId: o.projectId ?? '', customerId: o.customerId ?? q?.customerId ?? '',
+      const fg = o.finishedGoodId ? db.finishedGoods.find((g) => g.id === o.finishedGoodId) : undefined;
+      // Preço: o do orçamento; produção para estoque: o sugerido da peça (ou da estimativa).
+      const price = it?.summary.unitPrice ?? fg?.suggestedPrice ?? o.estimate?.summary.unitPrice ?? null;
+      return { ...base, orderId: o.id, quoteId: q?.id ?? '', quoteItemId: it?.itemId ?? '', finishedGoodId: o.finishedGoodId ?? '', description: o.description, projectId: o.projectId ?? '', customerId: o.customerId ?? q?.customerId ?? '',
         qty: String(o.actual?.qtyApproved ?? o.qtyPlanned), unitPrice: price ? price.replace('.', ',') : '', channelId: it?.input.channelId ?? base.channelId, ...(q ? kitDefault(q) : {}) };
     }
     return base;

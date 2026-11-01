@@ -2,6 +2,25 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.13.0 — 01/11/2026
+
+### Peça produzida: estoque ou entregue
+- No quadro de produção, a coluna **Produzidas** mostra as peças concluídas aguardando destino. Clicando na peça:
+  **1 · Vai para o estoque** (Estoque → Peças produzidas; pedido de cliente fica separado para ele, com o botão
+  **Entregar (registrar venda)**) ou **2 · Peça entregue** (registra a venda, pago ou a pagar). Depois disso a peça sai do quadro.
+- Cancelar a venda devolve a peça para a coluna Produzidas.
+
+### Módulo Vendas (menu, abaixo de Estoque)
+- Todas as vendas com a situação do pagamento: **Pago** ou **A pagar** (com vencimento e aviso de atraso), lucro de cada venda,
+  filtros por situação e mês, e o botão **Receber** para registrar o pagamento do cliente. Aviso no menu quando há atraso.
+
+### Financeiro
+- **Extrato**: entradas e saídas de dinheiro do mês, com saldo inicial, saldo acumulado linha a linha e o detalhe de cada uma
+  (itens da compra, peça e cliente da venda, observação da despesa). Filtro por conta e download em planilha (CSV).
+- **Fechamento mensal**: resultado do mês (vendas, taxas, custo das peças, margem, despesas fixas, lucro), caixa por categoria,
+  resultado por peça vendida, despesas do mês com detalhe, material consumido e peças produzidas. **Fechar mês** registra os
+  números; se algo for lançado depois, a tela mostra a diferença. Lista dos meses fechados para comparar.
+
 ## v1.12.0 — 31/10/2026
 
 ### Duplicar orçamento

@@ -427,6 +427,17 @@ export interface QuoteInput {
   overrides?: Record<string, DecStr>;
 }
 
+/** Fechamento do mês: os principais números congelados na data do fechamento. */
+export interface MonthClosing {
+  id: ID;
+  /** AAAA-MM */
+  month: string;
+  closedAt: ISODateTime;
+  /** Valores em texto decimal, por chave (receita, cpv, resultado, entradas, saídas…). */
+  figures: Record<string, DecStr>;
+  notes?: string;
+}
+
 /** Altura × largura × profundidade aproximadas de 1 peça, em cm (cada medida é opcional). */
 export interface PieceDimensions { height: number | null; width: number | null; depth: number | null }
 
@@ -583,6 +594,9 @@ export interface ProductionOrder {
   image?: string | null;
   /** Dimensões de 1 peça (produção para estoque); passam para as peças prontas. */
   dimensionsCm?: PieceDimensions | null;
+  /** Depois de produzida: foi para o estoque de peças ou foi entregue (venda). Sem valor = aguardando decisão no Kanban. */
+  destination?: 'estoque' | 'entregue';
+  destinationAt?: ISODateTime;
 }
 
 /**
@@ -740,6 +754,8 @@ export interface DB {
   orders: ProductionOrder[];
   finishedGoods: FinishedGood[];
   deliveryKits: DeliveryKit[];
+  /** Fechamentos mensais registrados (fotografia dos números do mês na data do fechamento). */
+  monthClosings: MonthClosing[];
   accounts: Account[];
   finCategories: FinCategory[];
   titles: FinTitle[];

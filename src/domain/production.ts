@@ -213,6 +213,9 @@ export function produceForStockNow(db: DB, input: Parameters<typeof createManual
     materials: orderReservations(db, o.id).map((x) => ({ lotId: x.lotId, qty: x.qty.toNumber() })),
     hours: input.plannedHours ?? 0, qtyApproved: input.qtyPlanned, qtyRejected: 0, laborMinutes: null, failures: [], notes: input.notes, location: input.location,
   });
+  // "Já produzi": as peças já estão na prateleira (não passam pela decisão do Kanban).
+  o.destination = 'estoque';
+  o.destinationAt = nowISO();
   return o;
 }
 
@@ -378,6 +381,48 @@ export function completeOrder(db: DB, orderId: ID, input: CompleteInput) {
   o.finishedAt = nowISO();
   if (o.purpose === 'estoque' && input.qtyApproved > 0) addFinishedGoodFromOrder(db, o, input.location);
   audit(db, 'Produção concluída', `${o.number}: ${input.qtyApproved} aprovadas, ${input.qtyRejected} rejeitadas`);
+}
+
+/* ---------------- Depois de produzida: estoque ou entregue ---------------- */
+/**
+ * Para onde foi a peça produzida: 'estoque' (Estoque → Peças produzidas) ou 'entregue' (venda).
+ * null = concluída e aguardando a decisão na coluna "Produzidas" do Kanban.
+ */
+export function orderDestination(db: DB, o: ProductionOrder): 'estoque' | 'entregue' | null {
+  if (o.status !== 'concluida') return null;
+  if (o.destination) return o.destination;
+  const sold = db.sales.some((s) => s.status === 'ativa' && (s.orderId === o.id || (!!o.finishedGoodId && s.finishedGoodId === o.finishedGoodId)));
+  return sold ? 'entregue' : null;
+}
+
+/**
+ * Caminho 1 — peça produzida vai para o estoque de peças produzidas.
+ * Pedido de cliente: as peças ficam separadas para aquele pedido (aparecem no estoque como separadas)
+ * até a entrega/venda; produção para estoque: as peças já estão no estoque.
+ */
+export function sendOrderToStock(db: DB, orderId: ID, location?: string) {
+  const o = byId(db.orders, orderId, 'Pedido/produção');
+  assert(o.status === 'concluida', 'Conclua a produção antes de mandar para o estoque.');
+  assert(!orderDestination(db, o), 'Esta peça já foi enviada para o estoque ou entregue.');
+  assert((o.actual?.qtyApproved ?? 0) > 0, 'Nenhuma peça aprovada nesta produção para ir ao estoque.');
+  if (!o.finishedGoodId) addFinishedGoodFromOrder(db, o, location);
+  const fg = byId(db.finishedGoods, o.finishedGoodId, 'Peça pronta');
+  if (location?.trim()) fg.location = location.trim();
+  if ((o.purpose ?? 'pedido') === 'pedido' && o.quoteId && o.quoteItemId && !(fg.allocations ?? []).some((a) => a.quoteId === o.quoteId)) {
+    fg.allocations = [...(fg.allocations ?? []), { id: newId(), quoteId: o.quoteId, itemId: o.quoteItemId, qty: fg.qtyProduced, customerId: o.customerId, dueDate: o.dueDate, createdAt: nowISO() }];
+  }
+  o.destination = 'estoque';
+  o.destinationAt = nowISO();
+  audit(db, 'Peça produzida enviada ao estoque', `${o.number} → ${fg.code}`);
+  return fg;
+}
+
+/** Caminho 2 — peça entregue: marcada pela venda (registerSale). */
+export function markOrderDelivered(db: DB, orderId: ID) {
+  const o = db.orders.find((x) => x.id === orderId);
+  if (!o || o.status !== 'concluida' || o.destination) return;
+  o.destination = 'entregue';
+  o.destinationAt = nowISO();
 }
 
 /* ---------------- Peças prontas (pronta-entrega) ---------------- */

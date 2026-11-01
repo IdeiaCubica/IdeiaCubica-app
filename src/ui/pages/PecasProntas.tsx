@@ -45,6 +45,8 @@ export function PecasProntas() {
     if (reason) run((d) => writeOffFinishedGood(d, g.id, 1, reason), 'Baixa registrada.');
   };
   const [editing, setEditing] = useState<FinishedGood | null>(null);
+  const [delivering, setDelivering] = useState<{ orderId?: string; quoteId?: string; itemId?: string; finishedGoodId?: string } | null>(null);
+  const allocatedTotal = db.finishedGoods.reduce((s, g) => s + (g.allocations ?? []).reduce((x, a) => x + a.qty, 0), 0);
   const remove = async (g: FinishedGood) => {
     const reason = await confirm({ title: `Excluir ${g.code} · ${g.description}?`, danger: true, confirmLabel: 'Excluir', reasonLabel: 'Motivo',
       text: 'Use para lançamentos feitos por engano. As peças saem do estoque (fica registrado na auditoria). O material consumido na produção não volta.' });
@@ -54,7 +56,7 @@ export function PecasProntas() {
   return (
     <>
       <div className="kpis" style={{ marginBottom: 18 }}>
-        <Kpi label="Peças em estoque" value={sum.pieces} hint={`${sum.items} item(ns) produzidos para venda`} accent />
+        <Kpi label="Peças disponíveis" value={sum.pieces} hint={`${sum.items} item(ns) para venda${allocatedTotal ? ` · + ${allocatedTotal} separada(s) para pedidos` : ''}`} accent />
         <Kpi label="Valor investido" value={fmtBRL(sum.invested)} hint="Custo de fabricação das peças disponíveis" />
         <Kpi label="Potencial de venda" value={fmtBRL(sum.potential)} hint={sum.noPrice ? `${sum.noPrice} item(ns) sem preço previsto` : margin ? `margem prevista ${fmtNum(margin.times(100), 1)}%` : 'pelo preço previsto'} />
       </div>
@@ -93,6 +95,12 @@ export function PecasProntas() {
                     <div className="fg-side">
                       <div className="fg-qty"><b>{b.available}</b><span>{b.available === 1 ? 'disponível' : 'disponíveis'}</span></div>
                       <small className="muted">de {b.produced} · {b.sold} vendida(s){b.allocated ? ` · ${b.allocated} separada(s)` : ''}{b.adjusted ? ` · ${b.adjusted} baixa(s)` : ''}</small>
+                      {(g.allocations ?? []).map((a) => (
+                        <div key={a.id} className="stack" style={{ gap: 4 }}>
+                          <small><Badge tone="warning">{a.qty} separada(s)</Badge> para {db.parties.find((p) => p.id === a.customerId)?.name ?? 'o pedido'}{a.dueDate ? ` · entrega ${fmtDate(a.dueDate)}` : ''}</small>
+                          <button className="btn primary sm" onClick={() => setDelivering(g.orderId ? { orderId: g.orderId } : { quoteId: a.quoteId, itemId: a.itemId, finishedGoodId: g.id })}>Entregar (registrar venda)</button>
+                        </div>
+                      ))}
                       {b.available > 0 && <>
                         <button className="btn primary sm" onClick={() => setQuoting(g)}>Orçar para cliente</button>
                         <button className="btn secondary sm" onClick={() => setSelling(g)}>Vender direto</button>
@@ -111,6 +119,7 @@ export function PecasProntas() {
         </div>
       </div>
       {selling && <SaleForm preset={{ finishedGoodId: selling.id }} onClose={() => setSelling(null)} />}
+      {delivering && <SaleForm preset={delivering} onClose={() => setDelivering(null)} />}
       {quoting && <QuoteFromStock fg={quoting} onClose={() => setQuoting(null)} />}
       {adding && <FinishedGoodForm onClose={() => setAdding(false)} />}
       {editing && <FinishedGoodForm fg={editing} onClose={() => setEditing(null)} />}

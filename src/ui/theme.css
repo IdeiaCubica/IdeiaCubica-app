@@ -421,6 +421,10 @@ details.params-details[open] > summary { border-bottom: 1px solid var(--border);
 .section-collapsed .card-head { border-bottom: 0; }
 .tbl tr.diff-row td { background: var(--ic-ideia-soft); }
 .tbl-scroll { overflow-x: auto; margin: 0 -4px; }
+.month-input { height: var(--control-h); border: 1px solid var(--n-300); border-radius: var(--r-control); padding: 0 12px; font: inherit; background: #fff; }
+.stmt-in { color: var(--success, #1f7a4d); }
+.stmt-out { color: var(--error, #b3261e); }
+.closing-doc dl.dl dt.total, .closing-doc dl.dl dd.total { font-weight: 700; border-top: 1px solid var(--n-300); padding-top: 6px; }
 .start-choice { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
 .start-option { display: flex; flex-direction: column; gap: 6px; text-align: left; padding: 18px; border: 1.5px solid var(--border, #d9dde3); border-radius: 12px; background: var(--surface, #fff); cursor: pointer; font: inherit; color: inherit; }
 .start-option:hover, .start-option:focus-visible { border-color: var(--ic-ideia); box-shadow: 0 0 0 3px var(--ic-ideia-soft); }

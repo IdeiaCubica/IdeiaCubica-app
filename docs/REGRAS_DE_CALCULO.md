@@ -189,6 +189,13 @@ Exemplo (sem taxas): custo R$ 50, markup 100% → preço R$ 100, lucro R$ 50, ma
 - O resultado é marcado como **realizado**, **estimado** (custos de orçamento ou mão de obra não apurada) ou **parcial**
   (vendas sem custo).
 - **Ponto de equilíbrio** = despesas indiretas mensais ÷ margem de contribuição média do período.
+- **Venda pago / a pagar** (v1.13): soma das contas a receber da venda; “Pago” quando o recebido cobre o total; “A pagar” com o
+  saldo e o próximo vencimento (atrasado se vencido).
+- **Extrato** (v1.13, `reports.ts`): só liquidações registradas (estornos excluídos), em ordem de data. Saldo inicial = saldos de
+  abertura das contas + liquidações anteriores ao período; saldo de cada linha = acumulado.
+- **Fechamento mensal** (v1.13): resultado gerencial do mês (competência) + caixa do mês (extrato) + resultado por peça vendida
+  (receita − encargos ± frete − custo) + material consumido (consumo e perdas × custo do lote). “Fechar mês” grava os números;
+  diferenças posteriores são apontadas por comparação.
 - **Kit na venda** (v1.6): os itens saem do estoque (lotes mais antigos) e o custo real entra no custo da venda. Se o custo vem do
   orçamento (que já inclui a parte do kit), essa parte é descontada para não contar duas vezes. Cancelar a venda devolve o kit ao estoque.
 - **Edição** (v1.6): venda e título podem ser corrigidos enquanto não houver recebimento/pagamento do usuário; títulos são refeitos.

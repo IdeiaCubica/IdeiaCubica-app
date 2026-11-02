@@ -764,7 +764,7 @@ function ProduceDialog({ quote, onClose }: { quote: Quote; onClose: () => void }
           <Check key={it.itemId} checked={sel.includes(it.itemId)} onChange={() => toggle(it.itemId)}
             label={`${it.name} · ${it.input.quantity} un · ${fmtBRL(it.summary.orderPrice)} · ${ITEM_STATE_LABEL[itemState(db, quote, it.itemId)]}`} />
         ))}
-        <p className="small muted">As peças enviadas ficam travadas no orçamento. Para alterar depois, use “Retornar para o orçamento” no pedido.</p>
+        <p className="small muted">O valor de cada pedido entra em Financeiro → Contas a receber com vencimento na data de entrega; o cliente pode pagar antes (sinal ou total) pelo próprio pedido. As peças enviadas ficam travadas no orçamento. Para alterar depois, use “Retornar para o orçamento” no pedido.</p>
       </div>
     </Modal>
   );

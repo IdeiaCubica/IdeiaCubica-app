@@ -126,7 +126,7 @@ export function updateTitle(db: DB, titleId: ID, input: { description: string; d
   const amount = input.amount !== undefined ? cents(D(input.amount || '0')) : D(t.amount);
   const core = !amount.eq(D(t.amount)) || (input.competenceDate && input.competenceDate !== t.competenceDate) || (input.categoryId && input.categoryId !== t.categoryId);
   if (core) {
-    assert(t.origin.kind === 'manual', `Este título foi gerado por uma ${t.origin.kind}. Para mudar valor, data ou categoria, edite a ${t.origin.kind} de origem.`);
+    assert(t.origin.kind === 'manual', t.origin.kind === 'pedido' ? 'O valor desta conta vem do orçamento do pedido. Mude o vencimento aqui ou a data de entrega no pedido.' : `Este título foi gerado por uma ${t.origin.kind}. Para mudar valor, data ou categoria, edite a ${t.origin.kind} de origem.`);
     assert(titlePaid(t).isZero(), 'Há pagamento/recebimento registrado neste título. Estorne-o antes de mudar o valor.');
     assert(amount.gt(0), 'O valor deve ser maior que zero.');
     if (input.competenceDate) { assert(isISODate(input.competenceDate), 'Data de competência inválida.'); t.competenceDate = input.competenceDate; }
@@ -145,6 +145,7 @@ export function updateTitle(db: DB, titleId: ID, input: { description: string; d
 export function cancelTitle(db: DB, titleId: ID, reason: string) {
   const t = byId(db.titles, titleId, 'Título');
   assert(t.status !== 'cancelado', 'Título já cancelado.');
+  assert(t.origin.kind !== 'pedido', 'Esta conta é de um pedido em produção. Para retirá-la, retorne o pedido para o orçamento ou exclua o pedido.');
   if (titlePaid(t).gt(0)) throw new BusinessError('Há pagamentos/recebimentos registrados neste título. Estorne-os antes de cancelar.');
   t.status = 'cancelado';
   t.cancelReason = requireText(reason, 'o motivo do cancelamento');

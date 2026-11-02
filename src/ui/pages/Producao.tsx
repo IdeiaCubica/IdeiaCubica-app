@@ -20,7 +20,8 @@ import { BusinessError, addDays as addDaysISO, fmtDate, fmtDateTime, todayISO } 
 import { Decimal, ZERO, fmtBRL, fmtNum, fmtPct, sum } from '../../domain/money';
 import { Alert, Badge, Check, Combobox, DataTable, DateField, Empty, Kpi, Modal, NumField, PageHead, SelectField, Tabs, TextArea, TextField, TimeField, num, useConfirm, useForm, type Tone } from '../components/ui';
 import { QUOTE_STATUS } from './Orcamentos';
-import { SaleForm } from './Financeiro';
+import { SaleForm, TitleModal } from './Financeiro';
+import { DESTINATION_SINCE, orderPayment } from '../../domain/orderReceivables';
 
 type Tab = 'quadro' | 'pedidos' | 'estoque' | 'ordens' | 'projetos';
 const STATUS_TONE: Record<OrderStatus, Tone> = {
@@ -72,7 +73,6 @@ const COLUMNS: { id: Column; title: string; hint: string }[] = [
   { id: 'concluidas', title: 'Produzidas', hint: 'Clique na peça: vai para o estoque ou foi entregue.' },
 ];
 /** A partir desta data (v1.13) toda peça concluída espera a decisão estoque/entregue no quadro. */
-const DESTINATION_SINCE = '2026-11-01';
 const columnOf = (o: ProductionOrder): Column | null =>
   QUEUE_STATUSES.includes(o.status) ? 'fila' : o.status === 'em_producao' ? 'producao'
   : o.status === 'aguardando_acabamento' || o.status === 'em_inspecao' ? 'acabamento' : o.status === 'concluida' ? 'concluidas' : null;
@@ -205,6 +205,7 @@ function KanbanCard({ order: o, dragging, onDragStart, onDragEnd, onOpen }: {
   const soon = o.dueDate && !late && o.status !== 'concluida' && o.dueDate <= addDaysISO(today, 3);
   const q = o.quoteId ? db.quotes.find((x) => x.id === o.quoteId) : undefined;
   const image = q ? quoteItemAt(q, o.quoteVersion, o.quoteItemId)?.image : undefined;
+  const pay = orderPayment(db, o);
   return (
     <article className={`kb-card${dragging ? ' dragging' : ''}`} draggable onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', o.id); onDragStart(); }}
       onDragEnd={onDragEnd}>
@@ -230,6 +231,7 @@ function KanbanCard({ order: o, dragging, onDragStart, onDragEnd, onOpen }: {
           {o.status !== 'em_producao' && o.status !== 'concluida' && <Badge tone={STATUS_TONE[o.status]}>{ORDER_STATUS_LABEL[o.status]}</Badge>}
           {shortage && <Badge tone="error">falta material</Badge>}
           {late && <Badge tone="error">atrasado</Badge>}
+          {pay && pay.received.gt(0) && <Badge tone={pay.status === 'pago' ? 'success' : 'info'}>{pay.status === 'pago' ? 'pago' : `sinal ${fmtBRL(pay.received)}`}</Badge>}
         </div>
       </button>
     </article>
@@ -377,6 +379,8 @@ function OrderModal({ order, onClose }: { order: ProductionOrder; onClose: () =>
   const matOf = (materialId: string, lotId?: string) => db.materials.find((m) => m.id === (materialId || db.lots.find((l) => l.id === lotId)?.materialId));
   const lineName = (materialId: string, lotId?: string) => lotId ? lotName(lotId) : `${matOf(materialId)?.name ?? 'Material removido'} (lotes por ordem de entrada)`;
   const [card, setCard] = useState(false);
+  const [receiving, setReceiving] = useState(false);
+  const pay = orderPayment(db, o);
   const cancel = async () => {
     const reason = await confirm({ title: `Cancelar ${o.number}?`, danger: true, confirmLabel: 'Cancelar', reasonLabel: 'Motivo', text: 'As reservas de material serão liberadas.' });
     if (reason) run((d) => cancelOrder(d, o.id, reason), 'Cancelado e reservas liberadas.');
@@ -430,6 +434,22 @@ function OrderModal({ order, onClose }: { order: ProductionOrder; onClose: () =>
           {o.quoteId && <a href={`#/orcamentos/${o.quoteId}`}>Orçamento {db.quotes.find((q) => q.id === o.quoteId)?.number ?? '(excluído)'}</a>}
           {open && <button className="btn ghost sm" onClick={() => setPlanning(true)}>Alterar entrega e impressora</button>}
         </div>
+        {pay && <div className="card"><div className="card-body">
+          <div className="row" style={{ justifyContent: 'space-between' }}>
+            <h3 style={{ margin: 0 }}>Pagamento do cliente</h3>
+            <Badge tone={pay.status === 'pago' ? 'success' : pay.status === 'parcial' ? 'info' : 'warning'}>{pay.status === 'pago' ? 'Pago' : pay.status === 'parcial' ? 'Pago em parte' : 'A receber'}</Badge>
+          </div>
+          <div className="kpis" style={{ margin: '12px 0' }}>
+            <Kpi label="Valor do pedido" value={fmtBRL(pay.total)} />
+            <Kpi label="Já recebido" value={fmtBRL(pay.received)} />
+            <Kpi label="Falta receber" value={fmtBRL(pay.open)} hint={`previsto para ${fmtDate(pay.title.dueDate)}`} />
+          </div>
+          <div className="row">
+            {pay.open.gt(0) && <button className="btn primary sm" onClick={() => setReceiving(true)}>Registrar recebimento (sinal ou total)</button>}
+            {pay.received.gt(0) && pay.open.isZero() && <button className="btn ghost sm" onClick={() => setReceiving(true)}>Ver recebimentos</button>}
+            <span className="small muted">Pode receber antes de produzir ou entregar. Na entrega, a venda aproveita o que já foi pago.</span>
+          </div>
+        </div></div>}
         {o.estimate && <div className="row small">
           <span>Custo estimado por peça: <b>{fmtBRL(o.estimate.summary.unitCost)}</b></span>
           <span>Valor sugerido de venda: <b>{fmtBRL(o.estimate.summary.unitPrice)}</b></span>
@@ -448,6 +468,7 @@ function OrderModal({ order, onClose }: { order: ProductionOrder; onClose: () =>
       </div>
       {completing && <CompleteForm order={o} onClose={() => setCompleting(false)} />}
       {planning && <PlanningForm order={o} onClose={() => setPlanning(false)} />}
+      {receiving && pay && <TitleModal title={pay.title} onClose={() => setReceiving(false)} />}
       {card && <ThankYouCardDialog customerName={db.parties.find((p) => p.id === o.customerId)?.name} orderNumber={o.number} onClose={() => setCard(false)} />}
       {confirmEl}
     </Modal>

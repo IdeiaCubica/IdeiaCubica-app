@@ -2,6 +2,24 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.16.0 — 02/11/2026
+
+### Recebimento do cliente desde o “A produzir”
+- Ao **enviar a peça para produção**, o valor do pedido entra em **Financeiro → Contas a pagar e receber** como conta a
+  receber, com **vencimento na data de entrega** (marcada como “pedido em produção”).
+- O cliente pode pagar **antes** — sinal ou total — a qualquer momento: no pedido (quadro de Produção → abrir o pedido →
+  **Pagamento do cliente → Registrar recebimento**) ou em Contas a receber. O cartão do quadro mostra “sinal R$ …” ou “pago”.
+- Na entrega, a **venda aproveita o que já foi pago**: entra como recebido e só o restante vira conta a receber
+  (sem duplicar). Pago todo antes: a venda já nasce paga.
+- Cancelar a venda devolve o que foi pago para a conta do pedido. Retornar o pedido ao orçamento, cancelar ou excluir
+  retira a conta (com pagamento registrado, pede o estorno antes).
+- Não é receita: o resultado continua contando a venda na entrega; o dinheiro recebido aparece no extrato no dia em que entrou.
+
+### Pedidos que já estavam na esteira
+- Ao abrir o sistema, os pedidos na fila, em produção, aguardando destino ou separados no estoque para o cliente
+  são levados automaticamente para Contas a receber (uma vez). Se algum ficar de fora, Contas a pagar e receber mostra
+  o aviso com o botão **Levar para Contas a receber**.
+
 ## v1.15.0 — 02/11/2026
 
 ### Orçamentos → Peça de outro orçamento

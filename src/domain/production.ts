@@ -15,6 +15,7 @@ import { addMovement, lotBalance, releaseAll, reserve } from './inventory';
 import { materialLabel } from './catalog';
 import { MAX_IMAGE_CHARS, emptyQuoteInput, quoteItemImage, evaluateQuote, isItemLocked, itemState, latestVersion, quoteItem, quoteItemAt, quoteItems, refreshQuoteStatus, resolveParams, saveQuote, summarize, type QuoteItemDraft } from './quotes';
 import { computeCosts, laborTotals, type CostResult } from './costing';
+import { dropOrderReceivable, orderOnTrack, provisionOrderReceivable } from './orderReceivables';
 
 export const ORDER_STATUS_LABEL: Record<OrderStatus, string> = {
   planejada: 'Planejada', aguardando_material: 'Aguardando material', pronta: 'Pronta para produção', em_producao: 'Em produção',
@@ -107,6 +108,8 @@ export function createOrdersFromQuote(db: DB, quoteId: ID, itemIds: ID[], opts: 
       purpose: 'pedido', customerId: q.customerId, dueDate: opts.dueDate, sequence: nextSequence(db),
     };
     db.orders.push(order);
+    // Conta a receber do pedido: vencimento na entrega; o cliente pode pagar antes.
+    provisionOrderReceivable(db, order);
     q.itemStatus = { ...q.itemStatus, [itemId]: 'aprovado' };
     audit(db, 'Pedido criado', `${order.number}: ${it.name} (${q.number} v${v.version}), entrega ${opts.dueDate}`);
     return order;
@@ -133,6 +136,7 @@ export function returnOrderToQuote(db: DB, orderId: ID, reason: string) {
   assert(o.status !== 'concluida', 'Pedido já produzido não pode voltar para o orçamento.');
   assert(o.status !== 'cancelada', 'Pedido já cancelado.');
   const why = requireText(reason, 'o motivo');
+  dropOrderReceivable(db, o);
   releaseAll(db, o.id, 'op', 'liberacao_cancelamento');
   o.status = 'cancelada';
   o.cancelReason = `Retornado para o orçamento: ${why}`;
@@ -276,6 +280,7 @@ export function updateOrderPlanning(db: DB, orderId: ID, input: { purpose: 'pedi
   o.dueDate = input.dueDate || undefined;
   o.printerId = input.printerId || undefined;
   o.notes = input.notes;
+  if (orderOnTrack(db, o)) provisionOrderReceivable(db, o); else dropOrderReceivable(db, o);
   audit(db, 'Planejamento da OP alterado', o.number);
 }
 
@@ -657,6 +662,7 @@ export function cancelOrder(db: DB, orderId: ID, reason: string) {
   const o = byId(db.orders, orderId, 'Ordem');
   assert(o.status !== 'concluida', 'Ordem concluída não pode ser cancelada (o consumo já ocorreu).');
   assert(o.status !== 'cancelada', 'Ordem já cancelada.');
+  dropOrderReceivable(db, o);
   releaseAll(db, o.id, 'op', 'liberacao_cancelamento');
   o.status = 'cancelada';
   o.cancelReason = requireText(reason, 'o motivo do cancelamento');
@@ -691,6 +697,7 @@ export function deleteOrder(db: DB, orderId: ID, reason: string) {
   const why = requireText(reason, 'o motivo da exclusão');
   const block = orderDeleteBlock(db, o);
   if (block) throw new BusinessError(block);
+  dropOrderReceivable(db, o);
   db.movements = db.movements.filter((m) => !(m.ref.kind === 'op' && m.ref.id === o.id));
   if (o.finishedGoodId) db.finishedGoods = db.finishedGoods.filter((g) => g.id !== o.finishedGoodId);
   db.orders = db.orders.filter((x) => x.id !== o.id);

@@ -9,6 +9,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import type { DB } from '../domain/types';
 import { createRepository, requestPersistentStorage, type Repository } from '../data/repository';
 import { withTimeout } from '../data/supabase';
+import { pendingOrderReceivables, provisionOrderReceivables } from '../domain/orderReceivables';
 
 type ToastKind = 'success' | 'error' | 'info' | 'warning';
 interface Toast { id: number; kind: ToastKind; text: string }
@@ -77,6 +78,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     dbRef.current = next;
     setDb(next);
   }, []);
+
+  // Pedidos já na esteira sem conta a receber (lançados antes da v1.16): leva para Contas a receber uma vez.
+  const provisioned = useRef(false);
+  useEffect(() => {
+    if (!db || provisioned.current) return;
+    provisioned.current = true;
+    if (!pendingOrderReceivables(db).length) return;
+    setTimeout(() => run((d) => provisionOrderReceivables(d)).then((r) => {
+      if (r.ok && r.value) toast('info', `${r.value} pedido(s) da produção foram levados para Contas a receber.`);
+    }), 1500);
+  }, [db, run, toast]);
 
   if (loadError) {
     return (

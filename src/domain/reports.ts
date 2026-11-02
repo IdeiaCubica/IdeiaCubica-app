@@ -23,7 +23,7 @@ export function monthRange(ym: string): { from: ISODate; to: ISODate } {
 export interface StatementRow {
   date: ISODate; titleId: ID; settlementId: ID;
   description: string; detail: string; category: string; party: string; account: string; method: string;
-  origin: 'compra' | 'venda' | 'manual'; originLabel: string;
+  origin: FinTitle['origin']['kind']; originLabel: string;
   amountIn: Decimal; amountOut: Decimal; balance: Decimal;
 }
 
@@ -44,6 +44,11 @@ function titleDetail(db: DB, t: FinTitle): { label: string; detail: string } {
     if (!s) return { label: 'Venda', detail: '' };
     const c = db.parties.find((x) => x.id === s.customerId)?.name;
     return { label: `Venda ${s.number}`, detail: `${s.qty} × ${s.description}${c ? ` — ${c}` : ''}` };
+  }
+  if (t.origin.kind === 'pedido') {
+    const o = db.orders.find((x) => x.id === t.origin.id);
+    const c = db.parties.find((x) => x.id === t.partyId)?.name;
+    return { label: `Pedido ${o?.number ?? ''}`.trim(), detail: o ? `${o.qtyPlanned} × ${o.description}${c ? ` — ${c}` : ''} (recebido antes da entrega)` : '' };
   }
   return { label: 'Lançamento manual', detail: t.notes ?? '' };
 }

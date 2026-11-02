@@ -9,7 +9,8 @@ import { channelRates } from '../../domain/pricing';
 import { itemState, latestVersion, quoteItem, quoteItemAt, quoteItems } from '../../domain/quotes';
 import { kitUnitCost } from '../../domain/deliveryKits';
 import { addDays, fmtDate, todayISO } from '../../domain/core';
-import { D, ZERO, cents, fmtBRL, fmtPct, parseBR, sum } from '../../domain/money';
+import { D, Decimal, ZERO, cents, fmtBRL, fmtPct, parseBR, sum } from '../../domain/money';
+import { orderReceivable, pendingOrderReceivables, provisionOrderReceivables } from '../../domain/orderReceivables';
 import { Alert, Badge, Check, Combobox, DataTable, DateField, Empty, Field, Kpi, Modal, NumField, PageHead, SelectField, Tabs, TextArea, TextField, dec, num, useConfirm, useForm, type Tone } from '../components/ui';
 import { NATURE_LABEL } from './Configuracoes';
 import { Extrato, ExtratoTotal, Fechamento } from './RelatoriosFinanceiros';
@@ -141,7 +142,8 @@ function Painel() {
 
 /* ---------------- Títulos ---------------- */
 function Titulos() {
-  const { db } = useStore();
+  const { db, run } = useStore();
+  const pendingOrders = pendingOrderReceivables(db);
   const today = todayISO();
   const [dir, setDir] = useState<'' | 'in' | 'out'>('');
   const [status, setStatus] = useState('aberto');
@@ -149,6 +151,11 @@ function Titulos() {
   const rows = db.titles.filter((t) => (!dir || t.direction === dir) && (!status || t.status === status));
   const total = rows.reduce((a, t) => a.plus(titleOpen(t).times(t.direction === 'in' ? 1 : -1)), ZERO);
   return (
+    <div className="stack">
+    {pendingOrders.length > 0 && <Alert tone="info" title={`${pendingOrders.length} pedido(s) em produção ainda fora de Contas a receber`}>
+      {pendingOrders.map((o) => o.number).join(', ')}.{' '}
+      <button type="button" className="link-btn" onClick={() => run((d) => provisionOrderReceivables(d), 'Pedidos levados para Contas a receber.')}>Levar para Contas a receber</button>
+    </Alert>}
     <div className="card">
       <DataTable rows={rows} rowKey={(t) => t.id} onRowClick={setSel} initialSort={{ key: 'v', dir: 1 }}
         search={(t) => `${t.description} ${db.parties.find((p) => p.id === t.partyId)?.name ?? ''}`}
@@ -159,7 +166,7 @@ function Titulos() {
         empty={<Empty title="Nenhum título neste filtro" text="Compras a prazo, vendas e lançamentos manuais geram títulos automaticamente." />}
         columns={[
           { key: 'v', header: 'Vencimento', render: (t) => <span className="nowrap">{fmtDate(t.dueDate)} {t.status === 'aberto' && t.dueDate < today && <Badge tone="error">vencido</Badge>}</span>, sort: (t) => t.dueDate },
-          { key: 'k', header: 'Tipo', render: (t) => t.direction === 'in' ? <Badge tone="success">receber</Badge> : <Badge tone="warning">pagar</Badge> },
+          { key: 'k', header: 'Tipo', render: (t) => t.direction === 'in' ? <><Badge tone="success">receber</Badge>{t.origin.kind === 'pedido' && <div className="muted small">pedido em produção</div>}</> : <Badge tone="warning">pagar</Badge> },
           { key: 'd', header: 'Descrição', render: (t) => <><b>{t.description}</b><div className="muted small">{db.finCategories.find((c) => c.id === t.categoryId)?.name}</div></>, sort: (t) => t.description },
           { key: 'a', header: 'Valor', num: true, render: (t) => fmtBRL(t.amount), sort: (t) => D(t.amount).toNumber() },
           { key: 'o', header: 'Em aberto', num: true, render: (t) => fmtBRL(titleOpen(t)) },
@@ -167,6 +174,7 @@ function Titulos() {
         ]}
         footer={rows.length ? <tr><td colSpan={4}>Saldo em aberto do filtro (receber − pagar)</td><td className="num">{fmtBRL(total)}</td><td /></tr> : undefined} />
       {sel && <TitleModal title={sel} onClose={() => setSel(null)} />}
+    </div>
     </div>
   );
 }
@@ -195,10 +203,11 @@ export function TitleModal({ title, onClose }: { title: FinTitle; onClose: () =>
     ...(coreEditable ? { amount: dec(e.amount) ?? '0', competenceDate: e.competenceDate, categoryId: e.categoryId } : {}) }), 'Título corrigido.').then((r) => r.ok && setEditing(false));
   return (
     <Modal wide title={t.description} subtitle={`${t.direction === 'in' ? 'Conta a receber' : 'Conta a pagar'} · ${cat?.name} (${cat ? NATURE_LABEL[cat.nature] : ''})`} onClose={onClose}
-      footer={<><button className="btn ghost" onClick={onClose}>Fechar</button>{t.status !== 'cancelado' && titlePaid(t).isZero() && <button className="btn danger" onClick={cancel}>Cancelar título</button>}
+      footer={<><button className="btn ghost" onClick={onClose}>Fechar</button>{t.status !== 'cancelado' && titlePaid(t).isZero() && t.origin.kind !== 'pedido' && <button className="btn danger" onClick={cancel}>Cancelar título</button>}
         {t.status !== 'cancelado' && !editing && <button className="btn secondary" onClick={() => setEditing(true)}>Editar</button>}</>}>
       <div className="stack">
         {t.status === 'cancelado' && <Alert tone="error" title="Cancelado">{t.cancelReason}</Alert>}
+        {t.origin.kind === 'pedido' && t.status !== 'cancelado' && <Alert tone="info" title="Pedido em produção">Conta prevista para a data de entrega. O cliente pode pagar antes, tudo ou parte (sinal). Na entrega, ao registrar a venda, o que já foi pago entra como recebido e só o restante fica a receber.</Alert>}
         {editing && <div className="card"><div className="card-body stack">
           <h3 style={{ margin: 0 }}>Corrigir título</h3>
           <div className="grid g3">
@@ -219,7 +228,7 @@ export function TitleModal({ title, onClose }: { title: FinTitle; onClose: () =>
           <dt>Valor</dt><dd>{fmtBRL(t.amount)}</dd><dt>Competência</dt><dd>{fmtDate(t.competenceDate)}</dd><dt>Vencimento</dt><dd>{fmtDate(t.dueDate)}</dd>
           <dt>Pago/recebido</dt><dd>{fmtBRL(titlePaid(t))}</dd><dt>Em aberto</dt><dd><b>{fmtBRL(open)}</b></dd>
           {t.partyId && <><dt>{t.direction === 'in' ? 'Cliente' : 'Fornecedor'}</dt><dd>{db.parties.find((p) => p.id === t.partyId)?.name}</dd></>}
-          <dt>Origem</dt><dd>{t.origin.kind === 'compra' ? `Compra ${db.purchases.find((p) => p.id === t.origin.id)?.number}` : t.origin.kind === 'venda' ? `Venda ${db.sales.find((s) => s.id === t.origin.id)?.number}` : 'Lançamento manual'}</dd>
+          <dt>Origem</dt><dd>{t.origin.kind === 'compra' ? `Compra ${db.purchases.find((p) => p.id === t.origin.id)?.number}` : t.origin.kind === 'venda' ? `Venda ${db.sales.find((s) => s.id === t.origin.id)?.number}${t.advance ? ' (pago antes da entrega)' : ''}` : t.origin.kind === 'pedido' ? `Pedido ${db.orders.find((o) => o.id === t.origin.id)?.number ?? ''} (em produção; vira venda na entrega)` : 'Lançamento manual'}</dd>
         </dl>
         {t.settlements.length > 0 && <div className="card"><table className="tbl"><thead><tr><th>Data</th><th>Conta</th><th className="num">Valor</th><th /></tr></thead><tbody>
           {t.settlements.map((s) => <tr key={s.id} className={s.reversed ? 'muted' : ''}><td>{fmtDate(s.date)}</td><td>{db.accounts.find((a) => a.id === s.accountId)?.name} {s.method && <span className="muted small">· {s.method}</span>}</td>
@@ -437,6 +446,11 @@ export function SaleForm({ onClose, preset, sale }: { onClose: () => void; prese
     channelId: f.channelId || undefined, feesWithheld: f.feesWithheld, manualUnitCost: dec(f.manualUnitCost), deliveryKit: kitInput, payment: terms.toTerms(f.date), notes: f.notes,
   })), sale ? 'Venda corrigida: encargos e financeiro refeitos.' : 'Venda registrada e financeiro atualizado.').then((r) => r.ok && onClose());
   const done = db.orders.filter((o) => o.status === 'concluida');
+  // Pago antes da entrega (conta do pedido): entra como recebido; a venda só cobra o restante.
+  const advanceOrderId = f.orderId || db.finishedGoods.find((g) => g.id === f.finishedGoodId)?.orderId;
+  const advanceTitle = !sale && advanceOrderId ? orderReceivable(db, advanceOrderId) : undefined;
+  const advance = advanceTitle ? titlePaid(advanceTitle) : ZERO;
+  const remaining = preview ? Decimal.max(ZERO, preview.receivable.minus(advance)) : null;
   return (
     <Modal wide title={sale ? `Editar venda ${sale.number}` : 'Registrar venda'} subtitle={sale ? 'Corrija o que foi digitado errado. Contas a receber, encargos e frete são refeitos.' : 'Gera conta a receber (ou recebimento à vista), encargos do canal e o snapshot do custo para a margem.'} onClose={onClose}
       footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={submit} disabled={!!editBlock}>{sale ? 'Salvar correção' : 'Registrar venda'}</button></>}>
@@ -477,11 +491,14 @@ export function SaleForm({ onClose, preset, sale }: { onClose: () => void; prese
               <dt>Custo de fabricação</dt><dd className="right">{preview.cogs ? <>− {fmtBRL(preview.cogs)} <Badge tone={preview.cost.status === 'realizado' ? 'success' : 'warning'}>{preview.cost.status}</Badge></> : <Badge tone="error">pendente</Badge>}</dd>
               <dt><b>Margem de contribuição</b></dt><dd className="right"><b>{preview.contribution ? fmtBRL(preview.contribution) : '—'}</b></dd>
               <dt>Valor a receber</dt><dd className="right">{fmtBRL(preview.receivable)}</dd>
+              {advance.gt(0) && <><dt>Já pago antes da entrega</dt><dd className="right stmt-in">− {fmtBRL(advance)}</dd>
+                <dt><b>Restante a receber</b></dt><dd className="right"><b>{fmtBRL(remaining)}</b></dd></>}
             </dl>
           </div></div>
         )}
-        <p className="section-title">Recebimento</p>
-        {terms.fields(true)}
+        <p className="section-title">Recebimento{advance.gt(0) ? ' do restante' : ''}</p>
+        {advance.gt(0) && <Alert tone="success" title={`O cliente já pagou ${fmtBRL(advance)} neste pedido`}>Esse valor entra como recebido nesta venda (não gera nova conta).{remaining?.isZero() ? ' Não há restante a receber.' : ' Informe abaixo como será recebido o restante.'}</Alert>}
+        {!(advance.gt(0) && remaining?.isZero()) && terms.fields(true)}
         <TextArea label="Observações" value={f.notes} onChange={set('notes')} />
         <p className="small muted">Ao escolher uma peça pronta do estoque, a venda baixa o saldo de pronta-entrega (cancelar a venda devolve as peças ao saldo).</p>
       </div>

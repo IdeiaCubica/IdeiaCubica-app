@@ -19,6 +19,7 @@ import { compareOrder, finishedGoodBalance, markOrderDelivered } from './product
 import { quoteItem } from './quotes';
 import { addMovement } from './inventory';
 import { consumeKit } from './deliveryKits';
+import { provisionOrderReceivable, restoreOrderAdvance, takeOrderAdvance } from './orderReceivables';
 
 export interface SaleInput {
   date: ISODate;
@@ -88,6 +89,7 @@ function isAutoSettlement(s: Sale, t: FinTitle) {
 /** Motivo pelo qual a venda não pode ser editada (null = pode). */
 export function saleEditBlock(db: DB, s: Sale): string | null {
   if (s.status !== 'ativa') return 'Venda cancelada não pode ser editada.';
+  if (saleTitles(db, s).some((t) => t.advance)) return 'O cliente pagou parte desta venda antes da entrega (no pedido). Para corrigir, cancele a venda (o recebimento volta para o pedido) e registre de novo.';
   if (saleTitles(db, s).some((t) => titlePaid(t).gt(0) && !isAutoSettlement(s, t))) {
     return 'Já há recebimento/pagamento registrado nesta venda (além do à vista). Estorne em Financeiro → Títulos para editar.';
   }
@@ -165,11 +167,15 @@ function applySale(db: DB, inputIn: SaleInput, existing?: Sale): Sale {
   const customer = db.parties.find((p) => p.id === input.customerId);
   const receivable = gross.plus(freightCharged).minus(input.feesWithheld ? fees : ZERO);
   assert(receivable.gt(0), 'O valor líquido a receber deve ser maior que zero.');
-  createTitlesFromTerms(db, {
-    direction: 'in', description: `Venda ${sale.number} — ${description}${customer ? ' — ' + customer.name : ''}`,
-    categoryId: categoryByName(db, SYS_FIN.vendaProdutos).id, amount: receivable, competenceDate: input.date,
-    partyId: input.customerId, projectId: input.projectId, origin: { kind: 'venda', id: sale.id }, terms: input.payment,
-  });
+  // O que o cliente já pagou no pedido (antes da entrega) entra como parte recebida desta venda.
+  const advance = existing ? ZERO : takeOrderAdvance(db, input.orderId ?? fgItem?.orderId, sale, receivable);
+  if (receivable.gt(advance)) {
+    createTitlesFromTerms(db, {
+      direction: 'in', description: `Venda ${sale.number} — ${description}${customer ? ' — ' + customer.name : ''}${advance.gt(0) ? ' (restante)' : ''}`,
+      categoryId: categoryByName(db, SYS_FIN.vendaProdutos).id, amount: receivable.minus(advance), competenceDate: input.date,
+      partyId: input.customerId, projectId: input.projectId, origin: { kind: 'venda', id: sale.id }, terms: input.payment,
+    });
+  }
   if (!input.feesWithheld && fees.gt(0)) {
     createTitlesFromTerms(db, {
       direction: 'out', description: `Taxas da venda ${sale.number}`, categoryId: categoryByName(db, SYS_FIN.taxasVenda).id, amount: fees,
@@ -199,9 +205,11 @@ export function cancelSale(db: DB, saleId: ID, reason: string) {
   const s = byId(db.sales, saleId, 'Venda');
   assert(s.status === 'ativa', 'Venda já cancelada.');
   const why = requireText(reason, 'o motivo do cancelamento');
-  const titles = db.titles.filter((t) => t.origin.kind === 'venda' && t.origin.id === s.id && t.status !== 'cancelado');
+  const titles = db.titles.filter((t) => t.origin.kind === 'venda' && t.origin.id === s.id && t.status !== 'cancelado' && !t.advance);
   assert(!titles.some((t) => titlePaid(t).gt(0)), 'Há recebimentos/pagamentos registrados para esta venda. Estorne-os antes de cancelar.');
   titles.forEach((t) => cancelTitle(db, t.id, `Venda cancelada: ${why}`));
+  // Pago antes da entrega: volta para a conta a receber do pedido.
+  restoreOrderAdvance(db, s);
   // Kit de entrega: devolve ao estoque o que foi baixado nesta venda.
   for (const m of db.movements.filter((x) => x.ref.kind === 'venda' && x.ref.id === s.id && x.type === 'consumo')) {
     addMovement(db, { lotId: m.lotId, type: 'ajuste_pos', qty: m.qty, ref: { kind: 'venda', id: s.id }, key: `venda:${s.id}:kit-estorno:${m.lotId}`, reason: `Venda ${s.number} cancelada: kit devolvido ao estoque` });
@@ -213,6 +221,7 @@ export function cancelSale(db: DB, saleId: ID, reason: string) {
   for (const oid of new Set([s.orderId, fgOrder].filter(Boolean) as ID[])) {
     const o = db.orders.find((x) => x.id === oid);
     if (o?.destination === 'entregue' && !db.sales.some((x) => x.status === 'ativa' && x.orderId === o.id)) { delete o.destination; delete o.destinationAt; }
+    if (o) provisionOrderReceivable(db, o);
   }
   audit(db, 'Venda cancelada', `${s.number} — ${why}`);
 }

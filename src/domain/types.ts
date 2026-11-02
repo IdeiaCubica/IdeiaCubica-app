@@ -680,7 +680,13 @@ export interface FinTitle {
   dueDate: ISODate;
   partyId?: ID;
   projectId?: ID;
-  origin: { kind: 'compra' | 'venda' | 'manual'; id?: ID };
+  /** pedido = conta a receber provisionada quando a peça vai para produção (vira venda na entrega). */
+  origin: { kind: 'compra' | 'venda' | 'manual' | 'pedido'; id?: ID };
+  /**
+   * Recebimento antecipado de um pedido que passou para a venda na entrega. Guarda a conta original
+   * do pedido para voltar a ela se a venda for cancelada.
+   */
+  advance?: { orderId: ID; amount: DecStr; description: string; dueDate: ISODate; competenceDate: ISODate };
   installment?: { n: number; of: number };
   method?: string;
   status: 'aberto' | 'liquidado' | 'cancelado';

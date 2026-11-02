@@ -8,7 +8,7 @@ import { emptyQuoteInput, latestVersion, saveQuote, setItemStatus } from './quot
 import { completeOrder, createOrdersFromQuote, finishedGoodBalance, orderDestination, orderReservations, sendOrderToStock, startOrder } from './production';
 import { cancelSale, registerSale, saleStatus } from './sales';
 import { cashStatement, closeMonth, closingChanges, monthReport, overallStatement } from './reports';
-import { quoteTotal } from './quotes';
+import { copyQuoteItem, quoteTotal } from './quotes';
 import type { DB } from './types';
 
 let db: DB;
@@ -78,6 +78,25 @@ describe('Lista por orçamento', () => {
     expect(t.price.gt(t.cost)).toBe(true);
     // canal sem taxas: resultado = valor − custo
     expect(t.result.toString()).toBe(t.price.minus(t.cost).toDecimalPlaces(2).toString());
+  });
+});
+
+describe('Peça de outro orçamento', () => {
+  it('copia só a peça escolhida (com outra quantidade), sem mexer no orçamento de origem', () => {
+    const { q } = producedOrder();
+    const src = db.quotes.find((x) => x.id === q.id)!;
+    const before = JSON.stringify(src);
+    const it = latestVersion(src).items[0];
+    const copy = copyQuoteItem(src, it.itemId, { qty: 5 });
+    expect(copy.name).toBe('Vaso');
+    expect(copy.input.quantity).toBe(5);
+    expect(copy.input.materials).toEqual(it.input.materials);
+    expect(copy.input.printHoursPerUnit).toBe(1);
+    expect(copy).not.toHaveProperty('itemId');
+    const nq = saveQuote(db, { name: 'Novo' }, [copy]);
+    expect(latestVersion(nq).items[0].itemId).not.toBe(it.itemId);
+    expect(JSON.stringify(db.quotes.find((x) => x.id === q.id))).toBe(before);
+    expect(() => copyQuoteItem(src, 'nao-existe')).toThrow(/não encontrada/);
   });
 });
 

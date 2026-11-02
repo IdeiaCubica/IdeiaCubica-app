@@ -2,6 +2,14 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.15.0 — 02/11/2026
+
+### Orçamentos → Peça de outro orçamento
+- Novo orçamento ganhou a opção **Peça de outro orçamento** (junto de “Criar nova peça” e “Peça do estoque”), e dentro do
+  orçamento o botão **+ Peça de outro orçamento**. Busca por peça, cliente ou número, escolhe UMA peça e a quantidade.
+- A peça entra como modelo novo com tudo o que foi preenchido (filamento, peso, tempo, foto, dimensões, complementos e ajustes),
+  sem duplicar o orçamento inteiro. O orçamento de origem não muda. O valor é recalculado com os custos de hoje.
+
 ## v1.14.0 — 02/11/2026
 
 ### Orçamentos → Por orçamento

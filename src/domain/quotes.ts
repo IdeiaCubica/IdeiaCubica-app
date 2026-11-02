@@ -297,6 +297,20 @@ export function quoteItemImage(q: Quote, itemId: ID | undefined): string | null 
 }
 export const quoteItems = (q: Quote) => latestVersion(q).items;
 
+/**
+ * Cópia de UMA peça de outro orçamento (última versão), para começar um modelo novo a partir dela:
+ * nome, foto e tudo o que foi preenchido. Não leva o vínculo com o estoque nem a parte do kit de entrega,
+ * e o valor é recalculado com os custos de hoje ao salvar.
+ */
+export function copyQuoteItem(q: Quote, itemId: ID, opts: { qty?: number } = {}) {
+  const it = quoteItems(q).find((x) => x.itemId === itemId);
+  if (!it) throw new BusinessError('Peça não encontrada no orçamento.');
+  if (opts.qty !== undefined) assert(Number.isInteger(opts.qty) && opts.qty > 0, 'Quantidade deve ser um inteiro maior que zero.');
+  const input: QuoteInput = { overrides: {}, ...structuredClone(it.input), deliveryKitShare: null };
+  if (opts.qty !== undefined) input.quantity = opts.qty;
+  return { name: it.name, image: quoteItemImage(q, itemId), input };
+}
+
 export function quoteItem(q: Quote, itemId?: ID): QuoteVersionItem {
   const items = quoteItems(q);
   const it = itemId ? items.find((x) => x.itemId === itemId) : items[0];

@@ -3,7 +3,7 @@ import { useStore } from '../store';
 import { navigate } from '../App';
 import type { DB, Quote, QuoteDeliveryKit, QuoteExtraLine, QuoteInput, QuoteItemStatus, QuoteShipping, QuoteStatus, QuoteVersion, QuoteVersionItem, RoundingRule } from '../../domain/types';
 import {
-  ITEM_STATE_LABEL, deleteQuote, emptyQuoteInput, evaluateQuote, isItemLocked, itemOrder, itemState, latestVersion, materialCostPolicy, perHour, quoteItems, quoteTotal,
+  ITEM_STATE_LABEL, copyQuoteItem, deleteQuote, emptyQuoteInput, evaluateQuote, isItemLocked, itemOrder, itemState, latestVersion, materialCostPolicy, perHour, quoteItems, quoteTotal,
   paramsForItem, quoteItemImage, quoteSanity, saveQuote, setItemStatus, setQuoteStatus, staleItems, withKitShares, type ItemState, type QuoteEvaluation, type QuoteItemDraft,
 } from '../../domain/quotes';
 import { kitUnitCost, quoteKit } from '../../domain/deliveryKits';
@@ -380,7 +380,8 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
   const [producing, setProducing] = useState(false);
   const [addingStock, setAddingStock] = useState(false);
   const [duplicating, setDuplicating] = useState(false);
-  // Novo orçamento começa sem modelo: o usuário escolhe "Criar nova peça" ou "Peça do estoque".
+  const [copyingPiece, setCopyingPiece] = useState(false);
+  // Novo orçamento começa sem modelo: o usuário escolhe "Criar nova peça", "Peça de outro orçamento" ou "Peça do estoque".
   const [blankStart, setBlankStart] = useState(!quote);
   const isPristine = (it: DraftItem) => !it.itemId && !it.name.trim() && !it.finishedGoodId && !it.image
     && it.input.materials.every((m) => !m.qtyPerUnit) && !it.input.printHoursPerUnit && !it.input.extras.length;
@@ -556,6 +557,9 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
                   <button type="button" className="start-option" onClick={() => setBlankStart(false)}>
                     <b>Criar nova peça</b><span>Peça sob encomenda: você informa filamento, peso e tempo de 1 peça e a quantidade.</span>
                   </button>
+                  <button type="button" className="start-option" onClick={() => setCopyingPiece(true)} disabled={!db.quotes.length}>
+                    <b>Peça de outro orçamento</b><span>Copia uma peça já orçada (filamento, peso, tempo, foto e ajustes), sem duplicar o orçamento inteiro.</span>
+                  </button>
                   <button type="button" className="start-option" onClick={() => setAddingStock(true)}>
                     <b>Peça do estoque</b><span>Peça pronta (pronta-entrega) de Estoque → Peças produzidas, com o preço previsto dela.</span>
                   </button>
@@ -567,6 +571,7 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
           <Section title="2. Modelos de peça" collapsible="modelos" summary={`${items.length} modelo(s): ${items.map((it, i) => it.name || `Modelo ${i + 1}`).join(', ')}`}
             subtitle="Um modelo para cada peça diferente (ex.: 10 chaveiros + 10 vasos = 2 modelos). O cliente pode aprovar uns e outros não. Clique num modelo para editar."
             right={<><button type="button" className="btn secondary sm" onClick={duplicate}>Duplicar modelo</button>
+                <button type="button" className="btn secondary sm" onClick={() => setCopyingPiece(true)}>+ Peça de outro orçamento</button>
                 <button type="button" className="btn secondary sm" onClick={() => setAddingStock(true)}>+ Peça do estoque</button>
                 <button type="button" className="btn primary sm" onClick={addItem}>+ Criar nova peça</button></>}>
             <div>
@@ -688,6 +693,12 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
       {exporting && quote && <ClientQuoteExport quote={quote} onClose={() => setExporting(false)} unsaved={unsavedAll} />}
       {producing && quote && <ProduceDialog quote={quote} onClose={() => setProducing(false)} />}
       {duplicating && quote && <DuplicateQuoteDialog quote={quote} onClose={() => setDuplicating(false)} />}
+      {copyingPiece && <QuotePieceDialog excludeQuoteId={quote?.id} onClose={() => setCopyingPiece(false)}
+        onAdd={(piece) => {
+          const replace = items.length === 1 && isPristine(items[0]);
+          setItems((s) => (replace ? [piece] : [...s, piece]));
+          setActive(replace ? 0 : items.length); setCopyingPiece(false); setBlankStart(false);
+        }} />}
       {addingStock && <StockPieceDialog db={db} exclude={items.map((it) => it.finishedGoodId).filter(Boolean) as string[]} onClose={() => setAddingStock(false)}
         onAdd={(d) => {
           const piece = { name: d.name, image: d.image ?? null, input: d.input, finishedGoodId: d.finishedGoodId };
@@ -870,6 +881,51 @@ function ParamsSection({ db, input, patch }: { db: DB; input: QuoteInput; patch:
         </div>
       </details>
     </div>
+  );
+}
+
+/** Copia UMA peça de outro orçamento para este (como modelo novo, valor recalculado com os custos de hoje). */
+function QuotePieceDialog({ excludeQuoteId, onClose, onAdd }: { excludeQuoteId?: string; onClose: () => void; onAdd: (d: DraftItem) => void }) {
+  const { db, toast } = useStore();
+  const [q, setQ] = useState('');
+  const [key, setKey] = useState('');
+  const [qty, setQty] = useState<string | null>(null);
+  const customer = (id?: string) => db.parties.find((p) => p.id === id)?.name;
+  const rows = [...db.quotes].reverse().filter((x) => x.id !== excludeQuoteId)
+    .flatMap((x) => quoteItems(x).map((it) => ({ quote: x, it })))
+    .filter((r) => !q.trim() || `${r.quote.number} ${r.quote.name} ${r.it.name} ${customer(r.quote.customerId) ?? ''}`.toLowerCase().includes(q.trim().toLowerCase()));
+  const sel = rows.find((r) => `${r.quote.id}|${r.it.itemId}` === key);
+  const add = () => {
+    if (!sel) return;
+    try {
+      const n = qty === null || qty === '' ? undefined : Math.round(Number(qty));
+      onAdd(copyQuoteItem(sel.quote, sel.it.itemId, { qty: n }));
+    } catch (e) { toast('error', e instanceof Error ? e.message : String(e)); }
+  };
+  return (
+    <Modal wide title="Peça de outro orçamento" subtitle="Escolha a peça: ela entra neste orçamento como um modelo novo, com tudo o que foi preenchido (filamento, peso, tempo, foto, complementos e ajustes). O orçamento de origem não muda."
+      onClose={onClose}
+      footer={<><span className="muted small" style={{ marginRight: 'auto' }}>{sel ? `${sel.it.name} · ${sel.quote.number}` : 'Nenhuma peça escolhida'}</span><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={add} disabled={!sel}>Adicionar ao orçamento</button></>}>
+      <div className="stack">
+        <input type="search" className="search-lg" placeholder="Buscar por peça, cliente ou número do orçamento…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Buscar peça" autoFocus />
+        <div className="card tbl-scroll" style={{ maxHeight: 380, overflowY: 'auto' }}><table className="tbl"><thead><tr><th></th><th>Peça</th><th>Orçamento</th><th>Cliente</th><th className="num">Qtd.</th><th className="num">Por peça</th></tr></thead><tbody>
+          {rows.length === 0 && <tr><td colSpan={6} className="muted">Nenhuma peça encontrada.</td></tr>}
+          {rows.map((r) => { const k = `${r.quote.id}|${r.it.itemId}`; return (
+            <tr key={k} className={k === key ? 'diff-row' : ''} style={{ cursor: 'pointer' }} onClick={() => { setKey(k); setQty(String(r.it.input.quantity)); }}>
+              <td><input type="radio" name="peca-origem" aria-label={`Escolher ${r.it.name} de ${r.quote.number}`} checked={k === key} onChange={() => { setKey(k); setQty(String(r.it.input.quantity)); }} /></td>
+              <td><div className="row" style={{ gap: 10, flexWrap: 'nowrap' }}>{r.it.image ? <img src={r.it.image} alt="" className="kb-thumb" /> : null}<div><b>{r.it.name}</b>{formatDimensions(r.it.input.dimensionsCm) && <div className="muted small">{formatDimensions(r.it.input.dimensionsCm)}</div>}</div></div></td>
+              <td><span className="mono">{r.quote.number}</span><div className="muted small">{r.quote.name}</div></td>
+              <td>{customer(r.quote.customerId) ?? <span className="muted">—</span>}</td>
+              <td className="num">{r.it.input.quantity}</td>
+              <td className="num">{fmtBRL(r.it.summary.unitPrice)}</td>
+            </tr>); })}
+        </tbody></table></div>
+        {sel && <div className="grid g2">
+          <DecField label="Quantidade neste orçamento" value={qty} onChange={setQty} suffix="peças" hint={`No orçamento de origem: ${sel.it.input.quantity}`} />
+          <p className="small muted" style={{ alignSelf: 'end' }}>O valor é recalculado com os custos de hoje e a quantidade escolhida, então pode ficar diferente do orçamento de origem.{sel.it.finishedGoodId ? ' Era peça do estoque: aqui vira peça sob encomenda.' : ''}</p>
+        </div>}
+      </div>
+    </Modal>
   );
 }
 

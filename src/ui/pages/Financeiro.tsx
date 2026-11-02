@@ -12,9 +12,9 @@ import { addDays, fmtDate, todayISO } from '../../domain/core';
 import { D, ZERO, cents, fmtBRL, fmtPct, parseBR, sum } from '../../domain/money';
 import { Alert, Badge, Check, Combobox, DataTable, DateField, Empty, Field, Kpi, Modal, NumField, PageHead, SelectField, Tabs, TextArea, TextField, dec, num, useConfirm, useForm, type Tone } from '../components/ui';
 import { NATURE_LABEL } from './Configuracoes';
-import { Extrato, Fechamento } from './RelatoriosFinanceiros';
+import { Extrato, ExtratoTotal, Fechamento } from './RelatoriosFinanceiros';
 
-type Tab = 'painel' | 'extrato' | 'fechamento' | 'titulos' | 'vendas' | 'resultado';
+type Tab = 'painel' | 'extrato' | 'total' | 'fechamento' | 'titulos' | 'vendas' | 'resultado';
 
 const monthRange = (ym: string) => {
   const [y, m] = ym.split('-').map(Number);
@@ -36,12 +36,13 @@ export function Financeiro({ param }: { param?: string }) {
         actions={<><button className="btn secondary" onClick={() => setManual(true)}>Novo lançamento</button><button className="btn primary" onClick={() => setSelling(true)}>Registrar venda</button></>} />
       {db.accounts.length === 0 && <div style={{ marginBottom: 16 }}><Alert tone="warning" title="Nenhuma conta financeira">Cadastre ao menos uma conta em <a href="#/config/contas">Configurações → Contas financeiras</a> para registrar pagamentos e recebimentos.</Alert></div>}
       <Tabs<Tab> value={tab} onChange={(t) => navigate(`financeiro/${t}`)} tabs={[
-        { id: 'painel', label: 'Painel' }, { id: 'extrato', label: 'Extrato' }, { id: 'fechamento', label: 'Fechamento mensal' },
+        { id: 'painel', label: 'Painel' }, { id: 'extrato', label: 'Extrato' }, { id: 'total', label: 'Extrato total' }, { id: 'fechamento', label: 'Fechamento mensal' },
         { id: 'titulos', label: 'Contas a pagar e receber', count: overdue || undefined },
         { id: 'vendas', label: 'Vendas', count: db.sales.length }, { id: 'resultado', label: 'Resultado por produto' },
       ]} />
       {tab === 'painel' && <Painel />}
       {tab === 'extrato' && <Extrato />}
+      {tab === 'total' && <ExtratoTotal />}
       {tab === 'fechamento' && <Fechamento />}
       {tab === 'titulos' && <Titulos />}
       {tab === 'vendas' && <SalesList onNew={() => setSelling(true)} />}

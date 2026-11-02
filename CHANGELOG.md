@@ -2,6 +2,23 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.14.0 — 02/11/2026
+
+### Orçamentos → Por orçamento
+- Nova sub-aba com a lista de orçamentos: **Valor, Por peça, Custo, Resultado, Total de horas e R$/h**, com totais no topo
+  (valor, custo, resultado e % do valor, horas e R$/h médio). Filtra por situação e busca; colunas ordenáveis.
+- Resultado = valor − taxas do canal − custo total (o mesmo do painel do orçamento). Peças recusadas ficam de fora.
+
+### Financeiro → Extrato total
+- Tudo o que entrou e saiu **desde o início** ou de **um mês** (clique no mês na tabela ou escolha no seletor), por conta.
+- **Mês a mês**: entrou, saiu, entrou − saiu e saldo no fim de cada mês, com o total geral.
+- **De onde veio / para onde foi o dinheiro**: agrupado por natureza (vendas, compra de insumos, equipamentos, despesas fixas, taxas…).
+- **Resultado da empresa**: vendas − taxas ± frete − custo das peças vendidas = lucro das vendas − despesas fixas = resultado.
+- **Onde está o dinheiro que saiu**: insumos e peças prontas em estoque (a custo), equipamentos pagos, a receber e a pagar —
+  explica por que o caixa pode estar negativo mesmo com vendas lucrativas.
+- **Resultado por venda**: valor, taxas, frete, custo das peças, lucro, margem e se já foi recebido.
+- Lista completa de entradas e saídas e planilha CSV.
+
 ## v1.13.0 — 01/11/2026
 
 ### Peça produzida: estoque ou entregue

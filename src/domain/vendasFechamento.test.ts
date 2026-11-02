@@ -7,7 +7,8 @@ import { createManualTitle, settleTitle } from './finance';
 import { emptyQuoteInput, latestVersion, saveQuote, setItemStatus } from './quotes';
 import { completeOrder, createOrdersFromQuote, finishedGoodBalance, orderDestination, orderReservations, sendOrderToStock, startOrder } from './production';
 import { cancelSale, registerSale, saleStatus } from './sales';
-import { cashStatement, closeMonth, closingChanges, monthReport } from './reports';
+import { cashStatement, closeMonth, closingChanges, monthReport, overallStatement } from './reports';
+import { quoteTotal } from './quotes';
 import type { DB } from './types';
 
 let db: DB;
@@ -68,6 +69,18 @@ describe('Peça produzida: estoque ou entregue', () => {
   });
 });
 
+describe('Lista por orçamento', () => {
+  it('valor, custo, resultado (= valor − taxas − custo), horas e peças do orçamento', () => {
+    const { q } = producedOrder();
+    const t = quoteTotal(db, db.quotes.find((x) => x.id === q.id)!);
+    expect(t.pieces).toBe(2);
+    expect(t.hours.toString()).toBe('2');
+    expect(t.price.gt(t.cost)).toBe(true);
+    // canal sem taxas: resultado = valor − custo
+    expect(t.result.toString()).toBe(t.price.minus(t.cost).toDecimalPlaces(2).toString());
+  });
+});
+
 describe('Extrato e fechamento mensal', () => {
   it('extrato com saldo inicial, entradas, saídas, detalhe e saldo acumulado', () => {
     const { o, cli } = producedOrder(); // compra à vista de R$ 90 em 01/11
@@ -83,6 +96,27 @@ describe('Extrato e fechamento mensal', () => {
     expect(st.rows[1].detail).toBe('2 × Vaso — Ana');
     expect(st.rows[2].detail).toBe('Fibra 300MB');
     expect(st.closing.toString()).toBe('300');
+  });
+
+  it('extrato total: geral e mês a mês, por natureza, onde está o dinheiro e resultado por venda', () => {
+    const { o, cli } = producedOrder(); // compra de insumos R$ 90 em 01/11
+    registerSale(db, { date: '2026-11-08', orderId: o.id, customerId: cli.id, description: 'Vaso', qty: 2, unitPrice: '20', discount: '0', freightCharged: '0', freightCost: '0', feesWithheld: true, payment: cash('2026-11-08') });
+    const cat = db.finCategories.find((c) => c.nature === 'despesa_fixa')!;
+    createManualTitle(db, { categoryId: cat.id, description: 'Aluguel outubro', amount: '50', competenceDate: '2026-10-30', terms: cash('2026-10-30') });
+    const all = overallStatement(db);
+    expect([all.opening.toString(), all.totalIn.toString(), all.totalOut.toString(), all.closing.toString()]).toEqual(['500', '40', '140', '400']);
+    expect(all.byMonth.map((m) => [m.ym, m.totalIn.toString(), m.totalOut.toString(), m.net.toString(), m.balance.toString()])).toEqual([
+      ['2026-10', '0', '50', '-50', '450'], ['2026-11', '40', '90', '-50', '400']]);
+    expect(all.outByNature.map((g) => [g.nature, g.amount.toString()])).toEqual([['estoque', '90'], ['despesa_fixa', '50']]);
+    expect(all.inByNature.map((g) => [g.nature, g.amount.toString()])).toEqual([['receita_venda', '40']]);
+    // Insumo: comprou 1000 g por R$ 90, consumiu 100 g → R$ 81 continuam em estoque
+    expect(all.assets.materials.toString()).toBe('81');
+    expect(all.result.revenue.toString()).toBe('40');
+    expect(all.result.operating.toString()).toBe(all.result.contribution.minus(50).toString());
+    expect(all.sales).toHaveLength(1);
+    const s = all.sales[0];
+    expect([s.revenue.toString(), s.received.toString(), s.open.toString()]).toEqual(['40', '40', '0']);
+    expect(s.profit!.toString()).toBe(s.revenue.minus(s.fees).plus(s.freightNet).minus(s.cogs!).toString());
   });
 
   it('fechamento: resultado, peças vendidas, produção; registra e avisa mudanças posteriores', () => {

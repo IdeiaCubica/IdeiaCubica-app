@@ -5,12 +5,13 @@
  * Extrato = visão de CAIXA: só o que entrou/saiu de fato (pagamentos e recebimentos registrados).
  * Resultado = visão de COMPETÊNCIA: vendas e despesas do mês, mesmo que pagas em outro mês.
  */
-import type { DB, FinTitle, ID, ISODate, MonthClosing } from './types';
+import type { DB, FinNature, FinTitle, ID, ISODate, MonthClosing } from './types';
 import { D, Decimal, ZERO, cents, sum } from './money';
 import { assert, audit, fmtDate, newId, nowISO } from './core';
 import { managementResult, saleEconomics, saleGross } from './sales';
 import { inventoryValue } from './inventory';
 import { materialLabel } from './catalog';
+import { finishedGoodBalance } from './production';
 
 export function monthRange(ym: string): { from: ISODate; to: ISODate } {
   assert(/^\d{4}-\d{2}$/.test(ym), 'Mês inválido.');
@@ -89,6 +90,88 @@ export function statementCsv(st: ReturnType<typeof cashStatement>): string {
     ...st.rows.map((r) => [fmtDate(r.date), q(r.description), q(r.detail), q(r.category), q(r.party), q(r.account), q(r.method), n(r.amountIn), n(r.amountOut), r.balance.toFixed(2).replace('.', ',')].join(';')),
     `;Totais;;;;;;${st.totalIn.toFixed(2).replace('.', ',')};${st.totalOut.toFixed(2).replace('.', ',')};${st.closing.toFixed(2).replace('.', ',')}`];
   return '﻿' + lines.join('\r\n') + '\r\n';
+}
+
+/** Para onde foi (ou de onde veio) o dinheiro, pela natureza da categoria. */
+export const NATURE_GROUP: Record<FinNature, string> = {
+  receita_venda: 'Vendas recebidas', receita_outra: 'Outras receitas', aporte: 'Aportes dos sócios',
+  estoque: 'Compra de insumos (vira estoque)', investimento: 'Impressoras e equipamentos (investimento)',
+  despesa_fixa: 'Despesas fixas', custo_variavel: 'Taxas e fretes de venda', retirada: 'Retiradas dos sócios', outros: 'Outros',
+};
+
+/** Entradas e saídas do extrato somadas por natureza (do maior para o menor). */
+export function natureTotals(db: DB, rows: StatementRow[]) {
+  const ins = new Map<FinNature, Decimal>(), outs = new Map<FinNature, Decimal>();
+  for (const r of rows) {
+    const t = db.titles.find((x) => x.id === r.titleId);
+    const n = db.finCategories.find((c) => c.id === t?.categoryId)?.nature ?? 'outros';
+    if (r.amountIn.gt(0)) ins.set(n, (ins.get(n) ?? ZERO).plus(r.amountIn));
+    if (r.amountOut.gt(0)) outs.set(n, (outs.get(n) ?? ZERO).plus(r.amountOut));
+  }
+  const list = (map: Map<FinNature, Decimal>) => [...map.entries()].map(([nature, amount]) => ({ nature, label: NATURE_GROUP[nature], amount })).sort((a, b) => b.amount.cmp(a.amount));
+  return { inByNature: list(ins), outByNature: list(outs) };
+}
+
+/** Resultado de cada venda: quanto entrou, o que custou e quanto sobrou. */
+export function salesResults(db: DB, opts: { from?: ISODate; to?: ISODate } = {}) {
+  return db.sales.filter((s) => s.status === 'ativa' && (!opts.from || s.date >= opts.from) && (!opts.to || s.date <= opts.to))
+    .map((s) => {
+      const e = saleEconomics(s);
+      const titles = db.titles.filter((t) => t.origin.kind === 'venda' && t.origin.id === s.id && t.direction === 'in' && t.status !== 'cancelado');
+      const received = sum(titles.flatMap((t) => t.settlements.filter((x) => !x.reversed).map((x) => D(x.amount))));
+      return {
+        sale: s, customer: db.parties.find((p) => p.id === s.customerId)?.name ?? '',
+        revenue: e.revenue, fees: e.fees, freightNet: e.freightNet, cogs: e.cogs, profit: e.contribution,
+        marginPct: e.contribution && !e.revenue.isZero() ? e.contribution.div(e.revenue) : null,
+        received, open: sum(titles.map((t) => D(t.amount))).minus(received),
+      };
+    }).sort((a, b) => b.sale.date.localeCompare(a.sale.date) || b.sale.number.localeCompare(a.sale.number));
+}
+
+/**
+ * Extrato total (desde o início): tudo o que entrou e saiu, mês a mês e no geral, agrupado pela
+ * natureza (vendas, insumos, equipamentos, despesas…), o resultado acumulado da empresa e
+ * onde está o dinheiro que saiu (estoque, peças prontas, equipamentos, a receber).
+ */
+export function overallStatement(db: DB, opts: { accountId?: ID } = {}) {
+  const st = cashStatement(db, { from: '0000-01-01', to: '9999-12-31', accountId: opts.accountId });
+
+  type Month = { ym: string; totalIn: Decimal; totalOut: Decimal; net: Decimal; balance: Decimal; count: number };
+  const months = new Map<string, Month>();
+  for (const r of st.rows) {
+    const ym = r.date.slice(0, 7);
+    const m = months.get(ym) ?? { ym, totalIn: ZERO, totalOut: ZERO, net: ZERO, balance: ZERO, count: 0 };
+    m.totalIn = m.totalIn.plus(r.amountIn); m.totalOut = m.totalOut.plus(r.amountOut); m.count++;
+    m.balance = r.balance; // linhas em ordem de data: a última do mês é o saldo de fim do mês
+    months.set(ym, m);
+  }
+  const byMonth = [...months.values()].map((m) => ({ ...m, net: m.totalIn.minus(m.totalOut) })).sort((a, b) => a.ym.localeCompare(b.ym));
+  const { inByNature, outByNature } = natureTotals(db, st.rows);
+  const equipment = outByNature.find((g) => g.nature === 'investimento')?.amount ?? ZERO;
+
+  // Onde está o dinheiro que saiu: bens que continuam na empresa (valor de custo, hoje).
+  const finishedGoods = cents(db.finishedGoods.reduce((acc, fg) => {
+    const b = finishedGoodBalance(db, fg.id);
+    return fg.unitCost ? acc.plus(D(fg.unitCost).times(b.produced - b.sold - b.adjusted)) : acc;
+  }, ZERO));
+  let receivable = ZERO, payable = ZERO;
+  for (const t of db.titles) {
+    if (t.status !== 'aberto') continue;
+    const open = D(t.amount).minus(sum(t.settlements.filter((s) => !s.reversed).map((s) => D(s.amount))));
+    if (t.direction === 'in') receivable = receivable.plus(open); else payable = payable.plus(open);
+  }
+
+  return {
+    ...st, byMonth, inByNature, outByNature,
+    /** Resultado gerencial acumulado (competência): vendas − custos das peças vendidas − despesas. */
+    result: managementResult(db, '0000-01-01', '9999-12-31'),
+    assets: {
+      materials: inventoryValue(db), finishedGoods,
+      equipment,
+      receivable: cents(receivable), payable: cents(payable),
+    },
+    sales: salesResults(db),
+  };
 }
 
 /** Tudo o que compõe o fechamento de um mês. */

@@ -2,7 +2,8 @@
 import { Fragment, useState } from 'react';
 import { useStore } from '../store';
 import type { FinTitle } from '../../domain/types';
-import { CLOSING_LABEL, cashStatement, closeMonth, closingChanges, monthRange, monthReport, statementCsv } from '../../domain/reports';
+import { CLOSING_LABEL, cashStatement, closeMonth, closingChanges, monthRange, monthReport, natureTotals, overallStatement, statementCsv } from '../../domain/reports';
+import { managementResult } from '../../domain/sales';
 import { fmtDate, fmtDateTime, todayISO } from '../../domain/core';
 import { D, fmtBRL, fmtNum, fmtPct } from '../../domain/money';
 import { Alert, Badge, Combobox, DataTable, Empty, Kpi, Modal, TextArea } from '../components/ui';
@@ -54,6 +55,150 @@ export function Extrato() {
           ]} />
       </div>
       <p className="small muted">Extrato = dinheiro que entrou ou saiu de fato no mês (pagamentos e recebimentos registrados; estornos não aparecem). Compras e vendas a prazo entram aqui no dia em que forem pagas. Clique numa linha para ver o lançamento.</p>
+      {sel && <TitleModal title={sel} onClose={() => setSel(null)} />}
+    </div>
+  );
+}
+
+/* ---------------- Extrato total ---------------- */
+/** Tudo o que entrou e saiu desde o início: geral ou de um mês, com o resultado da empresa e de cada venda. */
+export function ExtratoTotal() {
+  const { db } = useStore();
+  const [ym, setYm] = useState(''); // '' = desde o início
+  const [accountId, setAccountId] = useState('');
+  const [sel, setSel] = useState<FinTitle | null>(null);
+  const all = overallStatement(db, { accountId: accountId || undefined });
+  const month = ym ? all.byMonth.find((m) => m.ym === ym) : undefined;
+  const rows = ym ? all.rows.filter((r) => r.date.startsWith(ym)) : all.rows;
+  const totalIn = ym ? (month?.totalIn ?? D(0)) : all.totalIn;
+  const totalOut = ym ? (month?.totalOut ?? D(0)) : all.totalOut;
+  const net = totalIn.minus(totalOut);
+  const { inByNature, outByNature } = ym ? natureTotals(db, rows) : all;
+  const res = ym ? managementResult(db, monthRange(ym).from, monthRange(ym).to) : all.result;
+  const sales = ym ? all.sales.filter((s) => s.sale.date.startsWith(ym)) : all.sales;
+  const scope = ym ? monthLabel(ym) : 'desde o início';
+  const neg = (d: { isNegative: () => boolean }) => (d.isNegative() ? 'stmt-out' : undefined);
+  const minus = (d: ReturnType<typeof D>) => (d.isZero() ? d.abs() : d.negated());
+  const a = all.assets;
+  const kept = a.materials.plus(a.finishedGoods).plus(a.equipment);
+  const download = () => {
+    const opening = ym ? (month ? month.balance.minus(month.net) : all.opening) : all.opening;
+    const st = { opening, rows, totalIn, totalOut, closing: opening.plus(totalIn).minus(totalOut) };
+    const url = URL.createObjectURL(new Blob([statementCsv(st)], { type: 'text/csv;charset=utf-8' }));
+    const el = document.createElement('a'); el.href = url; el.download = `extrato-total${ym ? `-${ym}` : ''}.csv`; el.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+  const Groups = ({ title, list, total, dir }: { title: string; list: { nature: string; label: string; amount: ReturnType<typeof D> }[]; total: ReturnType<typeof D>; dir: 'in' | 'out' }) => (
+    <div className="card">
+      <h3 style={{ marginTop: 0 }}>{title}</h3>
+      {list.length === 0 ? <p className="muted">Nada {dir === 'in' ? 'entrou' : 'saiu'} {ym ? `em ${scope}` : 'ainda'}.</p> : (
+        <table className="tbl"><tbody>
+          {list.map((g) => <tr key={g.nature}><td>{g.label}</td><td className="num muted small">{total.gt(0) ? fmtPct(g.amount.div(total)) : ''}</td><td className={`num ${dir === 'in' ? 'stmt-in' : 'stmt-out'}`}>{fmtBRL(g.amount)}</td></tr>)}
+        </tbody><tfoot><tr><td>Total</td><td></td><td className="num">{fmtBRL(total)}</td></tr></tfoot></table>
+      )}
+    </div>
+  );
+  return (
+    <div className="stack closing-doc">
+      <div className="row">
+        <div style={{ width: 220 }}><Combobox ariaLabel="Período" value={ym} onChange={setYm} placeholder="Desde o início (geral)" options={[...all.byMonth].reverse().map((m) => ({ value: m.ym, label: monthLabel(m.ym) }))} /></div>
+        <div style={{ width: 240 }}><Combobox ariaLabel="Conta" value={accountId} onChange={setAccountId} placeholder="Todas as contas" options={db.accounts.map((x) => ({ value: x.id, label: x.name }))} /></div>
+        {ym && <button className="btn ghost" onClick={() => setYm('')}>Ver geral</button>}
+        <button className="btn secondary" style={{ marginLeft: 'auto' }} onClick={download} disabled={!rows.length}>Baixar planilha (CSV)</button>
+      </div>
+
+      <div className="kpis">
+        <Kpi label={`Tudo que entrou (${scope})`} value={<span className="stmt-in">+ {fmtBRL(totalIn)}</span>} hint={`${rows.filter((r) => r.amountIn.gt(0)).length} recebimento(s)`} />
+        <Kpi label={`Tudo que saiu (${scope})`} value={<span className="stmt-out">− {fmtBRL(totalOut)}</span>} hint={`${rows.filter((r) => r.amountOut.gt(0)).length} pagamento(s)`} />
+        <Kpi label="Entrou − saiu" value={<span className={neg(net)}>{fmtBRL(net)}</span>} hint={net.isNegative() ? 'saiu mais do que entrou' : 'entrou mais do que saiu'} accent />
+        <Kpi label={ym ? `Saldo no fim de ${scope}` : 'Saldo em caixa hoje'} value={<span className={neg(ym ? (month?.balance ?? D(0)) : all.closing)}>{fmtBRL(ym ? (month?.balance ?? all.opening) : all.closing)}</span>} hint={all.opening.isZero() ? 'contas começaram com R$ 0,00' : `saldo inicial das contas ${fmtBRL(all.opening)}`} />
+      </div>
+
+      <div className="card">
+        <h3 style={{ marginTop: 0 }}>Mês a mês</h3>
+        {all.byMonth.length === 0 ? <p className="muted">Nenhum pagamento ou recebimento registrado ainda.</p> : (
+          <div className="tbl-scroll"><table className="tbl"><thead><tr><th>Mês</th><th className="num">Entrou</th><th className="num">Saiu</th><th className="num">Entrou − saiu</th><th className="num">Saldo no fim do mês</th></tr></thead><tbody>
+            {all.byMonth.map((m) => (
+              <tr key={m.ym} className={m.ym === ym ? 'diff-row' : ''} style={{ cursor: 'pointer' }} onClick={() => setYm(m.ym === ym ? '' : m.ym)} title="Clique para ver só este mês">
+                <td><b>{monthLabel(m.ym)}</b> <span className="muted small">{m.count} lançamento(s)</span></td>
+                <td className="num stmt-in">{fmtBRL(m.totalIn)}</td><td className="num stmt-out">{fmtBRL(m.totalOut)}</td>
+                <td className={`num ${neg(m.net) ?? ''}`}><b>{fmtBRL(m.net)}</b></td><td className={`num ${neg(m.balance) ?? ''}`}>{fmtBRL(m.balance)}</td>
+              </tr>))}
+          </tbody><tfoot><tr><td>Total geral</td><td className="num">{fmtBRL(all.totalIn)}</td><td className="num">{fmtBRL(all.totalOut)}</td><td className="num">{fmtBRL(all.totalIn.minus(all.totalOut))}</td><td className="num">{fmtBRL(all.closing)}</td></tr></tfoot></table></div>
+        )}
+      </div>
+
+      <div className="grid g2">
+        <Groups title="De onde veio o dinheiro" list={inByNature} total={totalIn} dir="in" />
+        <Groups title="Para onde foi o dinheiro" list={outByNature} total={totalOut} dir="out" />
+      </div>
+
+      <div className="grid g2">
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Resultado da empresa ({scope})</h3>
+          <dl className="dl">
+            <dt>Vendas ({res.salesCount})</dt><dd>{fmtBRL(res.revenue)}</dd>
+            <dt>− Tributos e taxas</dt><dd>{fmtBRL(minus(res.fees))}</dd>
+            <dt>± Frete (cobrado − pago)</dt><dd>{fmtBRL(res.freightNet)}</dd>
+            <dt>− Custo das peças vendidas</dt><dd>{fmtBRL(minus(res.cogs))}</dd>
+            <dt><b>= Lucro das vendas</b></dt><dd><b className={neg(res.contribution)}>{fmtBRL(res.contribution)}</b></dd>
+            <dt>− Despesas fixas</dt><dd>{fmtBRL(minus(res.fixed))}</dd>
+            {(!res.otherIn.isZero() || !res.otherOut.isZero()) && <><dt>± Outras receitas e despesas</dt><dd>{fmtBRL(res.otherIn.minus(res.otherOut))}</dd></>}
+            <dt><b>= Resultado</b></dt><dd><b className={neg(res.operating)}>{fmtBRL(res.operating)}</b></dd>
+          </dl>
+          {res.pendingCost > 0 && <Alert tone="warning" title="Resultado parcial">{res.pendingCost} venda(s) sem custo das peças: o lucro delas está maior do que o real.</Alert>}
+          <p className="small muted">Resultado = competência: conta a venda e a despesa no mês em que aconteceram, mesmo se pagas depois. Compra de insumos e de impressoras <b>não</b> é despesa: o insumo vira custo quando a peça é vendida, e a impressora é investimento.</p>
+        </div>
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Onde está o dinheiro que saiu (hoje)</h3>
+          <dl className="dl">
+            <dt>Insumos em estoque (custo)</dt><dd>{fmtBRL(a.materials)}</dd>
+            <dt>Peças prontas em estoque (custo)</dt><dd>{fmtBRL(a.finishedGoods)}</dd>
+            <dt>Impressoras e equipamentos pagos</dt><dd>{fmtBRL(a.equipment)}</dd>
+            <dt><b>= Ainda na empresa</b></dt><dd><b>{fmtBRL(kept)}</b></dd>
+            <dt>A receber de clientes</dt><dd className="stmt-in">{fmtBRL(a.receivable)}</dd>
+            <dt>A pagar</dt><dd className="stmt-out">{fmtBRL(minus(a.payable))}</dd>
+          </dl>
+          <Alert tone={all.totalIn.minus(all.totalOut).isNegative() ? 'info' : 'success'} title="Leitura geral">
+            Desde o início saiu {fmtBRL(all.totalOut)} e entrou {fmtBRL(all.totalIn)} ({fmtBRL(all.totalIn.minus(all.totalOut))}).
+            {' '}Desse dinheiro, {fmtBRL(kept)} continua na empresa como insumos, peças prontas e equipamentos.
+            {' '}O resultado das vendas menos as despesas é {fmtBRL(all.result.operating)}{all.result.operating.isNegative() ? ': as vendas ainda não cobrem as despesas.' : '.'}
+          </Alert>
+        </div>
+      </div>
+
+      <div className="card">
+        <h3 style={{ marginTop: 0 }}>Resultado por venda ({scope})</h3>
+        <DataTable rows={sales} rowKey={(r) => r.sale.id} search={(r) => `${r.sale.number} ${r.sale.description} ${r.customer}`}
+          empty={<Empty title={`Nenhuma venda ${ym ? `em ${scope}` : 'registrada'}`} />}
+          columns={[
+            { key: 'n', header: 'Venda', render: (r) => <><span className="mono">{r.sale.number}</span><div className="muted small">{fmtDate(r.sale.date)}</div></>, sort: (r) => r.sale.date },
+            { key: 'p', header: 'Peça / cliente', render: (r) => <><b>{r.sale.qty} × {r.sale.description}</b><div className="muted small">{r.customer || 'sem cliente'}</div></> },
+            { key: 'v', header: 'Valor', num: true, render: (r) => fmtBRL(r.revenue), sort: (r) => r.revenue.toNumber() },
+            { key: 't', header: 'Taxas', num: true, render: (r) => fmtBRL(r.fees) },
+            { key: 'f', header: 'Frete ±', num: true, render: (r) => fmtBRL(r.freightNet) },
+            { key: 'c', header: 'Custo das peças', num: true, render: (r) => (r.cogs ? fmtBRL(r.cogs) : <Badge tone="warning">sem custo</Badge>) },
+            { key: 'l', header: 'Lucro', num: true, render: (r) => (r.profit ? <b className={neg(r.profit)}>{fmtBRL(r.profit)}</b> : '—'), sort: (r) => r.profit?.toNumber() ?? 0 },
+            { key: 'm', header: 'Margem', num: true, render: (r) => (r.marginPct ? fmtPct(r.marginPct) : '—'), sort: (r) => r.marginPct?.toNumber() ?? 0 },
+            { key: 'r', header: 'Recebido', render: (r) => (r.open.gt(0) ? <Badge tone="warning">falta {fmtBRL(r.open)}</Badge> : <Badge tone="success">pago</Badge>) },
+          ]} />
+        <p className="small muted">Lucro da venda = valor − taxas ± frete − custo das peças (material, energia, máquina, mão de obra e kit de entrega). Despesas fixas não entram aqui, só no resultado da empresa.</p>
+      </div>
+
+      <div className="card">
+        <h3 style={{ marginTop: 0 }}>Todas as entradas e saídas ({scope})</h3>
+        <DataTable rows={[...rows].reverse()} rowKey={(r) => r.settlementId} onRowClick={(r) => setSel(db.titles.find((t) => t.id === r.titleId) ?? null)}
+          search={(r) => `${r.description} ${r.detail} ${r.category} ${r.party}`}
+          empty={<Empty title="Nenhuma entrada ou saída" />}
+          columns={[
+            { key: 'd', header: 'Data', render: (r) => fmtDate(r.date), sort: (r) => r.date },
+            { key: 'x', header: 'Descrição', render: (r) => <><b>{r.description}</b>{r.detail && <div className="muted small">{r.detail}</div>}</> },
+            { key: 'c', header: 'Categoria', render: (r) => <>{r.category}{r.party && <div className="muted small">{r.party}</div>}</>, sort: (r) => r.category },
+            { key: 'i', header: 'Entrada', num: true, render: (r) => (r.amountIn.gt(0) ? <span className="stmt-in">+ {fmtBRL(r.amountIn)}</span> : ''), sort: (r) => r.amountIn.toNumber() },
+            { key: 'o', header: 'Saída', num: true, render: (r) => (r.amountOut.gt(0) ? <span className="stmt-out">− {fmtBRL(r.amountOut)}</span> : ''), sort: (r) => r.amountOut.toNumber() },
+            { key: 'b', header: 'Saldo', num: true, render: (r) => <b>{fmtBRL(r.balance)}</b> },
+          ]} />
+      </div>
       {sel && <TitleModal title={sel} onClose={() => setSel(null)} />}
     </div>
   );

@@ -7,7 +7,7 @@
  * ou de configuração nunca alteram orçamentos antigos.
  */
 import type { CostParams, DB, ID, Quote, QuoteDeliveryKit, QuoteInput, QuoteItemStatus, QuoteShipping, QuoteStatus, QuoteSummary, QuoteVersion, QuoteVersionItem, Settings } from './types';
-import { D, Decimal, ZERO } from './money';
+import { D, Decimal, ZERO, cents } from './money';
 import { BusinessError, assert, audit, byId, newId, nextCode, nowISO, requireText } from './core';
 import { computeCosts, type CostResult } from './costing';
 import { computePricing, type PricingResult } from './pricing';
@@ -395,13 +395,16 @@ export function setQuoteStatus(db: DB, quoteId: ID, status: QuoteStatus) {
 /** Totais do orçamento (peças escolhidas ou todas as não recusadas). */
 export function quoteTotal(db: DB, q: Quote, itemIds?: ID[]) {
   const items = quoteItems(q).filter((it) => (itemIds ? itemIds.includes(it.itemId) : itemState(db, q, it.itemId) !== 'recusado'));
-  let price = ZERO, cost = ZERO, hours = ZERO, pending = false;
+  let price = ZERO, cost = ZERO, hours = ZERO, result = ZERO, pending = false, pieces = 0;
   for (const it of items) {
     if (it.summary.orderPrice) price = price.plus(it.summary.orderPrice); else pending = true;
     if (it.summary.totalCost) cost = cost.plus(it.summary.totalCost);
     if (it.summary.hours) hours = hours.plus(it.summary.hours);
+    // Resultado = valor − taxas do canal − custo total (marginPct = resultado ÷ valor, gravado no resumo).
+    if (it.summary.orderPrice && it.summary.marginPct) result = result.plus(cents(D(it.summary.orderPrice).times(it.summary.marginPct)));
+    pieces += it.input.quantity;
   }
-  return { items, price, cost, hours, pending, count: items.length };
+  return { items, price, cost, hours, result, pending, count: items.length, pieces };
 }
 
 /** Exclui um orçamento sem pedidos ativos, vendas ou peças separadas. O histórico (backups) preserva os dados. */

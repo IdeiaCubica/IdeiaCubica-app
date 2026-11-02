@@ -38,10 +38,10 @@ const STATUS_BADGE: Record<CompStatus, { label: string; tone: Tone }> = {
   ajustado: { label: 'ajustado por você', tone: 'info' }, nao_aplicavel: { label: 'n/a', tone: 'neutral' },
 };
 
-type ListTab = 'clientes' | 'pecas' | 'aprovados';
+type ListTab = 'clientes' | 'lista' | 'pecas' | 'aprovados';
 
 export function Orcamentos({ param }: { param?: string }) {
-  if (param && param !== 'pecas' && param !== 'aprovados') return <QuoteEditor key={param} quoteId={param === 'novo' ? undefined : param} />;
+  if (param && param !== 'lista' && param !== 'pecas' && param !== 'aprovados') return <QuoteEditor key={param} quoteId={param === 'novo' ? undefined : param} />;
   return <QuoteList tab={(param as ListTab) || 'clientes'} />;
 }
 
@@ -73,6 +73,7 @@ function QuoteList({ tab }: { tab: ListTab }) {
       {comparing && <CompareQuotesDialog onClose={() => setComparing(false)} />}
       <Tabs<ListTab> value={tab} onChange={(t) => navigate(t === 'clientes' ? 'orcamentos' : `orcamentos/${t}`)} tabs={[
         { id: 'clientes', label: 'Por cliente', count: db.quotes.length || undefined },
+        { id: 'lista', label: 'Por orçamento', count: db.quotes.length || undefined },
         { id: 'pecas', label: 'Por peça', count: pieces.length || undefined },
         { id: 'aprovados', label: 'Aprovados', count: approved.length || undefined },
       ]} />
@@ -82,15 +83,16 @@ function QuoteList({ tab }: { tab: ListTab }) {
         <>
           <div className="row" style={{ marginBottom: 20 }}>
             <input type="search" className="search-lg" placeholder="Buscar por cliente, peça ou número…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Buscar orçamentos" />
-            {tab === 'clientes' && <div style={{ width: 260, maxWidth: '100%' }}>
+            {(tab === 'clientes' || tab === 'lista') && <div style={{ width: 260, maxWidth: '100%' }}>
               <Combobox ariaLabel="Filtrar por situação" value={status} onChange={setStatus} placeholder="Todas as situações" options={Object.entries(QUOTE_STATUS).map(([value, v]) => ({ value, label: v.label }))} />
             </div>}
-            <span className="muted" style={{ marginLeft: 'auto' }}>{tab === 'clientes' ? `${rows.length} orçamento(s)` : `${(tab === 'pecas' ? pieces : approved).length} peça(s)`}</span>
+            <span className="muted" style={{ marginLeft: 'auto' }}>{tab === 'clientes' || tab === 'lista' ? `${rows.length} orçamento(s)` : `${(tab === 'pecas' ? pieces : approved).length} peça(s)`}</span>
           </div>
           {tab === 'clientes' && (rows.length === 0 ? <p className="muted">Nenhum orçamento encontrado.</p> : (
             <div className="quote-grid">{rows.map((x) => <QuoteCard key={x.id} quote={x} customer={customer(x.customerId)} />)}</div>
           ))}
-          {tab !== 'clientes' && (
+          {tab === 'lista' && <QuoteTable quotes={rows} customer={customer} />}
+          {(tab === 'pecas' || tab === 'aprovados') && (
             <>
               {tab === 'aprovados' && <div className="kpis" style={{ marginBottom: 18 }}>
                 <Kpi label="Peças aprovadas" value={approved.length} accent />
@@ -251,6 +253,42 @@ function PieceTable({ rows, customer }: { rows: { quote: Quote; it: QuoteVersion
           { key: 'd', header: 'Data', render: (r) => fmtDate(latestVersion(r.quote).createdAt), sort: (r) => latestVersion(r.quote).createdAt },
         ]} />
     </div>
+  );
+}
+
+/**
+ * Lista por orçamento: valor, custo, resultado e horas de cada orçamento (peças recusadas ficam de fora).
+ * Resultado = valor − taxas do canal − custo total (custo direto + estrutura), como no painel do orçamento.
+ */
+function QuoteTable({ quotes, customer }: { quotes: Quote[]; customer: (id?: string) => string | undefined }) {
+  const { db } = useStore();
+  const rows = quotes.map((quote) => ({ quote, t: quoteTotal(db, quote) }));
+  const tot = rows.reduce((s, r) => ({ price: s.price.plus(r.t.price), cost: s.cost.plus(r.t.cost), result: s.result.plus(r.t.result), hours: s.hours.plus(r.t.hours) }),
+    { price: new Decimal(0), cost: new Decimal(0), result: new Decimal(0), hours: new Decimal(0) });
+  const perH = (price: Decimal, hours: Decimal) => (hours.gt(0) ? fmtBRL(price.div(hours)) : '—');
+  return (
+    <>
+      <div className="kpis" style={{ marginBottom: 18 }}>
+        <Kpi label="Valor dos orçamentos" value={fmtBRL(tot.price)} accent hint={`${rows.length} orçamento(s) da lista`} />
+        <Kpi label="Custo" value={fmtBRL(tot.cost)} />
+        <Kpi label="Resultado" value={fmtBRL(tot.result)} hint={tot.price.gt(0) ? `${fmtPct(tot.result.div(tot.price))} do valor` : undefined} />
+        <Kpi label="Horas de impressão" value={fmtDuration(tot.hours.toNumber())} hint={`R$/h médio ${perH(tot.price, tot.hours)}`} />
+      </div>
+      <div className="card">
+        <DataTable rows={rows} rowKey={(r) => r.quote.id} onRowClick={(r) => navigate(`orcamentos/${r.quote.id}`)}
+          empty={<Empty title="Nenhum orçamento encontrado" />}
+          columns={[
+            { key: 'n', header: 'Orçamento', render: (r) => <div><span className="mono">{r.quote.number}</span> <Badge tone={QUOTE_STATUS[r.quote.status].tone}>{QUOTE_STATUS[r.quote.status].label}</Badge><div><b>{r.quote.name}</b></div><div className="muted small">{customer(r.quote.customerId) ?? 'sem cliente'} · {r.t.count} modelo(s), {r.t.pieces} peça(s)</div></div>, sort: (r) => r.quote.number },
+            { key: 'v', header: 'Valor', num: true, render: (r) => (r.t.count ? fmtBRL(r.t.price) : '—'), sort: (r) => r.t.price.toNumber() },
+            { key: 'u', header: 'Por peça', num: true, render: (r) => (r.t.pieces ? fmtBRL(r.t.price.div(r.t.pieces)) : '—'), sort: (r) => (r.t.pieces ? r.t.price.div(r.t.pieces).toNumber() : 0) },
+            { key: 'c', header: 'Custo', num: true, render: (r) => fmtBRL(r.t.cost), sort: (r) => r.t.cost.toNumber() },
+            { key: 'r', header: 'Resultado', num: true, render: (r) => <span className={r.t.result.isNegative() ? 'stmt-out' : 'stmt-in'}>{fmtBRL(r.t.result)}</span>, sort: (r) => r.t.result.toNumber() },
+            { key: 'h', header: 'Total de horas', num: true, render: (r) => (r.t.hours.gt(0) ? fmtDuration(r.t.hours.toNumber()) : '—'), sort: (r) => r.t.hours.toNumber() },
+            { key: 'ph', header: 'R$/h', num: true, render: (r) => perH(r.t.price, r.t.hours), sort: (r) => (r.t.hours.gt(0) ? r.t.price.div(r.t.hours).toNumber() : 0) },
+          ]} />
+      </div>
+      <p className="small muted">Resultado = valor − taxas do canal − custo total (material, energia, máquina, mão de obra e estrutura). R$/h = valor ÷ horas de impressão. Peças recusadas não entram na soma.</p>
+    </>
   );
 }
 

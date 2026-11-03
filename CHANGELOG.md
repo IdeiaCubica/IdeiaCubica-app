@@ -2,6 +2,17 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.18.0 — 02/11/2026
+
+### Estoque de peças produzidas
+- O número grande agora é **em estoque** (o que está na prateleira), com o detalhe “livres para venda · separadas para
+  pedido”. Antes, a peça separada para o cliente aparecia como “0 disponíveis”, parecendo que tinha sumido.
+
+### Quadro de produção (Kanban)
+- A área de soltar ocupa a **coluna inteira, até embaixo**: todas as colunas têm a altura da mais longa.
+- Cada cartão tem o botão de **próxima etapa**: Iniciar produção → Enviar para acabamento → Concluir (produzida) →
+  Estoque ou entregue. Faz o mesmo que arrastar.
+
 ## v1.17.0 — 02/11/2026
 
 ### Retornar ao orçamento em qualquer etapa

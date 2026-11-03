@@ -367,8 +367,13 @@ details.params-details[open] > summary { border-bottom: 1px solid var(--border);
 }
 
 /* ---------------- Kanban de produção ---------------- */
-.kanban { display: grid; grid-template-columns: repeat(4, minmax(240px, 1fr)); gap: 14px; align-items: start; overflow-x: auto; padding-bottom: 6px; }
-.kb-col { background: rgb(13 25 37 / 0.04); border: 2px dashed transparent; border-radius: var(--r-card, 14px); padding: 12px; min-height: 260px; }
+.kanban { display: grid; grid-template-columns: repeat(4, minmax(240px, 1fr)); gap: 14px; align-items: stretch; overflow-x: auto; padding-bottom: 6px; }
+.kb-col { background: rgb(13 25 37 / 0.04); border: 2px dashed transparent; border-radius: var(--r-card, 14px); padding: 12px; min-height: 260px; display: flex; flex-direction: column; }
+/* A área de soltar ocupa a coluna inteira, até embaixo (mesma altura da coluna mais longa). */
+.kb-col > .kb-list { flex: 1; min-height: 120px; }
+.kb-next { all: unset; cursor: pointer; display: block; margin: 0 12px 10px; padding: 6px 10px; border-radius: 8px; font-size: 13px; font-weight: 600; text-align: center; background: rgb(0 120 200 / 0.08); color: var(--ic-tecnologia); }
+.kb-next:hover { background: rgb(0 120 200 / 0.16); }
+.kb-next:focus-visible { outline: 2px solid var(--ic-tecnologia); }
 .kb-col.over { border-color: var(--ic-tecnologia); background: rgb(0 120 200 / 0.06); }
 .kb-col header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .kb-col h3 { margin: 0; font-size: 17px; }
@@ -376,7 +381,7 @@ details.params-details[open] > summary { border-bottom: 1px solid var(--border);
 .kb-count { min-width: 26px; height: 26px; border-radius: 13px; background: var(--surface); box-shadow: var(--shadow-card); display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; }
 .kb-list { display: flex; flex-direction: column; gap: 10px; }
 .kb-empty { color: var(--n-600); font-size: 14px; text-align: center; padding: 18px 8px; border: 1px dashed var(--n-300, #ccd); border-radius: 10px; }
-.kb-card { background: var(--surface); border-radius: 12px; box-shadow: var(--shadow-card); display: flex; align-items: stretch; cursor: grab; border: 1px solid transparent; }
+.kb-card { background: var(--surface); border-radius: 12px; box-shadow: var(--shadow-card); display: flex; flex-direction: column; align-items: stretch; cursor: grab; border: 1px solid transparent; }
 .kb-card:hover { border-color: var(--ic-tecnologia); }
 .kb-card.dragging { opacity: 0.45; }
 .kb-open { all: unset; cursor: pointer; flex: 1; padding: 12px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }

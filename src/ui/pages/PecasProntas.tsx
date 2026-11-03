@@ -93,8 +93,9 @@ export function PecasProntas() {
                       </dl>
                     </div>
                     <div className="fg-side">
-                      <div className="fg-qty"><b>{b.available}</b><span>{b.available === 1 ? 'disponível' : 'disponíveis'}</span></div>
-                      <small className="muted">de {b.produced} · {b.sold} vendida(s){b.allocated ? ` · ${b.allocated} separada(s)` : ''}{b.adjusted ? ` · ${b.adjusted} baixa(s)` : ''}</small>
+                      {/* Em estoque = fisicamente na prateleira (livres + separadas para pedidos). */}
+                      <div className="fg-qty"><b>{b.available + b.allocated}</b><span>em estoque</span></div>
+                      <small className="muted">{b.allocated ? `${b.available} livre(s) para venda · ${b.allocated} separada(s) para pedido` : `${b.available === 1 ? 'livre' : 'livres'} para venda`}<br />produzidas {b.produced} · vendidas {b.sold}{b.adjusted ? ` · ${b.adjusted} baixa(s)` : ''}</small>
                       {(g.allocations ?? []).map((a) => (
                         <div key={a.id} className="stack" style={{ gap: 4 }}>
                           <small><Badge tone="warning">{a.qty} separada(s)</Badge> para {db.parties.find((p) => p.id === a.customerId)?.name ?? 'o pedido'}{a.dueDate ? ` · entrega ${fmtDate(a.dueDate)}` : ''}</small>

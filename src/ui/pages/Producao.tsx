@@ -72,6 +72,9 @@ const COLUMNS: { id: Column; title: string; hint: string }[] = [
   { id: 'acabamento', title: 'Acabamento / inspeção', hint: 'Pós-processo e conferência.' },
   { id: 'concluidas', title: 'Produzidas', hint: 'Clique na peça: vai para o estoque ou foi entregue.' },
 ];
+const NEXT_LABEL: Record<Column, string> = {
+  fila: 'Iniciar produção →', producao: 'Enviar para acabamento →', acabamento: 'Concluir (produzida) →', concluidas: 'Estoque ou entregue →',
+};
 /** A partir desta data (v1.13) toda peça concluída espera a decisão estoque/entregue no quadro. */
 const columnOf = (o: ProductionOrder): Column | null =>
   QUEUE_STATUSES.includes(o.status) ? 'fila' : o.status === 'em_producao' ? 'producao'
@@ -99,7 +102,16 @@ function Quadro() {
   const drop = (col: Column) => {
     const o = db.orders.find((x) => x.id === dragId);
     setDragId(null); setOver(null);
-    if (!o) return;
+    if (o) moveTo(o, col);
+  };
+  /** Botão do cartão: manda para a próxima etapa (o mesmo que arrastar para a coluna seguinte). */
+  const advance = (o: ProductionOrder) => {
+    const from = columnOf(o);
+    if (from === 'concluidas') return setDeciding(o);
+    const next = COLUMNS[COLUMNS.findIndex((c) => c.id === from) + 1];
+    if (next) moveTo(o, next.id);
+  };
+  const moveTo = (o: ProductionOrder, col: Column) => {
     const from = columnOf(o);
     if (col === from) return;
     if (col === 'fila') return void toast('warning', 'Um pedido já iniciado não volta para “A produzir”.');
@@ -135,7 +147,7 @@ function Quadro() {
             <div className="kb-list">
               {cards[c.id].length === 0 && <div className="kb-empty">Nada aqui</div>}
               {cards[c.id].map((o) => (
-                <KanbanCard key={o.id} order={o} dragging={dragId === o.id}
+                <KanbanCard key={o.id} order={o} dragging={dragId === o.id} nextLabel={NEXT_LABEL[c.id]} onAdvance={() => advance(o)}
                   onDragStart={() => setDragId(o.id)} onDragEnd={() => { setDragId(null); setOver(null); }}
                   onOpen={() => (c.id === 'concluidas' ? setDeciding(o) : setSel(o))} />
               ))}
@@ -193,8 +205,8 @@ function DestinationDialog({ order: o, onClose, onDetails }: { order: Production
   );
 }
 
-function KanbanCard({ order: o, dragging, onDragStart, onDragEnd, onOpen }: {
-  order: ProductionOrder; dragging: boolean; onDragStart: () => void; onDragEnd: () => void; onOpen: () => void;
+function KanbanCard({ order: o, dragging, nextLabel, onAdvance, onDragStart, onDragEnd, onOpen }: {
+  order: ProductionOrder; dragging: boolean; nextLabel: string; onAdvance: () => void; onDragStart: () => void; onDragEnd: () => void; onOpen: () => void;
 }) {
   const { db } = useStore();
   const customer = db.parties.find((p) => p.id === o.customerId);
@@ -234,6 +246,7 @@ function KanbanCard({ order: o, dragging, onDragStart, onDragEnd, onOpen }: {
           {pay && pay.received.gt(0) && <Badge tone={pay.status === 'pago' ? 'success' : 'info'}>{pay.status === 'pago' ? 'pago' : `sinal ${fmtBRL(pay.received)}`}</Badge>}
         </div>
       </button>
+      <button type="button" className="kb-next" onClick={onAdvance} aria-label={`${o.number}: ${nextLabel.replace(' →', '')}`}>{nextLabel}</button>
     </article>
   );
 }

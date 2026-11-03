@@ -2,6 +2,9 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.19.1 — 02/11/2026
+- Corrige a configuração de publicação (vercel.json) que impediu a v1.19.0 de entrar no ar.
+
 ## v1.19.0 — 02/11/2026
 
 ### Novo: Catálogo digital (menu Catálogo)

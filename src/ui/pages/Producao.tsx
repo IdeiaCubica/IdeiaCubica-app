@@ -4,7 +4,7 @@ import { useStore } from '../store';
 import { navigate } from '../App';
 import type { OrderStatus, PieceDimensions, ProductionOrder, Project } from '../../domain/types';
 import {
-  ORDER_STATUS_LABEL, QUEUE_STATUSES, addProjectFileVersion, byDelivery, cancelOrder, checkAvailability, compareOrder, completeOrder, createManualOrder, deleteOrder, orderDeleteBlock, orderDestination, produceForStockNow, sendOrderToStock, setOrderImage,
+  ORDER_STATUS_LABEL, QUEUE_STATUSES, addProjectFileVersion, byDelivery, cancelOrder, checkAvailability, compareOrder, completeOrder, createManualOrder, deleteOrder, orderDeleteBlock, orderUndoBlockers, orderDestination, produceForStockNow, sendOrderToStock, setOrderImage,
   moveOrderStatus, orderDelivery, orderReservations, productionQueue, queueShortages, reserveOrderMaterials, returnOrderToQuote,
   saveProject, startOrder, stockEstimate, updateOrderPlanning,
 } from '../../domain/production';
@@ -12,7 +12,7 @@ import { lotBalance, lotLabel, reorderAnalysis } from '../../domain/inventory';
 import { materialLabel } from '../../domain/catalog';
 import { ImagePicker } from '../components/ImagePicker';
 import { DimensionsFields } from '../components/DimensionsFields';
-import { saleEconomics } from '../../domain/sales';
+import { cancelSale, saleEconomics } from '../../domain/sales';
 import { quoteItemAt, quoteItems } from '../../domain/quotes';
 import { clientQuoteSettings } from '../../domain/clientQuote';
 import { fmtDuration } from '../../domain/conversions';
@@ -386,6 +386,16 @@ function OrderModal({ order, onClose }: { order: ProductionOrder; onClose: () =>
     if (reason) run((d) => cancelOrder(d, o.id, reason), 'Cancelado e reservas liberadas.');
   };
   const delBlock = orderDeleteBlock(db, o);
+  const blockers = orderUndoBlockers(db, o);
+  const [titleOpenId, setTitleOpenId] = useState<string | null>(null);
+  const cancelSaleNow = async (saleId: string) => {
+    const s = db.sales.find((x) => x.id === saleId);
+    if (!s) return;
+    const reason = await confirm({ title: `Cancelar a venda ${s.number}?`, danger: true, confirmLabel: 'Cancelar venda', reasonLabel: 'Motivo',
+      text: 'A entrega é desfeita e a peça volta para “Produzidas”. Se o cliente já pagou, estorne o recebimento antes (botão “Ver recebimentos”).' });
+    if (reason) run((d) => cancelSale(d, saleId, reason), `Venda ${s.number} cancelada.`);
+  };
+  const saleReceipt = (saleId: string) => db.titles.find((t) => t.origin.kind === 'venda' && t.origin.id === saleId && t.direction === 'in' && t.status !== 'cancelado' && t.settlements.some((x) => !x.reversed));
   const remove = async () => {
     const reason = await confirm({ title: `Excluir ${o.number} por completo?`, danger: true, confirmLabel: 'Excluir definitivamente', reasonLabel: 'Motivo da exclusão',
       text: `${o.number} · ${o.description} sai do sistema: reservas e baixas de material são desfeitas (o filamento volta ao estoque)${o.finishedGoodId ? ', as peças produzidas desta produção são apagadas' : ''}${o.quoteId ? ' e a peça volta a “Aprovada” no orçamento' : ''}. Fica registrado só na trilha de auditoria.` });
@@ -395,7 +405,9 @@ function OrderModal({ order, onClose }: { order: ProductionOrder; onClose: () =>
   };
   const backToQuote = async () => {
     const reason = await confirm({ title: `Retornar ${o.number} para o orçamento?`, confirmLabel: 'Retornar para o orçamento', reasonLabel: 'Motivo (ex.: cliente mudou a cor)',
-      text: 'O pedido é cancelado, o material reservado é liberado e a peça volta a ficar “Aprovada” e editável no orçamento. Depois é só enviar para produção de novo.' });
+      text: o.status === 'concluida'
+        ? `A produção é desfeita: o filamento consumido volta ao estoque${o.finishedGoodId ? ' e as peças prontas geradas saem do estoque' : ''}. O pedido é cancelado e a peça volta a ficar “Aprovada” e editável no orçamento. Depois é só enviar para produção de novo.`
+        : 'O pedido é cancelado, o material reservado é liberado e a peça volta a ficar “Aprovada” e editável no orçamento. Depois é só enviar para produção de novo.' });
     if (!reason) return;
     const r = await run((d) => returnOrderToQuote(d, o.id, reason), 'Pedido retornado para o orçamento.');
     if (r.ok && o.quoteId) { onClose(); navigate(`orcamentos/${o.quoteId}`); }
@@ -412,7 +424,7 @@ function OrderModal({ order, onClose }: { order: ProductionOrder; onClose: () =>
       footer={<>
         <button className="btn ghost" onClick={onClose}>Fechar</button>
         <button className="btn ghost danger-text" onClick={remove} disabled={!!delBlock} title={delBlock ?? 'Apaga este pedido/produção do sistema'}>Excluir</button>
-        {open && o.quoteId && <button className="btn secondary" onClick={backToQuote}>Retornar para o orçamento</button>}
+        {o.status !== 'cancelada' && o.quoteId && <button className="btn secondary" onClick={backToQuote} disabled={blockers.length > 0} title={blockers.length ? 'Veja acima o que desfazer antes' : 'Cancela o pedido e a peça volta a ficar editável no orçamento'}>Retornar para o orçamento</button>}
         {open && !o.quoteId && <button className="btn danger" onClick={cancel}>Cancelar</button>}
         {purposeOf(o) === 'pedido' && o.status !== 'cancelada' && <button className="btn ghost" onClick={() => setCard(true)}>Cartão de agradecimento</button>}
         {(o.status === 'planejada' || o.status === 'aguardando_material') && <button className="btn secondary" onClick={reserveAction}>Reservar material</button>}
@@ -423,6 +435,13 @@ function OrderModal({ order, onClose }: { order: ProductionOrder; onClose: () =>
       </>}>
       <div className="stack">
         {o.status === 'cancelada' && <Alert tone="error" title="Cancelada">{o.cancelReason}</Alert>}
+        {blockers.length > 0 && <Alert tone="warning" title={`Para ${o.quoteId && o.status !== 'cancelada' ? 'retornar ao orçamento ou ' : ''}excluir ${o.number}, desfaça antes:`}>
+          <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>{blockers.map((b, i) => <li key={i} style={{ marginBottom: 6 }}>{b.text}{' '}
+            {b.saleId && saleReceipt(b.saleId) && <button type="button" className="btn ghost sm" onClick={() => setTitleOpenId(saleReceipt(b.saleId!)!.id)}>Ver recebimentos</button>}
+            {b.saleId && <button type="button" className="btn secondary sm" onClick={() => cancelSaleNow(b.saleId!)}>Cancelar venda</button>}
+            {b.titleId && <button type="button" className="btn secondary sm" onClick={() => setTitleOpenId(b.titleId!)}>Ver recebimentos</button>}
+            {!b.saleId && !b.titleId && <a href="#/estoque/pecas">Abrir peças produzidas</a>}</li>)}</ul>
+        </Alert>}
         <div className="row small muted">
           <span>Criada {fmtDateTime(o.createdAt)}</span>{o.startedAt && <span>· Início {fmtDateTime(o.startedAt)}</span>}{o.finishedAt && <span>· Término {fmtDateTime(o.finishedAt)}</span>}
         </div>
@@ -469,6 +488,7 @@ function OrderModal({ order, onClose }: { order: ProductionOrder; onClose: () =>
       {completing && <CompleteForm order={o} onClose={() => setCompleting(false)} />}
       {planning && <PlanningForm order={o} onClose={() => setPlanning(false)} />}
       {receiving && pay && <TitleModal title={pay.title} onClose={() => setReceiving(false)} />}
+      {titleOpenId && db.titles.find((x) => x.id === titleOpenId) && <TitleModal title={db.titles.find((x) => x.id === titleOpenId)!} onClose={() => setTitleOpenId(null)} />}
       {card && <ThankYouCardDialog customerName={db.parties.find((p) => p.id === o.customerId)?.name} orderNumber={o.number} onClose={() => setCard(false)} />}
       {confirmEl}
     </Modal>

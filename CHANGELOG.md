@@ -2,6 +2,15 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.17.0 — 02/11/2026
+
+### Retornar ao orçamento em qualquer etapa
+- **Retornar para o orçamento** agora aparece em todo pedido de orçamento (fila, produzindo, produzido, no estoque
+  ou entregue). Já produzido: a produção é desfeita (o filamento consumido volta ao estoque e as peças prontas geradas saem).
+- Pedido de cliente enviado ao estoque (peças separadas para ele) não fica mais travado para excluir ou retornar.
+- Quando algo precisa ser desfeito antes, o pedido mostra o aviso **“desfaça antes”** com os botões no próprio pedido:
+  **Ver recebimentos** (para estornar), **Cancelar venda** e o link para as peças produzidas.
+
 ## v1.16.0 — 02/11/2026
 
 ### Recebimento do cliente desde o “A produzir”

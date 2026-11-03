@@ -15,7 +15,8 @@ import { addMovement, lotBalance, releaseAll, reserve } from './inventory';
 import { materialLabel } from './catalog';
 import { MAX_IMAGE_CHARS, emptyQuoteInput, quoteItemImage, evaluateQuote, isItemLocked, itemState, latestVersion, quoteItem, quoteItemAt, quoteItems, refreshQuoteStatus, resolveParams, saveQuote, summarize, type QuoteItemDraft } from './quotes';
 import { computeCosts, laborTotals, type CostResult } from './costing';
-import { dropOrderReceivable, orderOnTrack, provisionOrderReceivable } from './orderReceivables';
+import { dropOrderReceivable, orderOnTrack, orderReceivable, provisionOrderReceivable } from './orderReceivables';
+import { titlePaid } from './finance';
 
 export const ORDER_STATUS_LABEL: Record<OrderStatus, string> = {
   planejada: 'Planejada', aguardando_material: 'Aguardando material', pronta: 'Pronta para produção', em_producao: 'Em produção',
@@ -127,17 +128,27 @@ export function createOrderFromQuote(db: DB, quoteId: ID, opts: { dueDate?: stri
 }
 
 /**
- * Retorna um pedido (ainda não concluído) para o orçamento: cancela o pedido,
- * libera o material reservado e a peça volta a ficar "Aprovada" e editável.
+ * Retorna um pedido para o orçamento, em qualquer etapa: cancela o pedido e a peça volta a ficar
+ * "Aprovada" e editável. Na fila/produzindo, libera o material reservado; já produzido, desfaz a
+ * produção (o filamento consumido volta ao estoque e as peças prontas geradas são apagadas).
+ * Antes, é preciso desfazer o que veio depois (venda, recebimento do cliente): ver orderUndoBlockers.
  */
 export function returnOrderToQuote(db: DB, orderId: ID, reason: string) {
   const o = byId(db.orders, orderId, 'Pedido');
   assert(o.quoteId, 'Este pedido não veio de um orçamento.');
-  assert(o.status !== 'concluida', 'Pedido já produzido não pode voltar para o orçamento.');
   assert(o.status !== 'cancelada', 'Pedido já cancelado.');
   const why = requireText(reason, 'o motivo');
+  const blockers = orderUndoBlockers(db, o);
+  if (blockers.length) throw new BusinessError(`Para retornar ${o.number}: ${blockers.map((b) => b.text).join(' ')}`);
   dropOrderReceivable(db, o);
-  releaseAll(db, o.id, 'op', 'liberacao_cancelamento');
+  if (o.status === 'concluida') {
+    // Desfaz a produção: o consumo de material deixa de existir e as peças prontas geradas saem do estoque.
+    db.movements = db.movements.filter((m) => !(m.ref.kind === 'op' && m.ref.id === o.id));
+    if (o.finishedGoodId) db.finishedGoods = db.finishedGoods.filter((g) => g.id !== o.finishedGoodId);
+    delete o.finishedGoodId; delete o.destination; delete o.destinationAt;
+  } else {
+    releaseAll(db, o.id, 'op', 'liberacao_cancelamento');
+  }
   o.status = 'cancelada';
   o.cancelReason = `Retornado para o orçamento: ${why}`;
   const q = db.quotes.find((x) => x.id === o.quoteId);
@@ -679,12 +690,32 @@ export function setOrderImage(db: DB, orderId: ID, image: string | null) {
   audit(db, 'Foto da produção alterada', o.number);
 }
 
+/**
+ * O que precisa ser desfeito antes de retornar ou excluir o pedido: venda registrada, recebimento
+ * do cliente e peças prontas movimentadas por outro motivo. A separação das peças para o próprio
+ * pedido (pedido de cliente enviado ao estoque) não impede: some junto com as peças.
+ */
+export function orderUndoBlockers(db: DB, o: ProductionOrder): { text: string; saleId?: ID; titleId?: ID }[] {
+  const out: { text: string; saleId?: ID; titleId?: ID }[] = [];
+  const fg = o.finishedGoodId ? db.finishedGoods.find((g) => g.id === o.finishedGoodId) : undefined;
+  for (const s of db.sales.filter((x) => x.status === 'ativa' && (x.orderId === o.id || (!!fg && x.finishedGoodId === fg.id)))) {
+    out.push({ text: `Cancele a venda ${s.number} (a entrega é desfeita; se já houve recebimento, estorne-o antes).`, saleId: s.id });
+  }
+  const pay = orderReceivable(db, o.id);
+  if (pay && titlePaid(pay).gt(0)) out.push({ text: `Estorne o recebimento do cliente (R$ ${titlePaid(pay).toFixed(2)}) na conta do pedido.`, titleId: pay.id });
+  if (fg) {
+    const own = (a: NonNullable<FinishedGood['allocations']>[number]) => a.quoteId === o.quoteId && (!o.quoteItemId || a.itemId === o.quoteItemId);
+    const others = (fg.allocations ?? []).some((a) => !own(a));
+    const quoted = db.quotes.some((q) => q.versions.some((v) => v.items.some((it) => it.finishedGoodId === fg.id)));
+    if (fg.adjustments.length || others || quoted) out.push({ text: `As peças produzidas (${fg.code}) foram baixadas, separadas para outro pedido ou usadas em outro orçamento: desfaça isso em Estoque → Peças produzidas.` });
+  }
+  return out;
+}
+
 /** Motivo pelo qual o pedido/produção não pode ser excluído (null = pode). */
 export function orderDeleteBlock(db: DB, o: ProductionOrder): string | null {
-  if (db.sales.some((s) => s.orderId === o.id && s.status === 'ativa')) return 'Há venda registrada deste pedido. Cancele a venda antes de excluir.';
-  const fg = o.finishedGoodId ? db.finishedGoods.find((g) => g.id === o.finishedGoodId) : undefined;
-  if (fg && !isUntouchedFinishedGood(db, fg.id)) return `As peças produzidas (${fg.code}) já foram vendidas, baixadas, separadas ou orçadas. Desfaça isso antes de excluir.`;
-  return null;
+  const b = orderUndoBlockers(db, o);
+  return b.length ? b.map((x) => x.text).join(' ') : null;
 }
 
 /**

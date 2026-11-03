@@ -5,7 +5,8 @@ import { saveAccount, saveChannel, saveMaterial, saveParty } from './catalog';
 import { registerPurchase } from './purchases';
 import { cancelTitle, settleTitle, titleOpen } from './finance';
 import { emptyQuoteInput, latestVersion, saveQuote, setItemStatus } from './quotes';
-import { completeOrder, createOrdersFromQuote, orderReservations, returnOrderToQuote, startOrder } from './production';
+import { completeOrder, createOrdersFromQuote, orderDeleteBlock, orderReservations, orderUndoBlockers, returnOrderToQuote, sendOrderToStock, startOrder } from './production';
+import { itemState } from './quotes';
 import { cancelSale, managementResult, registerSale, saleEditBlock, saleStatus } from './sales';
 import { orderPayment, orderReceivable, pendingOrderReceivables, provisionOrderReceivables } from './orderReceivables';
 import { cashStatement } from './reports';
@@ -110,6 +111,35 @@ describe('Conta a receber do pedido', () => {
     t.settlements[0].reversed = { at: '2026-11-03T00:00:00Z', reason: 'teste' };
     returnOrderToQuote(db, o.id, 'mudou a cor');
     expect(orderReceivable(db, o.id)).toBeUndefined();
+  });
+
+  it('pedido já produzido e enviado ao estoque (separado para o cliente) pode voltar ao orçamento ou ser excluído', () => {
+    const { o } = newOrder();
+    finish(o);
+    const fg = sendOrderToStock(db, o.id);
+    expect(orderDeleteBlock(db, db.orders.find((x) => x.id === o.id)!)).toBeNull();
+    const consumed = db.movements.filter((m) => m.ref.id === o.id).length;
+    expect(consumed).toBeGreaterThan(0);
+    returnOrderToQuote(db, o.id, 'cliente mudou a cor');
+    const back = db.orders.find((x) => x.id === o.id)!;
+    expect(back.status).toBe('cancelada');
+    expect(db.finishedGoods.some((g) => g.id === fg.id)).toBe(false);
+    expect(db.movements.filter((m) => m.ref.id === o.id)).toHaveLength(0); // filamento volta ao estoque
+    expect(orderReceivable(db, o.id)).toBeUndefined();
+    const q = db.quotes.find((x) => x.id === back.quoteId)!;
+    expect(itemState(db, q, back.quoteItemId!)).toBe('aprovado');
+  });
+
+  it('com venda registrada: pede para cancelar a venda antes; depois retorna', () => {
+    const { o, value, cli } = newOrder();
+    finish(o);
+    const s = sell(o, cli, value, later);
+    const cur = () => db.orders.find((x) => x.id === o.id)!;
+    expect(orderUndoBlockers(db, cur()).map((b) => b.saleId)).toEqual([s.id]);
+    expect(() => returnOrderToQuote(db, o.id, 'erro')).toThrow(/Cancele a venda/);
+    cancelSale(db, s.id, 'entrega registrada por engano');
+    returnOrderToQuote(db, o.id, 'erro');
+    expect(cur().status).toBe('cancelada');
   });
 
   it('pedidos já na esteira (sem conta) são levados para Contas a receber uma única vez', () => {

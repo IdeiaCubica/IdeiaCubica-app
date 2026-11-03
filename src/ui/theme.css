@@ -491,3 +491,41 @@ details.params-details[open] > summary { border-bottom: 1px solid var(--border);
 }
 @page cartao { size: 120mm 120mm; margin: 0; }
 @media print { .ty-print .ty-page { page: cartao; } }
+
+/* ---------------- Catálogo digital (área administrativa) ---------------- */
+.cat-swatch { width: 34px; height: 34px; border-radius: 9px; flex: none; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.08); }
+.theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.theme-card { all: unset; cursor: pointer; display: flex; flex-direction: column; border-radius: 12px; overflow: hidden; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line, #e5e7eb); }
+.theme-card.on { box-shadow: inset 0 0 0 3px var(--ic-tecnologia); }
+.theme-card:focus-visible { outline: 2px solid var(--ic-tecnologia); outline-offset: 2px; }
+.theme-hero { height: 58px; display: grid; place-items: center; font-size: 22px; }
+.theme-name { font-weight: 700; font-size: 13px; padding: 8px 10px 2px; }
+.theme-dots { display: flex; gap: 4px; padding: 2px 10px 10px; }
+.theme-dots i { width: 14px; height: 14px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.15); }
+.cat-head { align-items: flex-end; gap: 16px; flex-wrap: wrap; }
+.cat-title-input { font: inherit; font-size: 28px; font-weight: 800; border: 1px solid transparent; background: transparent; border-radius: 8px; padding: 2px 6px; margin-left: -6px; width: 100%; color: inherit; }
+.cat-title-input:hover, .cat-title-input:focus { border-color: var(--line, #d1d5db); background: var(--surface); outline: none; }
+.cat-editor { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+@media (max-width: 1100px) { .cat-editor { grid-template-columns: 1fr; } }
+.cat-panel { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.cat-preview-col { position: sticky; top: 12px; min-width: 0; }
+.cat-preview { border-radius: 18px; overflow: auto; max-height: calc(100vh - 140px); background: #e9ebef; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.06); }
+.cat-preview.celular { width: 390px; max-width: 100%; margin: 0 auto; border: 10px solid #1d232b; border-radius: 34px; }
+.cat-row { display: flex; align-items: center; gap: 12px; }
+.cat-row + .cat-row { border-top: 1px solid var(--line, #eef0f3); padding-top: 8px; }
+.cat-thumb-ph { width: 44px; height: 44px; border-radius: 8px; background: rgb(13 25 37 / 0.08); flex: none; }
+.cat-checklist { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow: auto; padding: 4px 2px; }
+.cat-pick-img { all: unset; cursor: pointer; width: 56px; height: 56px; border-radius: 10px; overflow: hidden; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.1); }
+.cat-pick-img.on { box-shadow: 0 0 0 3px var(--ic-tecnologia); }
+.cat-pick-img img { width: 100%; height: 100%; object-fit: cover; }
+.cat-banner-box { border: 1px dashed var(--line, #d1d5db); border-radius: 12px; padding: 12px; }
+.cat-section-input { font: inherit; font-weight: 700; font-size: 17px; border: 1px solid var(--line, #d1d5db); border-radius: 8px; padding: 6px 10px; min-width: 0; }
+.cat-entries { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
+.cat-entries li { display: flex; align-items: center; gap: 6px; }
+.cat-entries select { max-width: 160px; }
+.cat-radio { border: 1px solid var(--line, #e5e7eb); border-radius: 12px; padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; }
+.cat-radio legend { font-weight: 700; padding: 0 4px; }
+.cat-qr { width: 220px; height: 220px; border-radius: 12px; box-shadow: 0 2px 12px rgb(0 0 0 / 0.1); }
+.seg { display: inline-flex; border-radius: 10px; overflow: hidden; box-shadow: inset 0 0 0 1px var(--line, #d1d5db); }
+.seg button { all: unset; cursor: pointer; padding: 6px 12px; font-size: 13px; font-weight: 600; }
+.seg button.on { background: var(--ic-tecnologia); color: #fff; }

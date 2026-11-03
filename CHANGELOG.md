@@ -2,6 +2,38 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.19.0 — 02/11/2026
+
+### Novo: Catálogo digital (menu Catálogo)
+**Requer rodar no Supabase:** `supabase/migrations/20261103000000_v1_12_catalogo.sql` (SQL Editor → colar → Run).
+
+- **Lista de catálogos:** nome e temática, data de criação, situação (Rascunho, Publicado, Expirado), visitas, validade do
+  link e ações (editar, duplicar, publicar/atualizar, visualizar e compartilhar, expirar, excluir).
+- **12 temáticas** com cores, fontes, enfeites e banner próprios: Natal, Ano Novo, Carnaval, Black Friday, Dia das Mães,
+  Dia dos Pais, Dia dos Namorados, Páscoa, Dia das Crianças, Halloween, Liquidação de Verão e Minimalista/Profissional.
+  Trocar a temática muda só o visual.
+- **Produtos:** busca nas peças dos orçamentos e nas peças prontas do estoque. Cada produto é uma **cópia**: nome comercial,
+  descrição, foto própria (ou a da peça), preço original, preço promocional, exibir ou não o preço, selo e ordem.
+  Editar o catálogo nunca altera o orçamento; mudar ou excluir o orçamento não estraga o catálogo.
+- **Kits promocionais:** dois ou mais produtos do catálogo, com nome, descrição, imagem, preço de referência (soma dos
+  produtos), preço promocional e selo. Aparecem em destaque com a composição, o desconto e quanto o cliente economiza.
+- **Selos:** MAIS VENDIDO, LANÇAMENTO, OFERTA ESPECIAL, EXCLUSIVO, ÚLTIMAS UNIDADES, COMBO PROMOCIONAL, PRESENTE IDEAL,
+  DESTAQUE ou texto próprio. **Banners** no cabeçalho e antes de cada seção.
+- **Seções** (Destaques, Ofertas especiais, Kits promocionais, Mais vendidos, Novidades, Produtos selecionados ou nome
+  próprio), com ordem das seções e dos produtos.
+- **Personalização:** nome da loja, logotipo, capa, texto de apresentação, cores principais, contatos e validade da campanha.
+- **Pré-visualização ao vivo** em modo celular e computador. Grava sozinho a cada alteração.
+- **Publicação:** link aleatório e não sequencial (`/c/<12 caracteres>`), sem expiração, com data e hora, ou expiração
+  manual. Atualizar no mesmo link, reativar ou gerar um link novo (os antigos ficam no histórico).
+  Copiar, compartilhar, WhatsApp, **QR Code** (com download) e ver o catálogo publicado.
+- **Página do cliente:** sem login e sem instalar nada, feita para o celular; capa, banners, seções, produtos e kits,
+  preços “De/Por”, abrir produto, compartilhar produto e **botão fixo de WhatsApp** com a mensagem do produto.
+  Link expirado mostra uma página amigável. Sem checkout nem pagamento nesta versão.
+- **Segurança:** o link e a validade são conferidos no banco a cada acesso; o cliente só recebe a cópia publicada
+  (nunca custos, margens ou dados dos orçamentos). Não existe lista pública de catálogos.
+- **Estatísticas:** visitas (uma por sessão), produtos abertos, cliques em contato e compartilhamentos, com data e hora.
+  Nenhum dado pessoal do visitante é guardado.
+
 ## v1.18.0 — 02/11/2026
 
 ### Estoque de peças produzidas

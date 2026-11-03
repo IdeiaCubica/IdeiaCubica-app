@@ -9,6 +9,7 @@ import { Estoque } from './pages/Estoque';
 import { Producao } from './pages/Producao';
 import { Financeiro } from './pages/Financeiro';
 import { Vendas } from './pages/Vendas';
+import { Catalogo } from './pages/Catalogo';
 import { Parametros } from './pages/Parametros';
 import { Configuracoes } from './pages/Configuracoes';
 import { purchaseAlerts } from '../domain/inventory';
@@ -38,6 +39,7 @@ const NAV: { id: string; label: string; icon: string }[] = [
   { id: 'producao', label: 'Produção', icon: 'M12 2l9 5v10l-9 5-9-5V7zM12 22V12M21 7l-9 5-9-5' },
   { id: 'estoque', label: 'Estoque', icon: 'M3 7l9-4 9 4v10l-9 4-9-4zM3 7l9 4 9-4M12 11v10' },
   { id: 'vendas', label: 'Vendas', icon: 'M20 12V8H6a2 2 0 010-4h12v4M4 6v12a2 2 0 002 2h14v-4M18 12a2 2 0 000 4h4v-4z' },
+  { id: 'catalogo', label: 'Catálogo', icon: 'M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z' },
   { id: 'compras', label: 'Compras', icon: 'M6 6h15l-2 9H8zM6 6L5 3H2M9 20a1 1 0 100-2 1 1 0 000 2zM18 20a1 1 0 100-2 1 1 0 000 2z' },
   { id: 'financeiro', label: 'Financeiro', icon: 'M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6' },
   { id: 'cadastros', label: 'Cadastros', icon: 'M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8zM19 8v6M22 11h-6' },
@@ -65,6 +67,7 @@ export function App() {
     case 'producao': content = <Producao param={param} />; break;
     case 'financeiro': content = <Financeiro param={param} />; break;
     case 'vendas': content = <Vendas />; break;
+    case 'catalogo': content = <Catalogo param={param} />; break;
     case 'config': content = <Configuracoes param={param} />; break;    default: content = <Painel />;
   }
   const alerts = purchaseAlerts(db);

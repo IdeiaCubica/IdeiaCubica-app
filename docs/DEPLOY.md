@@ -40,6 +40,12 @@ E rode `supabase/migrations/20261030000000_v1_11_fotos_separadas.sql` (v1.11): c
 fica guardada uma única vez. As gravações passam a enviar só os dados (sem as fotos), o que deixa salvar bem mais rápido.
 Sem esse arquivo o sistema continua funcionando do jeito antigo.
 
+E rode `supabase/migrations/20261103000000_v1_12_catalogo.sql` (v1.19, Catálogo digital): cria as tabelas `catalogs`,
+`catalog_links` e `catalog_events` (só membros do sistema leem e editam) e as funções públicas `get_public_catalog`,
+`get_public_catalog_image` e `track_catalog_event`, que conferem o link e a validade no banco e devolvem só a cópia
+publicada. O cliente (sem login) não lê nenhuma tabela. A página pública é servida em `/c/<link>` (regra em `vercel.json`).
+Requer a v1.11 (fotos em `app_images`). Sem esse arquivo, a aba Catálogo mostra o aviso para rodá-lo.
+
 ## Passo 3 — Criar o usuário e bloquear novos cadastros
 
 1. **Authentication → Users → Add user → Create new user**: seu e-mail e uma senha forte; marque

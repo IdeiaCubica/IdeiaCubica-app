@@ -13,7 +13,7 @@ import type { ID, ISODate, ISODateTime } from './types';
 import type { DecStr } from './money';
 import { D, cents } from './money';
 import { BusinessError, assert, newId, nowISO, requireText } from './core';
-import { CATALOG_THEMES, themeOf, type ThemeId } from './catalogThemes';
+import { CATALOG_THEMES, themeOf, type CustomLayout, type ThemeId } from './catalogThemes';
 
 /* ---------------------------------------------------------------- tipos */
 export const BADGES = ['MAIS VENDIDO', 'LANÇAMENTO', 'OFERTA ESPECIAL', 'EXCLUSIVO', 'ÚLTIMAS UNIDADES', 'COMBO PROMOCIONAL', 'PRESENTE IDEAL', 'DESTAQUE'] as const;
@@ -72,6 +72,31 @@ export interface CatalogSettings {
   contact: CatalogContact;
   /** Validade da campanha (informativa, exibida ao cliente). */
   campaignUntil: ISODate | null;
+  /** Carrinho do cliente: monta o pedido e envia a lista pelo WhatsApp. Desconto por valor mínimo. */
+  cart: CartSettings;
+  /** Botão "PERSONALIZADO": o cliente pede uma peça sob medida pelo WhatsApp. */
+  customRequest: { enabled: boolean; text: string };
+  /** Layout próprio (temática "Personalizado"). */
+  custom: CustomLayout | null;
+}
+
+export interface CartSettings {
+  enabled: boolean;
+  /** Pedido ACIMA deste valor ganha o desconto. */
+  discountAbove: DecStr | null;
+  discountPct: DecStr | null;
+}
+
+export const DEFAULT_CART: CartSettings = { enabled: true, discountAbove: '200', discountPct: '5' };
+export const DEFAULT_CUSTOM_REQUEST = { enabled: true, text: 'Quer uma peça do seu jeito? Peça um produto PERSONALIZADO.' };
+
+/** Completa catálogos e publicações antigos com os campos novos (carrinho, personalizado, layout próprio). */
+export function withDefaults<T extends { settings: Partial<CatalogSettings> }>(doc: T): T {
+  const s = doc.settings as CatalogSettings;
+  s.cart ??= { ...DEFAULT_CART };
+  s.customRequest ??= { ...DEFAULT_CUSTOM_REQUEST };
+  s.custom ??= null;
+  return doc;
 }
 
 export interface CatalogDoc {
@@ -115,6 +140,7 @@ export function emptyCatalogDoc(storeName: string): CatalogDoc {
     settings: {
       storeName, logo: null, cover: null, intro: '', primaryColor: null, accentColor: null, headerBanner: null,
       contact: { whatsapp: '', phone: '', instagram: '', email: '', site: '' }, campaignUntil: null,
+      cart: { ...DEFAULT_CART }, customRequest: { ...DEFAULT_CUSTOM_REQUEST }, custom: null,
     },
     sections: [section('Destaques'), section('Produtos selecionados')],
     products: [], kits: [],
@@ -331,3 +357,43 @@ export function whatsappNumber(raw: string): string | null {
 }
 
 export const themeName = (id: string) => themeOf(id).name;
+
+/* ---------------------------------------------------------------- carrinho do cliente */
+export interface CartLine { id: ID; name: string; type: 'produto' | 'kit'; qty: number; unitPrice: DecStr | null }
+
+/** Preço que o cliente paga por unidade: promocional, senão o normal; sem preço exibido = a combinar. */
+export const itemUnitPrice = (i: Pick<PublicItem, 'price' | 'promoPrice'>): DecStr | null => i.promoPrice ?? i.price ?? null;
+
+/** Total previsto do carrinho: subtotal, desconto (pedido acima do mínimo) e total. Itens sem preço ficam "a combinar". */
+export function cartTotals(lines: CartLine[], cart: CartSettings) {
+  const priced = lines.filter((l) => l.unitPrice !== null && l.qty > 0);
+  const subtotal = cents(priced.reduce((s, l) => s.plus(D(l.unitPrice!).times(l.qty)), D(0)));
+  const above = cart.discountAbove ? D(cart.discountAbove) : null;
+  const pct = cart.discountPct ? D(cart.discountPct) : null;
+  const eligible = !!(above && pct && pct.gt(0) && subtotal.gt(above));
+  const discount = eligible ? cents(subtotal.times(pct!).div(100)) : D(0);
+  const missing = above && pct && pct.gt(0) && !eligible ? cents(above.minus(subtotal)) : null;
+  return {
+    subtotal, discount, total: subtotal.minus(discount), eligible,
+    /** Quanto falta para passar do mínimo (para incentivar). */
+    missing: missing && missing.gte(0) ? missing : null,
+    toQuote: lines.filter((l) => l.unitPrice === null && l.qty > 0).length,
+    pieces: lines.reduce((s, l) => s + l.qty, 0),
+  };
+}
+
+const brl = (d: ReturnType<typeof D>) => `R$ ${d.toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, '.')}`;
+
+/** Mensagem do WhatsApp com a lista do carrinho. */
+export function cartMessage(catalogName: string, lines: CartLine[], cart: CartSettings, note?: string): string {
+  const t = cartTotals(lines, cart);
+  const rows = lines.filter((l) => l.qty > 0).map((l) =>
+    `• ${l.qty}x ${l.name}${l.type === 'kit' ? ' (kit)' : ''} — ${l.unitPrice ? `${brl(D(l.unitPrice))} cada = ${brl(D(l.unitPrice).times(l.qty))}` : 'valor a combinar'}`);
+  const out = [`Olá! Montei meu pedido pelo catálogo "${catalogName}":`, '', ...rows, ''];
+  out.push(`Subtotal: ${brl(t.subtotal)}`);
+  if (t.eligible) out.push(`Desconto de ${D(cart.discountPct!).toString().replace('.', ',')}% (pedido acima de ${brl(D(cart.discountAbove!))}): −${brl(t.discount)}`);
+  out.push(`*Total previsto: ${brl(t.total)}*${t.toQuote ? ` + ${t.toQuote} item(ns) a combinar` : ''}`);
+  if (note?.trim()) out.push('', `Observação: ${note.trim()}`);
+  out.push('', 'Podemos combinar a produção e o pagamento?');
+  return out.join('\n');
+}

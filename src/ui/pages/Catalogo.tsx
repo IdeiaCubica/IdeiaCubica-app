@@ -5,6 +5,7 @@ import { navigate } from '../App';
 import type { CatalogRecord, CatalogStatus } from '../../domain/catalogo';
 import { activeLink, catalogStatus, duplicateCatalog, newCatalog } from '../../domain/catalogo';
 import { CATALOG_THEMES, themeOf } from '../../domain/catalogThemes';
+const PICKABLE = [...CATALOG_THEMES, themeOf('personalizado')];
 import { fmtDate, fmtDateTime } from '../../domain/core';
 import { catalogRepository } from '../../data/catalogRepo';
 import { Alert, Badge, DataTable, Empty, Kpi, Modal, PageHead, TextField, useConfirm, type Tone } from '../components/ui';
@@ -107,7 +108,7 @@ function CatalogList() {
 export function ThemePicker({ value, onChange }: { value: string; onChange: (id: string) => void }) {
   return (
     <div className="theme-grid" role="radiogroup" aria-label="Temática">
-      {CATALOG_THEMES.map((t) => (
+      {PICKABLE.map((t) => (
         <button key={t.id} type="button" role="radio" aria-checked={value === t.id} className={`theme-card${value === t.id ? ' on' : ''}`} onClick={() => onChange(t.id)}>
           <span className="theme-hero" style={{ background: t.hero }}>{t.ornaments.slice(0, 2).join(' ')}</span>
           <span className="theme-name">{t.name}</span>

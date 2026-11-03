@@ -10,9 +10,9 @@ import type { CatalogBanner, CatalogDoc, CatalogKit, CatalogProduct, CatalogReco
 import { productCandidates, productFromCandidate, type ProductCandidate } from '../../domain/catalogoFontes';
 import {
   BADGES, SECTION_PRESETS, addProducts, addSection, catalogStatus, discountOf, kitReferencePrice, moveEntry, moveEntryToSection, moveSection,
-  publicSnapshot, removeKit, removeProduct, removeSection, saveKit, updateProduct,
+  publicSnapshot, withDefaults, removeKit, removeProduct, removeSection, saveKit, updateProduct,
 } from '../../domain/catalogo';
-import { themeOf, type ThemeId } from '../../domain/catalogThemes';
+import { CATALOG_THEMES, FONT_CHOICES, ICON_SUGGESTIONS, customFromTheme, themeOf, type CustomLayout, type ThemeId } from '../../domain/catalogThemes';
 import { fmtBRL, fmtPct } from '../../domain/money';
 import { catalogRepository } from '../../data/catalogRepo';
 import { Alert, Badge, Check, DateField, Empty, Field, Modal, NumField, SelectField, Tabs, TextArea, TextField, dec, useConfirm } from '../components/ui';
@@ -36,7 +36,7 @@ export function CatalogEditor({ id }: { id: string }) {
   const [sharing, setSharing] = useState(false);
   const dirty = useRef(false);
 
-  const load = () => repo.get(id).then(setRec).catch((e) => { setError(e instanceof Error ? e.message : String(e)); setRec(null); });
+  const load = () => repo.get(id).then((r) => { if (r) withDefaults(r.data); setRec(r); }).catch((e) => { setError(e instanceof Error ? e.message : String(e)); setRec(null); });
   useEffect(() => { load(); }, [id]);
 
   // Gravação automática ~1 s depois da última alteração.
@@ -424,8 +424,14 @@ function LookTab({ rec, edit }: { rec: CatalogRecord; edit: (fn: (r: CatalogReco
       <div className="card"><div className="card-body stack">
         <h3 style={{ margin: 0 }}>Temática</h3>
         <p className="small muted" style={{ margin: 0 }}>Trocar a temática muda só o visual: produtos, preços, kits e textos continuam.</p>
-        <ThemePicker value={rec.theme} onChange={(id) => edit((r) => { r.theme = id as ThemeId; })} />
+        <ThemePicker value={rec.theme} onChange={(id) => edit((r) => {
+          // Primeira vez no "Personalizado": começa com as cores e fontes da temática atual.
+          if (id === 'personalizado' && !r.data.settings.custom) r.data.settings.custom = customFromTheme(themeOf(r.theme));
+          r.theme = id as ThemeId;
+        })} />
       </div></div>
+      {rec.theme === 'personalizado' && s.custom && <CustomLayoutEditor value={s.custom} onChange={(c) => edit((r) => { r.data.settings.custom = c; })}
+        onReset={(from) => edit((r) => { r.data.settings.custom = customFromTheme(themeOf(from)); })} />}
       <div className="card"><div className="card-body stack">
         <h3 style={{ margin: 0 }}>Cores principais</h3>
         <div className="grid g2">{color('Cor principal', 'primaryColor', t.colors.primary)}{color('Cor de destaque', 'accentColor', t.colors.accent)}</div>
@@ -463,6 +469,66 @@ function StoreTab({ doc, edit }: { doc: CatalogDoc; edit: (fn: (d: CatalogDoc) =
           <TextField label="Site" value={c.site} onChange={contact('site')} />
         </div>
       </div></div>
+      <div className="card"><div className="card-body stack">
+        <h3 style={{ margin: 0 }}>Carrinho do cliente</h3>
+        <p className="small muted" style={{ margin: 0 }}>O cliente monta o pedido (produtos e kits), vê o total previsto e envia a lista pelo WhatsApp para vocês negociarem.</p>
+        <Check label="Permitir montar o pedido (carrinho)" checked={s.cart.enabled} onChange={(v) => edit((d) => { d.settings.cart.enabled = v; })} />
+        {s.cart.enabled && <div className="grid g2">
+          <NumField label="Desconto para pedidos acima de" suffix="R$" value={br(s.cart.discountAbove)} onChange={(v) => edit((d) => { d.settings.cart.discountAbove = dec(v); })} hint="Vazio = sem desconto" />
+          <NumField label="Desconto" suffix="%" value={br(s.cart.discountPct)} onChange={(v) => edit((d) => { const p = dec(v); if (p && (Number(p) < 0 || Number(p) > 90)) throw new Error('Desconto entre 0% e 90%.'); d.settings.cart.discountPct = p; })} hint="Ex.: 5 = 5% sobre o total" />
+        </div>}
+      </div></div>
+      <div className="card"><div className="card-body stack">
+        <h3 style={{ margin: 0 }}>Botão PERSONALIZADO</h3>
+        <Check label="Mostrar o botão para pedir um produto personalizado pelo WhatsApp" checked={s.customRequest.enabled} onChange={(v) => edit((d) => { d.settings.customRequest.enabled = v; })} />
+        {s.customRequest.enabled && <TextField label="Texto ao lado do botão" value={s.customRequest.text} onChange={(v) => edit((d) => { d.settings.customRequest.text = v.slice(0, 120); })} />}
+      </div></div>
     </div>
   );
 }
+
+/* ------------------------------------------------------------------ Layout próprio */
+function CustomLayoutEditor({ value: c, onChange, onReset }: { value: CustomLayout; onChange: (c: CustomLayout) => void; onReset: (themeId: string) => void }) {
+  const [base, setBase] = useState('natal');
+  const [icon, setIcon] = useState('');
+  const colors: [keyof CustomLayout['colors'], string][] = [
+    ['bg', 'Fundo da página'], ['surface', 'Fundo dos cartões'], ['text', 'Texto'], ['muted', 'Texto secundário'],
+    ['primary', 'Cor principal (botões)'], ['onPrimary', 'Texto sobre a principal'], ['accent', 'Cor de destaque'], ['price', 'Preço'],
+  ];
+  const setColor = (k: keyof CustomLayout['colors'], v: string) => onChange({ ...c, colors: { ...c.colors, [k]: v } });
+  const toggleIcon = (i: string) => onChange({ ...c, ornaments: c.ornaments.includes(i) ? c.ornaments.filter((x) => x !== i) : [...c.ornaments, i].slice(-4) });
+  return (
+    <div className="card"><div className="card-body stack">
+      <h3 style={{ margin: 0 }}>Meu layout</h3>
+      <p className="small muted" style={{ margin: 0 }}>Escolha cores, fontes, ícones e uma imagem de fundo. A pré-visualização ao lado mostra na hora.</p>
+      <div className="row" style={{ alignItems: 'flex-end' }}>
+        <div className="grow"><SelectField label="Recomeçar a partir de uma temática" value={base} onChange={setBase} options={CATALOG_THEMES_OPTIONS} /></div>
+        <button type="button" className="btn ghost sm" onClick={() => onReset(base)}>Copiar cores e fontes</button>
+      </div>
+      <div className="cat-colors">{colors.map(([k, label]) => (
+        <label key={k} className="cat-color"><input type="color" value={c.colors[k]} onChange={(e) => setColor(k, e.target.value)} /><span>{label}</span></label>
+      ))}</div>
+      <div className="grid g2">
+        <label className="cat-color"><input type="color" value={c.heroFrom} onChange={(e) => onChange({ ...c, heroFrom: e.target.value })} /><span>Capa — cor 1</span></label>
+        <label className="cat-color"><input type="color" value={c.heroTo} onChange={(e) => onChange({ ...c, heroTo: e.target.value })} /><span>Capa — cor 2</span></label>
+      </div>
+      <div className="grid g3">
+        <SelectField label="Fonte dos títulos" value={c.headingFont} onChange={(v) => onChange({ ...c, headingFont: v })} options={FONT_CHOICES.map((f) => ({ value: f.name, label: f.name }))} />
+        <SelectField label="Fonte do texto" value={c.bodyFont} onChange={(v) => onChange({ ...c, bodyFont: v })} options={FONT_CHOICES.filter((f) => f.kind !== 'titulo').map((f) => ({ value: f.name, label: f.name }))} />
+        <SelectField label="Formato dos selos" value={c.badgeShape} onChange={(v) => onChange({ ...c, badgeShape: v as CustomLayout['badgeShape'] })} options={[{ value: 'pill', label: 'Arredondado' }, { value: 'ribbon', label: 'Fita' }, { value: 'stamp', label: 'Carimbo' }]} />
+      </div>
+      <Field label={`Ícones da capa (${c.ornaments.length} de 4)`} hint="Toque para escolher; ou digite um emoji e adicione.">
+        <div className="cat-icons">{ICON_SUGGESTIONS.map((i) => (
+          <button key={i} type="button" className={c.ornaments.includes(i) ? 'on' : ''} onClick={() => toggleIcon(i)} aria-pressed={c.ornaments.includes(i)}>{i}</button>
+        ))}</div>
+      </Field>
+      <div className="row" style={{ alignItems: 'flex-end' }}>
+        <div style={{ width: 160 }}><TextField label="Outro ícone" value={icon} onChange={(v) => setIcon(v.slice(0, 4))} placeholder="🦄" /></div>
+        <button type="button" className="btn ghost sm" disabled={!icon.trim()} onClick={() => { toggleIcon(icon.trim()); setIcon(''); }}>Adicionar</button>
+        {c.ornaments.length > 0 && <button type="button" className="btn ghost sm" onClick={() => onChange({ ...c, ornaments: [] })}>Sem ícones</button>}
+      </div>
+      <ImagePicker label="Imagem de fundo da página" value={c.backgroundImage} onChange={(img) => onChange({ ...c, backgroundImage: img })} hint="Aparece suave atrás dos produtos. Use uma textura ou foto clara." />
+    </div></div>
+  );
+}
+const CATALOG_THEMES_OPTIONS = CATALOG_THEMES.map((t) => ({ value: t.id, label: t.name }));

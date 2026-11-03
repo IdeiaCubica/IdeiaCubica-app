@@ -2,6 +2,25 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.20.0 — 02/11/2026
+
+### Catálogo: carrinho do cliente
+- O cliente monta o **pedido (o kit dele)** com produtos e kits do catálogo: “Adicionar ao pedido”, quantidade com + e −,
+  barra fixa com itens e **total previsto**. O pedido fica guardado só no navegador do cliente.
+- **Desconto por valor:** pedidos **acima de R$ 200,00 ganham 5%** (padrão; valor e % ajustáveis em Loja e contato).
+  O cliente vê quanto falta para ganhar o desconto. Itens sem preço exibido entram como “a combinar”.
+- **Enviar pedido pelo WhatsApp:** a mensagem chega com a lista (quantidade, preço, subtotal), desconto, total previsto
+  e a observação do cliente, para negociar e seguir para produção/pagamento.
+
+### Catálogo: botão PERSONALIZADO
+- Faixa “Quer uma peça do seu jeito?” com o botão **PERSONALIZADO**, que abre o WhatsApp para o cliente pedir um
+  produto sob medida. Texto e exibição configuráveis.
+
+### Catálogo: layout próprio e temáticas novas
+- Temática **Personalizado (meu layout)**: cores (fundo, cartões, textos, principal, destaque, preço), degradê da capa,
+  fontes dos títulos e do texto, formato dos selos, **ícones** e **imagem de fundo**. Pode começar copiando uma temática.
+- Temáticas novas: **Corporativo**, **Eventos (aniversários, casamentos, shows)** e **Itens Religiosos**.
+
 ## v1.19.1 — 02/11/2026
 - Corrige a configuração de publicação (vercel.json) que impediu a v1.19.0 de entrar no ar.
 

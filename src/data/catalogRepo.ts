@@ -13,6 +13,7 @@ import { publicSnapshot, randomSlug } from '../domain/catalogo';
 import type { ThemeId } from '../domain/catalogThemes';
 import { nowISO } from '../domain/core';
 import { getSupabase, usesSupabase } from './supabase';
+import { cachedImages, rememberImages } from './imageCache';
 import { IMG_REF, collectImageRefs, collectInlineImages, hydrateImages, sha256Hex, withImageRefs } from './images';
 
 export type EventKind = 'visita' | 'produto' | 'contato' | 'compartilhar';
@@ -61,14 +62,18 @@ const toLink = (l: LinkRow): CatalogLink => ({ slug: l.slug, expiresAt: l.expire
 class SupabaseCatalogRepository implements CatalogRepository {
   readonly kind = 'supabase' as const;
   private idOf = new Map<string, string>();
+  /** Fotos que já estão no banco: não são reenviadas (antes, cada gravação automática reenviava todas). */
+  private stored = new Set<string>();
 
   /** Fotos (data URL) → tabela app_images; devolve a cópia com referências e os ids usados. */
   private async storeImages<T>(value: T): Promise<{ value: T; ids: string[] }> {
     const inline = [...collectInlineImages(value)];
     for (const s of inline) if (!this.idOf.has(s)) this.idOf.set(s, await sha256Hex(s));
-    const rows = inline.map((s) => ({ id: this.idOf.get(s)!, data: s, bytes: s.length }));
+    const rows = inline.map((s) => ({ id: this.idOf.get(s)!, data: s, bytes: s.length })).filter((r) => !this.stored.has(r.id));
     for (let i = 0; i < rows.length; i += 5) {
-      check(await getSupabase().from('app_images').upsert(rows.slice(i, i + 5), { onConflict: 'id', ignoreDuplicates: true }));
+      const batch = rows.slice(i, i + 5);
+      check(await getSupabase().from('app_images').upsert(batch, { onConflict: 'id', ignoreDuplicates: true }));
+      batch.forEach((r) => this.stored.add(r.id));
     }
     const out = withImageRefs(value, this.idOf);
     return { value: out, ids: [...collectImageRefs(out)] };
@@ -76,11 +81,15 @@ class SupabaseCatalogRepository implements CatalogRepository {
 
   private async hydrate(value: unknown) {
     const ids = [...collectImageRefs(value)];
-    const images = new Map<string, string>();
-    for (let i = 0; i < ids.length; i += 40) {
-      const rows = check(await getSupabase().from('app_images').select('id, data').in('id', ids.slice(i, i + 40))) as { id: string; data: string }[];
-      for (const r of rows ?? []) { images.set(r.id, r.data); this.idOf.set(r.data, r.id); }
+    const images = await cachedImages(ids);
+    const missing = ids.filter((id) => !images.has(id));
+    const fetched = new Map<string, string>();
+    for (let i = 0; i < missing.length; i += 40) {
+      const rows = check(await getSupabase().from('app_images').select('id, data').in('id', missing.slice(i, i + 40))) as { id: string; data: string }[];
+      for (const r of rows ?? []) { images.set(r.id, r.data); fetched.set(r.id, r.data); }
     }
+    for (const [id, data] of images) { this.idOf.set(data, id); this.stored.add(id); }
+    rememberImages(fetched).catch(() => undefined);
     hydrateImages(value, images);
   }
 
@@ -157,10 +166,10 @@ class SupabaseCatalogRepository implements CatalogRepository {
     return { status: r.status === 'expirado' ? 'expirado' : 'nao_encontrado' };
   }
 
+  /** Foto pública: endereço da função com cache (o navegador e a Vercel guardam; o banco quase não é consultado). */
   async publicImage(slug: string, ref: string): Promise<string | null> {
     if (!ref.startsWith(IMG_REF)) return ref;
-    const r = await getSupabase().rpc('get_public_catalog_image', { p_slug: slug, p_id: ref.slice(IMG_REF.length) });
-    return r.error ? null : ((r.data as string | null) ?? null);
+    return `/api/catalogo-foto?c=${encodeURIComponent(slug)}&i=${ref.slice(IMG_REF.length)}`;
   }
 
   async track(slug: string, kind: EventKind, itemId?: string): Promise<void> {

@@ -39,14 +39,14 @@ export function CatalogEditor({ id }: { id: string }) {
   const load = () => repo.get(id).then((r) => { if (r) withDefaults(r.data); setRec(r); }).catch((e) => { setError(e instanceof Error ? e.message : String(e)); setRec(null); });
   useEffect(() => { load(); }, [id]);
 
-  // Gravação automática ~1 s depois da última alteração.
+  // Gravação automática ~2,5 s depois da última alteração (não grava a cada tecla).
   useEffect(() => {
     if (!rec || !dirty.current) return;
     setSave('pendente');
     const t = setTimeout(() => {
       setSave('salvando');
       repo.save(rec).then(() => { dirty.current = false; setSave('salvo'); }).catch((e) => { setSave('erro'); toast('error', e instanceof Error ? e.message : String(e)); });
-    }, 1000);
+    }, 2500);
     return () => clearTimeout(t);
   }, [rec]);
 

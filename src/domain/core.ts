@@ -78,7 +78,8 @@ export function setNextNumber(db: DB, counter: string, next: number, digits?: nu
 
 export function audit(db: DB, action: string, detail?: string) {
   db.audit.push({ at: nowISO(), action, detail });
-  if (db.audit.length > 3000) db.audit.splice(0, db.audit.length - 3000);
+  // Corta em lote (de 3.000 para 2.500): a auditoria é gravada em blocos e cortar 1 por vez regravaria todos.
+  if (db.audit.length > 3000) db.audit.splice(0, db.audit.length - 2500);
 }
 
 export function byId<T extends { id: ID }>(list: T[], id: ID | undefined, what: string): T {

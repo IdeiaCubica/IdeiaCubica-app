@@ -17,6 +17,8 @@ import type { DB } from '../domain/types';
 import { createEmptyDB, migrate } from '../domain/schema';
 import { getSupabase, usesSupabase } from './supabase';
 import { collectImageRefs, collectInlineImages, hydrateImages, sha256Hex, withImageRefs } from './images';
+import { cachedImages, rememberImages } from './imageCache';
+import { diffRows, emptySaved, fromRows, savedFrom, toRows, type RecordRow, type SavedState } from './records';
 
 export interface Snapshot { id: number; version: number; savedAt: string; bytes: number }
 
@@ -90,12 +92,16 @@ export class SupabaseRepository implements Repository {
   private async hydrate(raw: unknown): Promise<void> {
     const ids = [...collectImageRefs(raw)];
     if (!ids.length) return;
-    const images = new Map<string, string>();
-    for (let i = 0; i < ids.length; i += 40) {
-      const { data, error } = await getSupabase().from('app_images').select('id, data').in('id', ids.slice(i, i + 40));
+    // Fotos já guardadas neste navegador não são baixadas de novo (o conteúdo de um id nunca muda).
+    const images = await cachedImages(ids);
+    const missing = ids.filter((id) => !images.has(id));
+    const fetched = new Map<string, string>();
+    for (let i = 0; i < missing.length; i += 40) {
+      const { data, error } = await getSupabase().from('app_images').select('id, data').in('id', missing.slice(i, i + 40));
       if (error) throw new Error(friendly(error.message));
-      for (const r of data ?? []) images.set(r.id as string, r.data as string);
+      for (const r of data ?? []) { images.set(r.id as string, r.data as string); fetched.set(r.id as string, r.data as string); }
     }
+    rememberImages(fetched).catch(() => undefined);
     hydrateImages(raw, images);
     for (const [id, data] of images) { this.idOf.set(data, id); this.stored.add(id); }
     this.imagesTable = true;
@@ -137,8 +143,35 @@ export class SupabaseRepository implements Repository {
 
   /** O documento carregado ainda tinha fotos dentro (gravado antes da v1.11). */
   private inlineOnLoad = false;
+  /**
+   * 'records' (v1.21): o banco guarda uma linha por registro e cada gravação envia só o que mudou.
+   * 'legacy': banco ainda sem a atualização — grava o documento inteiro (save_app_state).
+   */
+  private mode: 'records' | 'legacy' = 'legacy';
+  /** Conteúdo de cada linha na última gravação (para enviar só as diferenças). */
+  private saved: SavedState = emptySaved();
 
   async load(): Promise<DB> {
+    const r = await getSupabase().rpc('load_state');
+    if (!r.error) {
+      const res = r.data as { mode: 'records'; version: number; rows: RecordRow[] } | { mode: 'document'; version: number; data: unknown };
+      this.version = res.version;
+      if (res.mode === 'records') {
+        this.mode = 'records';
+        this.saved = savedFrom(res.rows); // antes de trocar as referências pelas fotos
+        if (!res.rows.length) return createEmptyDB();
+        const raw = fromRows(res.rows);
+        this.inlineOnLoad = collectInlineImages(raw).size > 0;
+        await this.hydrate(raw);
+        return migrate(raw);
+      }
+      if (!res.data) return createEmptyDB();
+      this.inlineOnLoad = collectInlineImages(res.data).size > 0;
+      await this.hydrate(res.data);
+      return migrate(res.data);
+    }
+    // Banco sem a v1.21 (função load_state inexistente): leitura antiga do documento inteiro.
+    if (!/PGRST202|could not find the function|does not exist/i.test(`${r.error.code} ${r.error.message}`)) throw new Error(friendly(r.error.message));
     const { data, error } = await getSupabase().from('app_state').select('data, version').eq('id', 1).maybeSingle();
     if (error) throw new Error(friendly(error.message));
     if (!data) { this.version = 0; return createEmptyDB(); }
@@ -165,6 +198,20 @@ export class SupabaseRepository implements Repository {
 
   async save(db: DB): Promise<void> {
     const p_data = await this.payload(db);
+    if (this.mode === 'records') {
+      const { upserts, deletes, next } = diffRows(toRows(p_data as Record<string, unknown>, this.saved.ord), this.saved);
+      if (!upserts.length && !deletes.length) return; // nada mudou: não incomoda o banco
+      const { data, error } = await getSupabase().rpc('save_records', { p_upserts: upserts, p_deletes: deletes, p_expected_version: this.version });
+      if (error) {
+        if (error.code === '40001' || /conflito/i.test(error.message)) {
+          throw new Error('Os dados foram alterados em outra aba ou dispositivo. Recarregue a página (F5) para ver a versão mais recente — nada foi gravado.');
+        }
+        throw new Error(friendly(error.message));
+      }
+      this.version = data as number;
+      this.saved = next;
+      return;
+    }
     const { data, error } = await getSupabase().rpc('save_app_state', { p_data, p_expected_version: this.version });
     if (error) {
       if (error.code === '40001' || /conflito/i.test(error.message)) {

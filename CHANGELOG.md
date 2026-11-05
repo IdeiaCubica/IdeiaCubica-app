@@ -2,6 +2,25 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.21.0 — 05/11/2026
+
+### Desempenho: fim da sobrecarga de CPU do banco
+**Requer rodar no Supabase:** `supabase/migrations/20261105000000_v1_13_desempenho.sql`. Até lá, o sistema funciona do jeito antigo.
+
+Causas encontradas e corrigidas:
+- **Cada operação regravava o sistema inteiro** (um documento de vários MB) no banco. Agora cada registro é uma linha
+  (`app_records`) e cada gravação envia só o que mudou — normalmente poucos KB. Os dados atuais são divididos
+  automaticamente pelo SQL, sem perda (conferido com testes num Postgres local).
+- **Cópia de segurança de vários MB a cada 10 minutos de uso:** agora no máximo 1 por hora, montada no próprio banco
+  (mantém 48 = 2 dias). O histórico antigo fica com as 10 cópias mais recentes.
+- **Todas as fotos eram baixadas do banco a cada login:** agora ficam guardadas no navegador; o banco só entrega as novas.
+- **Catálogo:** a gravação automática reenviava todas as fotos a cada alteração (até a cada tecla). Agora só envia foto
+  nova e grava 2,5 s depois da última alteração.
+- **Catálogo público:** cada visitante buscava cada foto direto no banco. Agora as fotos passam por `/api/catalogo-foto`,
+  com cache da Vercel e do navegador.
+- **Permissões (RLS)** eram verificadas para cada linha lida; agora uma vez por consulta. Índice novo para as visitas do catálogo.
+- Auditoria cortada em lote (não regrava a lista inteira a cada operação).
+
 ## v1.20.0 — 02/11/2026
 
 ### Catálogo: carrinho do cliente

@@ -46,6 +46,13 @@ E rode `supabase/migrations/20261103000000_v1_12_catalogo.sql` (v1.19, Catálogo
 publicada. O cliente (sem login) não lê nenhuma tabela. A página pública é servida em `/c/<link>` (regra em `vercel.json`).
 Requer a v1.11 (fotos em `app_images`). Sem esse arquivo, a aba Catálogo mostra o aviso para rodá-lo.
 
+E rode `supabase/migrations/20261105000000_v1_13_desempenho.sql` (sistema v1.21): divide o documento do sistema em uma
+linha por registro (`app_records`), e cada gravação passa a enviar só o que mudou (`save_records`; leitura por
+`load_state`). Também limita as cópias de segurança a 1 por hora (48 mantidas), otimiza as permissões (RLS) e cria
+índice para as visitas do catálogo. Depois dele, rode **separadamente** (cada linha sozinha, fora de transação):
+`vacuum full public.app_state_history;` e `vacuum full public.app_state;` para devolver o espaço ao disco.
+Abas abertas antes da atualização precisam ser recarregadas (F5).
+
 ## Passo 3 — Criar o usuário e bloquear novos cadastros
 
 1. **Authentication → Users → Add user → Create new user**: seu e-mail e uma senha forte; marque

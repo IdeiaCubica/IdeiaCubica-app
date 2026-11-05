@@ -2,6 +2,17 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.21.1 — 05/11/2026
+
+### Causa raiz da CPU no limite: conflito repetido sem parar
+**Requer rodar no Supabase:** `supabase/migrations/20261105100000_v1_14_conflito_sem_repeticao.sql`.
+- Quando dois aparelhos gravavam quase ao mesmo tempo, a gravação desatualizada era recusada com o código **40001**
+  ("conflito entre transações" do Postgres). A API do Supabase **repete automaticamente** operações com esse código,
+  e como o nosso conflito não se resolve sozinho, ela repetia sem parar — 1 tentativa por segundo por gravação presa,
+  até a CPU esgotar. Agora o conflito usa o código **PT409**: a API devolve na hora "recarregue a página", sem repetir.
+- O SQL também encerra as chamadas que estavam presas nesse ciclo.
+- A gravação no app tem limite de tempo (45 s): se o servidor não responder, aparece um aviso em vez de “Salvando…” para sempre.
+
 ## v1.21.0 — 05/11/2026
 
 ### Desempenho: fim da sobrecarga de CPU do banco

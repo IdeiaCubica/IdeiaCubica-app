@@ -104,11 +104,11 @@ begin
   if not public.is_member() then raise exception 'acesso negado' using errcode = '42501'; end if;
   select version into v_current from public.app_state where id = 1 for update;
   if v_current is null then
-    if p_expected_version <> 0 then raise exception 'conflito de versão' using errcode = '40001'; end if;
+    if p_expected_version <> 0 then raise exception 'conflito de versão' using errcode = 'PT409'; end if;
     v_new := 1;
     insert into public.app_state (id, data, version, storage, updated_at, updated_by) values (1, '{}'::jsonb, v_new, 'records', now(), auth.uid());
   else
-    if v_current <> p_expected_version then raise exception 'conflito de versão' using errcode = '40001'; end if;
+    if v_current <> p_expected_version then raise exception 'conflito de versão' using errcode = 'PT409'; end if;
     v_new := v_current + 1;
     update public.app_state set version = v_new, storage = 'records', updated_at = now(), updated_by = auth.uid() where id = 1;
   end if;
@@ -143,14 +143,14 @@ begin
   end if;
   select version, storage into v_current, v_storage from public.app_state where id = 1 for update;
   if v_storage = 'records' then
-    raise exception 'conflito: o sistema foi atualizado, recarregue a página' using errcode = '40001';
+    raise exception 'conflito: o sistema foi atualizado, recarregue a página' using errcode = 'PT409';
   end if;
   if v_current is null then
-    if p_expected_version <> 0 then raise exception 'conflito de versão' using errcode = '40001'; end if;
+    if p_expected_version <> 0 then raise exception 'conflito de versão' using errcode = 'PT409'; end if;
     v_new := 1;
     insert into public.app_state (id, data, version, updated_at, updated_by) values (1, p_data, v_new, now(), auth.uid());
   else
-    if v_current <> p_expected_version then raise exception 'conflito de versão' using errcode = '40001'; end if;
+    if v_current <> p_expected_version then raise exception 'conflito de versão' using errcode = 'PT409'; end if;
     v_new := v_current + 1;
     update public.app_state set data = p_data, version = v_new, updated_at = now(), updated_by = auth.uid() where id = 1;
   end if;

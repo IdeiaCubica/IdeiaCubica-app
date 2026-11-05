@@ -60,7 +60,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const done = () => { if (savingTimer.current) clearTimeout(savingTimer.current); setSaving(false); };
     try {
       const value = fn(draft);
-      await repoRef.current.save(draft).finally(done);
+      // Limite de tempo: o app nunca fica "Salvando…" para sempre se o servidor não responder.
+      await withTimeout(repoRef.current.save(draft), 45000, 'O servidor não confirmou a gravação a tempo. Recarregue a página (F5) e confira se ela foi registrada.').finally(done);
       dbRef.current = draft;
       setDb(draft);
       if (success) toast('success', success);

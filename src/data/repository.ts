@@ -203,7 +203,7 @@ export class SupabaseRepository implements Repository {
       if (!upserts.length && !deletes.length) return; // nada mudou: não incomoda o banco
       const { data, error } = await getSupabase().rpc('save_records', { p_upserts: upserts, p_deletes: deletes, p_expected_version: this.version });
       if (error) {
-        if (error.code === '40001' || /conflito/i.test(error.message)) {
+        if (error.code === 'PT409' || error.code === '40001' || /conflito/i.test(error.message)) {
           throw new Error('Os dados foram alterados em outra aba ou dispositivo. Recarregue a página (F5) para ver a versão mais recente — nada foi gravado.');
         }
         throw new Error(friendly(error.message));
@@ -214,7 +214,7 @@ export class SupabaseRepository implements Repository {
     }
     const { data, error } = await getSupabase().rpc('save_app_state', { p_data, p_expected_version: this.version });
     if (error) {
-      if (error.code === '40001' || /conflito/i.test(error.message)) {
+      if (error.code === 'PT409' || error.code === '40001' || /conflito/i.test(error.message)) {
         throw new Error('Os dados foram alterados em outra aba ou dispositivo. Recarregue a página (F5) para ver a versão mais recente — nada foi gravado.');
       }
       throw new Error(friendly(error.message));

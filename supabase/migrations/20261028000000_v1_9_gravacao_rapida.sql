@@ -38,14 +38,14 @@ begin
 
   if v_current is null then
     if p_expected_version <> 0 then
-      raise exception 'conflito de versão' using errcode = '40001';
+      raise exception 'conflito de versão' using errcode = 'PT409';
     end if;
     v_new := 1;
     insert into public.app_state (id, data, version, updated_at, updated_by)
     values (1, p_data, v_new, now(), auth.uid());
   else
     if v_current <> p_expected_version then
-      raise exception 'conflito de versão' using errcode = '40001';
+      raise exception 'conflito de versão' using errcode = 'PT409';
     end if;
     v_new := v_current + 1;
     update public.app_state

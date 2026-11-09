@@ -2,6 +2,18 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.22.0 — 09/11/2026
+
+### Catálogo
+- **5 produtos por linha** no computador (celular: 2; telas médias: 3 ou 4).
+- **Barra de navegação fixa no topo** com um botão por seção (Destaques, Produtos selecionados, Kits promocionais,
+  Ofertas especiais, Mais vendidos, Novidades ou as seções que você criar): o cliente toca e vai direto à seção.
+- **Catálogo Geral** (Novo catálogo → Catálogo Geral): junta catálogos já montados. Cada catálogo incluído vira um
+  **módulo** (categoria). O cliente vê a **Visão geral** com todas as peças, agrupadas por módulo, ou entra num módulo e
+  navega pelas seções dele. O visual, o contato, o carrinho e o desconto são os do Catálogo Geral. Os módulos podem ser
+  renomeados e reordenados. Ao publicar, o geral usa o conteúdo atual dos catálogos incluídos (alterou um deles:
+  “Atualizar publicação” no geral também).
+
 ## v1.21.1 — 05/11/2026
 
 ### Causa raiz da CPU no limite: conflito repetido sem parar

@@ -6,6 +6,7 @@ import { emptyQuoteInput, latestVersion, saveQuote } from './quotes';
 import {
   addProducts, catalogStatus, duplicateCatalog, kitReferencePrice, moveEntry, newCatalog, publicSnapshot, publishProblems, randomSlug,
   removeProduct, removeSection, saveKit, updateProduct, whatsappNumber, cartTotals, cartMessage, withDefaults, type CatalogRecord,
+  geralSnapshot, isGeral, moveModule, publicItems, toggleModule,
 } from './catalogo';
 import { productCandidates, productFromCandidate } from './catalogoFontes';
 import { CATALOG_THEMES, customFromTheme, resolveTheme, themeOf } from './catalogThemes';
@@ -142,5 +143,29 @@ describe('Catálogo digital', () => {
     const a = randomSlug(), b = randomSlug();
     expect(a).toMatch(/^[a-z0-9]{12}$/);
     expect(a).not.toBe(b);
+  });
+
+  it('Catálogo Geral: cada catálogo vira um módulo, ids sem repetir, geral não entra em geral', () => {
+    rec.data.settings.contact.whatsapp = '11912345678';
+    const copia = duplicateCatalog(rec, 'Natal (cópia)'); // mesmos ids de produtos do original
+    const geral = newCatalog({ name: 'Geral', theme: 'minimalista', storeName: 'Ideia Cúbica', kind: 'geral' });
+    expect(isGeral(geral)).toBe(true);
+    expect(publishProblems(geral).join(' ')).toMatch(/Inclua ao menos um catálogo/);
+    toggleModule(geral, rec);
+    toggleModule(geral, copia);
+    geral.data.modules![1].title = 'Presentes';
+    expect(() => toggleModule(geral, geral)).toThrow(/Catálogo Geral/);
+    const snap = geralSnapshot(geral, [rec, copia]);
+    expect(snap.kind).toBe('geral');
+    expect(snap.modules!.map((m) => m.title)).toEqual(['Natal', 'Presentes']);
+    const ids = publicItems(snap).map((i) => i.id);
+    expect(new Set(ids).size).toBe(ids.length); // sem ids repetidos entre módulos
+    expect(ids.length).toBe(2 * rec.data.products.length);
+    expect(JSON.stringify(snap)).not.toMatch(/"(source|quoteId|itemId)"/);
+    moveModule(geral, 1, -1);
+    expect(geralSnapshot(geral, [rec, copia]).modules!.map((m) => m.title)).toEqual(['Presentes', 'Natal']);
+    toggleModule(geral, rec); // tira
+    expect(geralSnapshot(geral, [rec, copia]).modules).toHaveLength(1);
+    expect(geralSnapshot(geral, [copia]).modules![0].sections.length).toBeGreaterThan(0);
   });
 });

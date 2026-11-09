@@ -79,7 +79,7 @@ function CatalogList() {
         <DataTable rows={rows} rowKey={(c) => c.id} onRowClick={(c) => navigate(`catalogo/${c.id}`)} search={(c) => `${c.name} ${themeOf(c.theme).name}`}
           empty={list === null ? <p className="muted" style={{ padding: 16 }}>Carregando…</p> : <Empty title="Nenhum catálogo ainda" text="Crie um catálogo, escolha a temática e adicione as peças dos seus orçamentos." action={<button className="btn primary" onClick={() => setCreating(true)}>Criar o primeiro catálogo</button>} />}
           columns={[
-            { key: 'n', header: 'Catálogo', render: (c) => <div className="row" style={{ gap: 10, flexWrap: 'nowrap' }}><span className="cat-swatch" style={{ background: themeOf(c.theme).hero }} aria-hidden="true" /><div><b>{c.name}</b><div className="muted small">{themeOf(c.theme).name} · {c.data.products.length} produto(s){c.data.kits.length ? ` · ${c.data.kits.length} kit(s)` : ''}</div></div></div>, sort: (c) => c.name },
+            { key: 'n', header: 'Catálogo', render: (c) => <div className="row" style={{ gap: 10, flexWrap: 'nowrap' }}><span className="cat-swatch" style={{ background: themeOf(c.theme).hero }} aria-hidden="true" /><div><b>{c.name}</b><div className="muted small">{c.data.kind === 'geral' ? <><Badge tone="info">Catálogo Geral</Badge> {(c.data.modules ?? []).length} catálogo(s) · {themeOf(c.theme).name}</> : <>{themeOf(c.theme).name} · {c.data.products.length} produto(s){c.data.kits.length ? ` · ${c.data.kits.length} kit(s)` : ''}</>}</div></div></div>, sort: (c) => c.name },
             { key: 'd', header: 'Criado em', render: (c) => fmtDate(c.createdAt), sort: (c) => c.createdAt },
             { key: 's', header: 'Situação', render: (c) => { const st = catalogStatus(c, now); return <Badge tone={STATUS_LABEL[st].tone}>{STATUS_LABEL[st].label}</Badge>; }, sort: (c) => catalogStatus(c, now) },
             { key: 'v', header: 'Visitas', num: true, render: (c) => c.stats?.visits ?? 0, sort: (c) => c.stats?.visits ?? 0 },
@@ -123,11 +123,12 @@ function NewCatalogDialog({ storeName, onClose }: { storeName: string; onClose: 
   const { toast } = useStore();
   const [name, setName] = useState('');
   const [theme, setTheme] = useState('natal');
+  const [kind, setKind] = useState<'normal' | 'geral'>('normal');
   const [busy, setBusy] = useState(false);
   const create = async () => {
     setBusy(true);
     try {
-      const rec = newCatalog({ name, theme, storeName });
+      const rec = newCatalog({ name, theme, storeName, kind });
       await catalogRepository().save(rec);
       navigate(`catalogo/${rec.id}`);
     } catch (e) { toast('error', e instanceof Error ? e.message : String(e)); setBusy(false); }
@@ -136,7 +137,15 @@ function NewCatalogDialog({ storeName, onClose }: { storeName: string; onClose: 
     <Modal wide title="Novo catálogo" subtitle="Dê um nome e escolha a temática. Você pode trocar a temática depois sem perder nada." onClose={onClose}
       footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={create} disabled={busy || !name.trim()}>Criar e montar</button></>}>
       <div className="stack">
-        <TextField label="Nome do catálogo" required value={name} onChange={setName} placeholder="Ex.: Natal 2026 — Presentes" autoFocus />
+        <div className="start-choice">
+          <button type="button" className={`start-option${kind === 'normal' ? ' on' : ''}`} aria-pressed={kind === 'normal'} onClick={() => setKind('normal')}>
+            <b>Catálogo</b><span>Uma vitrine com produtos, kits e seções (ex.: Natal, Dia das Mães).</span>
+          </button>
+          <button type="button" className={`start-option${kind === 'geral' ? ' on' : ''}`} aria-pressed={kind === 'geral'} onClick={() => setKind('geral')}>
+            <b>Catálogo Geral</b><span>Junta catálogos que você já montou: cada um vira um módulo, com uma visão geral de todas as peças.</span>
+          </button>
+        </div>
+        <TextField label="Nome do catálogo" required value={name} onChange={setName} placeholder={kind === 'geral' ? 'Ex.: Catálogo completo Ideia Cúbica' : 'Ex.: Natal 2026 — Presentes'} autoFocus />
         <ThemePicker value={theme} onChange={setTheme} />
       </div>
     </Modal>

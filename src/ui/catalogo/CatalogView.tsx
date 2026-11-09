@@ -6,9 +6,9 @@
  * Carrinho: o cliente escolhe produtos e kits, vê o total previsto (com o desconto por valor
  * mínimo) e envia a lista pelo WhatsApp. O carrinho fica só no navegador do cliente.
  */
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
-import type { CartLine, PublicCatalog, PublicItem } from '../../domain/catalogo';
-import { cartMessage, cartTotals, discountOf, itemUnitPrice, whatsappNumber, withDefaults } from '../../domain/catalogo';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import type { CartLine, PublicCatalog, PublicItem, PublicSection } from '../../domain/catalogo';
+import { cartMessage, cartTotals, discountOf, itemUnitPrice, publicItems, whatsappNumber, withDefaults } from '../../domain/catalogo';
 import { resolveTheme, themeFontsHref } from '../../domain/catalogThemes';
 import { D, fmtBRL } from '../../domain/money';
 import './catalog.css';
@@ -89,7 +89,16 @@ export function CatalogView({ catalog, load, onEvent, shareUrl, frame }: {
   const [cartOpen, setCartOpen] = useState(false);
   const [note, setNote] = useState('');
   const { cart, set: setQty, clear } = useCart(frame || !shareUrl ? null : `cv-carrinho:${shareUrl}`);
-  const allItems = useMemo(() => catalog.sections.flatMap((x) => x.items), [catalog.sections]);
+  const allItems = useMemo(() => publicItems(catalog), [catalog]);
+  // Catálogo Geral: "todos" = visão geral de todas as peças; ou um módulo (um catálogo incluído).
+  const modules = catalog.kind === 'geral' ? catalog.modules ?? [] : null;
+  const [mod, setMod] = useState<string>('todos');
+  const current = modules?.find((m) => m.id === mod) ?? null;
+  const sections: PublicSection[] = (modules ? current?.sections ?? [] : catalog.sections).filter((x) => x.items.length || x.banner);
+  const navSections = sections.filter((x) => x.items.length);
+  const mainRef = useRef<HTMLElement>(null);
+  const goTo = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  const pickModule = (id: string) => { setMod(id); requestAnimationFrame(() => mainRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })); };
   const lines: CartLine[] = allItems.filter((i) => cart[i.id]).map((i) => ({ id: i.id, name: i.name, type: i.type, qty: cart[i.id], unitPrice: itemUnitPrice(i) }));
   const totals = cartTotals(lines, s.cart);
   const cartOn = s.cart.enabled;
@@ -206,17 +215,52 @@ export function CatalogView({ catalog, load, onEvent, shareUrl, frame }: {
         </div>
       )}
 
-      <main className="cv-main">
-        {catalog.sections.map((sec) => (
-          <section key={sec.id} className="cv-section">
-            {sec.banner && (sec.banner.title || sec.banner.image) && <Banner banner={sec.banner} load={load} ornament={orn[1] ?? orn[0]} />}
-            {sec.items.length > 0 && <>
-              <h2 className="cv-sec-title">{orn[2] ? <span aria-hidden="true">{orn[2]} </span> : null}{sec.title}</h2>
-              <div className="cv-grid">{sec.items.map(card)}</div>
-            </>}
-          </section>
-        ))}
-        {!catalog.sections.length && <p className="cv-empty">Nenhum produto neste catálogo ainda.</p>}
+      {/* Navegação fixa: módulos (Catálogo Geral) e seções */}
+      {((modules && modules.length > 0) || navSections.length > 1) && (
+        <nav className="cv-nav" aria-label="Navegação do catálogo">
+          {modules && modules.length > 0 && (
+            <div className="cv-nav-row">
+              <button type="button" className={`cv-pill${mod === 'todos' ? ' on' : ''}`} onClick={() => pickModule('todos')} aria-pressed={mod === 'todos'}>Visão geral</button>
+              {modules.map((m) => <button key={m.id} type="button" className={`cv-pill${mod === m.id ? ' on' : ''}`} onClick={() => pickModule(m.id)} aria-pressed={mod === m.id}>{m.title}</button>)}
+            </div>
+          )}
+          {navSections.length > 1 && (
+            <div className="cv-nav-row cv-nav-sub">
+              {navSections.map((x) => <button key={x.id} type="button" className="cv-pill cv-pill-sm" onClick={() => goTo(`sec-${x.id}`)}>{x.title}</button>)}
+            </div>
+          )}
+        </nav>
+      )}
+
+      <main className="cv-main" ref={mainRef}>
+        {modules && mod === 'todos' ? (
+          modules.length ? modules.map((m) => {
+            const items = m.sections.flatMap((x) => x.items);
+            return (
+              <section key={m.id} id={`mod-${m.id}`} className="cv-section">
+                <div className="cv-mod-head">
+                  <h2 className="cv-sec-title">{orn[2] ? <span aria-hidden="true">{orn[2]} </span> : null}{m.title} <small>{items.length} {items.length === 1 ? 'item' : 'itens'}</small></h2>
+                  <button type="button" className="cv-btn cv-btn-ghost" onClick={() => pickModule(m.id)}>Ver só {m.title} →</button>
+                </div>
+                <div className="cv-grid">{items.map(card)}</div>
+              </section>
+            );
+          }) : <p className="cv-empty">Nenhum catálogo incluído ainda.</p>
+        ) : (
+          <>
+            {current && <h2 className="cv-mod-title">{current.title}</h2>}
+            {sections.map((sec) => (
+              <section key={sec.id} id={`sec-${sec.id}`} className="cv-section">
+                {sec.banner && (sec.banner.title || sec.banner.image) && <Banner banner={sec.banner} load={load} ornament={orn[1] ?? orn[0]} />}
+                {sec.items.length > 0 && <>
+                  <h2 className="cv-sec-title">{orn[2] ? <span aria-hidden="true">{orn[2]} </span> : null}{sec.title}</h2>
+                  <div className="cv-grid">{sec.items.map(card)}</div>
+                </>}
+              </section>
+            ))}
+            {!sections.length && <p className="cv-empty">Nenhum produto neste catálogo ainda.</p>}
+          </>
+        )}
       </main>
 
       <footer className="cv-foot">

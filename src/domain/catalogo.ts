@@ -105,6 +105,16 @@ export interface CatalogDoc {
   sections: CatalogSection[];
   products: CatalogProduct[];
   kits: CatalogKit[];
+  /** "geral" = Catálogo Geral: junta outros catálogos, cada um vira um módulo (categoria). */
+  kind?: 'geral';
+  /** Catálogo Geral: catálogos incluídos, na ordem de exibição. */
+  modules?: CatalogModule[];
+}
+
+export interface CatalogModule {
+  catalogId: ID;
+  /** Nome do módulo para o cliente (vazio = nome do catálogo). */
+  title: string;
 }
 
 export type CatalogStatus = 'rascunho' | 'publicado' | 'expirado';
@@ -147,12 +157,31 @@ export function emptyCatalogDoc(storeName: string): CatalogDoc {
   };
 }
 
-export function newCatalog(input: { name: string; theme: string; storeName: string }): CatalogRecord {
+export function newCatalog(input: { name: string; theme: string; storeName: string; kind?: 'normal' | 'geral' }): CatalogRecord {
   const name = requireText(input.name, 'o nome do catálogo');
   assert(name.length <= 120, 'Nome do catálogo muito longo (máximo 120 caracteres).');
-  assert(CATALOG_THEMES.some((t) => t.id === input.theme), 'Escolha uma temática.');
+  assert(CATALOG_THEMES.some((t) => t.id === input.theme) || input.theme === 'personalizado', 'Escolha uma temática.');
   const now = nowISO();
-  return { id: newId(), name, theme: input.theme as ThemeId, data: emptyCatalogDoc(input.storeName), status: 'rascunho', createdAt: now, updatedAt: now, links: [] };
+  const data = emptyCatalogDoc(input.storeName);
+  if (input.kind === 'geral') { data.kind = 'geral'; data.modules = []; data.sections = []; }
+  return { id: newId(), name, theme: input.theme as ThemeId, data, status: 'rascunho', createdAt: now, updatedAt: now, links: [] };
+}
+
+export const isGeral = (rec: { data: Pick<CatalogDoc, 'kind'> }) => rec.data.kind === 'geral';
+
+/** Inclui ou tira um catálogo do Catálogo Geral. Um geral não entra em outro geral. */
+export function toggleModule(geral: CatalogRecord, catalog: Pick<CatalogRecord, 'id' | 'name' | 'data'>) {
+  assert(isGeral(geral), 'Só o Catálogo Geral junta catálogos.');
+  assert(catalog.id !== geral.id && !isGeral(catalog), 'Um Catálogo Geral não pode entrar em outro.');
+  const mods = geral.data.modules ?? [];
+  geral.data.modules = mods.some((m) => m.catalogId === catalog.id) ? mods.filter((m) => m.catalogId !== catalog.id) : [...mods, { catalogId: catalog.id, title: '' }];
+}
+
+export function moveModule(geral: CatalogRecord, index: number, delta: -1 | 1) {
+  const mods = geral.data.modules ?? [];
+  const j = index + delta;
+  if (j < 0 || j >= mods.length) return;
+  [mods[index], mods[j]] = [mods[j], mods[index]];
 }
 
 /** Duplica: copia produtos, kits, seções, banners e visual. Começa como rascunho, sem link. */
@@ -300,13 +329,39 @@ export interface PublicItem {
   /** Kit: nomes dos produtos que compõem. */
   includes?: string[];
 }
+export interface PublicSection { id: ID; title: string; banner: CatalogBanner | null; items: PublicItem[] }
+export interface PublicModule { id: ID; title: string; sections: PublicSection[] }
 export interface PublicCatalog {
   name: string;
   theme: ThemeId;
   settings: Omit<CatalogSettings, 'primaryColor' | 'accentColor'> & { primaryColor: string | null; accentColor: string | null };
-  sections: { id: ID; title: string; banner: CatalogBanner | null; items: PublicItem[] }[];
+  sections: PublicSection[];
+  /** Catálogo Geral: um módulo por catálogo incluído (as seções do geral ficam vazias). */
+  kind?: 'geral';
+  modules?: PublicModule[];
   publishedAt: ISODateTime;
 }
+
+/**
+ * Publicação do Catálogo Geral: o visual, contato e carrinho são os do geral; o conteúdo vem
+ * dos catálogos incluídos (cada um vira um módulo). Os ids ganham o prefixo do módulo para não
+ * se repetirem (um catálogo duplicado tem os mesmos ids do original).
+ */
+export function geralSnapshot(rec: CatalogRecord, catalogs: CatalogRecord[]): PublicCatalog {
+  const base = publicSnapshot({ ...rec, data: { ...rec.data, sections: [], kind: undefined } });
+  const modules = (rec.data.modules ?? []).flatMap((m, idx): PublicModule[] => {
+    const src = catalogs.find((c) => c.id === m.catalogId);
+    if (!src || isGeral(src)) return [];
+    const pre = `m${idx}-`;
+    const sections = publicSnapshot(src).sections.filter((s) => s.items.length).map((s) => ({ ...s, id: pre + s.id, items: s.items.map((i) => ({ ...i, id: pre + i.id })) }));
+    return sections.length ? [{ id: `m${idx}`, title: m.title.trim() || src.name, sections }] : [];
+  });
+  return { ...base, kind: 'geral', modules, sections: [] };
+}
+
+/** Todos os itens da publicação (do catálogo ou de todos os módulos do geral). */
+export const publicItems = (c: Pick<PublicCatalog, 'sections' | 'modules'>): PublicItem[] =>
+  [...c.sections, ...(c.modules ?? []).flatMap((m) => m.sections)].flatMap((s) => s.items);
 
 export function publicSnapshot(rec: CatalogRecord): PublicCatalog {
   const d = rec.data;
@@ -334,7 +389,8 @@ export function publicSnapshot(rec: CatalogRecord): PublicCatalog {
 /** Problemas que impedem publicar (catálogo vazio, produto sem nome...). */
 export function publishProblems(rec: CatalogRecord): string[] {
   const out: string[] = [];
-  if (!rec.data.products.length && !rec.data.kits.length) out.push('Adicione ao menos um produto.');
+  if (isGeral(rec)) { if (!(rec.data.modules ?? []).length) out.push('Inclua ao menos um catálogo no Catálogo Geral.'); }
+  else if (!rec.data.products.length && !rec.data.kits.length) out.push('Adicione ao menos um produto.');
   if (rec.data.products.some((p) => !p.name.trim())) out.push('Há produto sem nome.');
   const c = rec.data.settings.contact;
   if (!c.whatsapp && !c.phone && !c.instagram && !c.email && !c.site) out.push('Informe ao menos um contato (WhatsApp, telefone, Instagram, e-mail ou site) para o cliente falar com você.');

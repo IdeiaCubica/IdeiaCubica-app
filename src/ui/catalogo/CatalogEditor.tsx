@@ -10,7 +10,7 @@ import type { CatalogBanner, CatalogDoc, CatalogKit, CatalogProduct, CatalogReco
 import { productCandidates, productFromCandidate, type ProductCandidate } from '../../domain/catalogoFontes';
 import {
   BADGES, SECTION_PRESETS, addProducts, addSection, catalogStatus, discountOf, kitReferencePrice, moveEntry, moveEntryToSection, moveSection,
-  publicSnapshot, withDefaults, removeKit, removeProduct, removeSection, saveKit, updateProduct,
+  geralSnapshot, isGeral, moveModule, toggleModule, publicSnapshot, withDefaults, removeKit, removeProduct, removeSection, saveKit, updateProduct,
 } from '../../domain/catalogo';
 import { CATALOG_THEMES, FONT_CHOICES, ICON_SUGGESTIONS, customFromTheme, themeOf, type CustomLayout, type ThemeId } from '../../domain/catalogThemes';
 import { fmtBRL, fmtPct } from '../../domain/money';
@@ -19,9 +19,9 @@ import { Alert, Badge, Check, DateField, Empty, Field, Modal, NumField, SelectFi
 import { ImagePicker } from '../components/ImagePicker';
 import { CatalogView } from './CatalogView';
 import { PublishDialog, ShareDialog } from './PublishDialogs';
-import { STATUS_LABEL, ThemePicker } from '../pages/Catalogo';
+import { STATUS_LABEL, ThemePicker, useCatalogs } from '../pages/Catalogo';
 
-type Tab = 'produtos' | 'kits' | 'secoes' | 'aparencia' | 'loja';
+type Tab = 'modulos' | 'produtos' | 'kits' | 'secoes' | 'aparencia' | 'loja';
 const br = (v: string | null | undefined) => (v ? v.replace('.', ',') : '');
 
 export function CatalogEditor({ id }: { id: string }) {
@@ -60,7 +60,22 @@ export function CatalogEditor({ id }: { id: string }) {
     return true;
   };
   const doc = (fn: (d: CatalogDoc) => void) => edit((r) => fn(r.data));
-  const preview = useMemo(() => (rec ? publicSnapshot(rec) : null), [rec]);
+  // Catálogo Geral: carrega os catálogos incluídos para montar a pré-visualização.
+  const geral = !!rec && isGeral(rec);
+  const [moduleRecs, setModuleRecs] = useState<Map<string, CatalogRecord>>(new Map());
+  const moduleIds = (rec?.data.modules ?? []).map((m) => m.catalogId).join(',');
+  useEffect(() => {
+    if (!geral) return;
+    if (tab === 'produtos') setTab('modulos');
+    const missing = moduleIds.split(',').filter((x) => x && !moduleRecs.has(x));
+    if (!missing.length) return;
+    Promise.all(missing.map((x) => repo.get(x))).then((rs) => setModuleRecs((cur) => {
+      const next = new Map(cur);
+      rs.forEach((r) => { if (r) next.set(r.id, r); });
+      return next;
+    })).catch(() => undefined);
+  }, [geral, moduleIds]);
+  const preview = useMemo(() => (rec ? (isGeral(rec) ? geralSnapshot(rec, [...moduleRecs.values()]) : publicSnapshot(rec)) : null), [rec, moduleRecs]);
 
   if (rec === undefined) return <p className="muted">Carregando catálogo…</p>;
   if (!rec) return <Empty title="Catálogo não encontrado" text={error ?? undefined} action={<button className="btn secondary" onClick={() => navigate('catalogo')}>Voltar</button>} />;
@@ -71,7 +86,7 @@ export function CatalogEditor({ id }: { id: string }) {
     <>
       <div className="page-head cat-head">
         <div style={{ minWidth: 0, flex: 1 }}>
-          <p className="eyebrow">Catálogo · {themeOf(rec.theme).name}</p>
+          <p className="eyebrow">{geral ? 'Catálogo Geral' : 'Catálogo'} · {themeOf(rec.theme).name}</p>
           <input className="cat-title-input" value={rec.name} aria-label="Nome do catálogo" maxLength={120} onChange={(e) => edit((r) => { r.name = e.target.value; })} onBlur={(e) => { if (!e.target.value.trim()) edit((r) => { r.name = 'Catálogo sem nome'; }); }} />
         </div>
         <div className="row">
@@ -86,13 +101,18 @@ export function CatalogEditor({ id }: { id: string }) {
 
       <div className="cat-editor">
         <div className="cat-panel">
-          <Tabs<Tab> value={tab} onChange={setTab} tabs={[
+          <Tabs<Tab> value={tab} onChange={setTab} tabs={geral ? [
+            { id: 'modulos', label: 'Catálogos incluídos', count: rec.data.modules?.length || undefined },
+            { id: 'aparencia', label: 'Aparência' },
+            { id: 'loja', label: 'Loja e contato' },
+          ] : [
             { id: 'produtos', label: 'Produtos', count: rec.data.products.length || undefined },
             { id: 'kits', label: 'Kits', count: rec.data.kits.length || undefined },
             { id: 'secoes', label: 'Seções e banners' },
             { id: 'aparencia', label: 'Aparência' },
             { id: 'loja', label: 'Loja e contato' },
           ]} />
+          {tab === 'modulos' && geral && <ModulesTab rec={rec} edit={edit} loaded={moduleRecs} />}
           {tab === 'produtos' && <ProductsTab doc={rec.data} edit={doc} />}
           {tab === 'kits' && <KitsTab doc={rec.data} edit={doc} />}
           {tab === 'secoes' && <SectionsTab doc={rec.data} edit={doc} />}
@@ -532,3 +552,43 @@ function CustomLayoutEditor({ value: c, onChange, onReset }: { value: CustomLayo
   );
 }
 const CATALOG_THEMES_OPTIONS = CATALOG_THEMES.map((t) => ({ value: t.id, label: t.name }));
+/* ------------------------------------------------------------------ Catálogo Geral: módulos */
+function ModulesTab({ rec, edit, loaded }: { rec: CatalogRecord; edit: (fn: (r: CatalogRecord) => void) => boolean; loaded: Map<string, CatalogRecord> }) {
+  const { list } = useCatalogs();
+  const mods = rec.data.modules ?? [];
+  const candidates = (list ?? []).filter((c) => c.id !== rec.id && !isGeral(c));
+  const nameOf = (id: string) => loaded.get(id)?.name ?? candidates.find((c) => c.id === id)?.name ?? 'Catálogo excluído';
+  const countOf = (id: string) => { const c = loaded.get(id) ?? candidates.find((x) => x.id === id); return c ? c.data.products.length + c.data.kits.length : 0; };
+  const outside = candidates.filter((c) => !mods.some((m) => m.catalogId === c.id));
+  return (
+    <div className="stack">
+      <Alert tone="info">Cada catálogo incluído vira um <b>módulo</b> (categoria) para o cliente, com uma <b>visão geral</b> de todas as peças. O conteúdo é o dos catálogos no momento em que você publica: alterou um deles, clique em <b>Atualizar publicação</b> aqui também.</Alert>
+      <div className="card"><div className="card-body stack">
+        <h3 style={{ margin: 0 }}>Módulos ({mods.length})</h3>
+        {mods.length === 0 ? <p className="muted small" style={{ margin: 0 }}>Nenhum catálogo incluído. Escolha abaixo.</p> : mods.map((m, i) => (
+          <div key={m.catalogId} className="cat-row">
+            <span className="mono small muted" style={{ width: 22 }}>{i + 1}.</span>
+            <div className="grow" style={{ minWidth: 0 }}>
+              <input className="cat-section-input" style={{ width: '100%' }} value={m.title} placeholder={nameOf(m.catalogId)} aria-label={`Nome do módulo ${nameOf(m.catalogId)}`}
+                onChange={(e) => edit((r) => { r.data.modules![i].title = e.target.value.slice(0, 60); })} />
+              <div className="small muted">Catálogo: {nameOf(m.catalogId)} · {countOf(m.catalogId)} item(ns)</div>
+            </div>
+            <button className="btn ghost sm" aria-label="Subir" onClick={() => edit((r) => moveModule(r, i, -1))}>↑</button>
+            <button className="btn ghost sm" aria-label="Descer" onClick={() => edit((r) => moveModule(r, i, 1))}>↓</button>
+            <button className="btn ghost sm danger-text" onClick={() => edit((r) => { r.data.modules = (r.data.modules ?? []).filter((x) => x.catalogId !== m.catalogId); })}>Tirar</button>
+          </div>
+        ))}
+      </div></div>
+      <div className="card"><div className="card-body stack">
+        <h3 style={{ margin: 0 }}>Incluir catálogos</h3>
+        {list === null ? <p className="muted small">Carregando…</p> : outside.length === 0 ? <p className="muted small" style={{ margin: 0 }}>{candidates.length ? 'Todos os catálogos já estão incluídos.' : 'Crie catálogos primeiro; depois junte-os aqui.'}</p> : outside.map((c) => (
+          <div key={c.id} className="cat-row">
+            <span className="cat-swatch" style={{ background: themeOf(c.theme).hero }} aria-hidden="true" />
+            <div className="grow"><b>{c.name}</b><div className="small muted">{themeOf(c.theme).name} · {c.data.products.length} produto(s){c.data.kits.length ? ` · ${c.data.kits.length} kit(s)` : ''}</div></div>
+            <button className="btn secondary sm" onClick={() => edit((r) => toggleModule(r, c))}>Incluir</button>
+          </div>
+        ))}
+      </div></div>
+    </div>
+  );
+}

@@ -9,7 +9,7 @@
  *  - Local (desenvolvimento): tudo no localStorage deste navegador.
  */
 import type { CatalogLink, CatalogRecord, CatalogStats, PublicCatalog } from '../domain/catalogo';
-import { publicSnapshot, randomSlug } from '../domain/catalogo';
+import { geralSnapshot, isGeral, publicSnapshot, randomSlug } from '../domain/catalogo';
 import type { ThemeId } from '../domain/catalogThemes';
 import { nowISO } from '../domain/core';
 import { getSupabase, usesSupabase } from './supabase';
@@ -133,7 +133,7 @@ class SupabaseCatalogRepository implements CatalogRepository {
 
   async publish(rec: CatalogRecord, opts: { expiresAt: string | null; newLink: boolean }): Promise<CatalogLink> {
     await this.save(rec);
-    const { value: snapshot, ids } = await this.storeImages(publicSnapshot(rec));
+    const { value: snapshot, ids } = await this.storeImages(await snapshotOf(this, rec));
     const current = (await this.linksOf([rec.id])).find((l) => l.active);
     let slug: string;
     if (current && !opts.newLink) {
@@ -218,7 +218,7 @@ class LocalCatalogRepository implements CatalogRepository {
   async publish(rec: CatalogRecord, opts: { expiresAt: string | null; newLink: boolean }) {
     await this.save(rec);
     const s = this.read();
-    const snapshot = publicSnapshot(rec);
+    const snapshot = await snapshotOf(this, rec);
     const current = s.links.find((l) => l.catalogId === rec.id && l.active);
     let link: LocalLink;
     if (current && !opts.newLink) {
@@ -261,6 +261,13 @@ class LocalCatalogRepository implements CatalogRepository {
     s.events.push({ catalogId: l.catalogId, slug, kind, item, at: nowISO() });
     this.write(s);
   }
+}
+
+/** O que vai para o cliente: o próprio catálogo, ou — no Catálogo Geral — o conteúdo atual dos catálogos incluídos. */
+export async function snapshotOf(repo: Pick<CatalogRepository, 'get'>, rec: CatalogRecord): Promise<PublicCatalog> {
+  if (!isGeral(rec)) return publicSnapshot(rec);
+  const mods = await Promise.all((rec.data.modules ?? []).map((m) => repo.get(m.catalogId)));
+  return geralSnapshot(rec, mods.filter((m): m is CatalogRecord => !!m));
 }
 
 let repo: CatalogRepository | null = null;

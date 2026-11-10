@@ -20,15 +20,15 @@ export const STATUS_LABEL: Record<CatalogStatus, { label: string; tone: Tone }> 
 export const publicUrl = (slug: string) => (import.meta.env.DEV ? `${location.origin}/catalogo.html?c=${slug}` : `${catalogBase()}/c/${slug}`);
 
 /**
- * Endereço base dos catálogos. Usando o sistema em sistema.<domínio>, os links para o cliente saem em
- * catalogo.<domínio> (ex.: sistema.ideiacubica.com.br → catalogo.ideiacubica.com.br).
+ * Endereço base dos catálogos. Usando o sistema em app.<domínio> (ou sistema.<domínio>), os links para o
+ * cliente saem em catalogo.<domínio> (ex.: app.ideiacubica.com.br → catalogo.ideiacubica.com.br).
  * VITE_CATALOG_URL fixa outro endereço, se precisar.
  */
 function catalogBase(): string {
   const fixed = (import.meta.env.VITE_CATALOG_URL as string | undefined)?.trim().replace(/\/+$/, '');
   if (fixed) return fixed;
-  const host = location.hostname;
-  return host.startsWith('sistema.') ? `${location.protocol}//catalogo.${host.slice('sistema.'.length)}` : location.origin;
+  const m = location.hostname.match(/^(?:app|sistema)\.(.+)$/);
+  return m ? `${location.protocol}//catalogo.${m[1]}` : location.origin;
 }
 
 export function Catalogo({ param }: { param?: string }) {

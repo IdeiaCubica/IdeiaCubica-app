@@ -2,6 +2,9 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.23.2 — 10/11/2026
+- Os links de catálogo saem em `catalogo.ideiacubica.com.br` também quando o sistema é usado em `app.ideiacubica.com.br`.
+
 ## v1.23.1 — 09/11/2026
 
 ### Domínio próprio (ideiacubica.com.br)

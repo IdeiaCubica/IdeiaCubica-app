@@ -597,6 +597,8 @@ export interface ProductionOrder {
   /** Depois de produzida: foi para o estoque de peças ou foi entregue (venda). Sem valor = aguardando decisão no Kanban. */
   destination?: 'estoque' | 'entregue';
   destinationAt?: ISODateTime;
+  /** Medição ao sair da impressão (Em produção → Acabamento): peso real de 1 peça e purga do lote. */
+  measured?: { pieceWeightG: number | null; purgeG: number | null; skipped: boolean; at: ISODateTime };
 }
 
 /**

@@ -4,7 +4,7 @@ import { useStore } from '../store';
 import { navigate } from '../App';
 import type { OrderStatus, PieceDimensions, ProductionOrder, Project } from '../../domain/types';
 import {
-  ORDER_STATUS_LABEL, QUEUE_STATUSES, addProjectFileVersion, byDelivery, cancelOrder, checkAvailability, compareOrder, completeOrder, createManualOrder, deleteOrder, orderDeleteBlock, orderUndoBlockers, orderDestination, produceForStockNow, sendOrderToStock, setOrderImage,
+  ORDER_STATUS_LABEL, QUEUE_STATUSES, addProjectFileVersion, orderBaseInput, byDelivery, cancelOrder, checkAvailability, compareOrder, completeOrder, createManualOrder, deleteOrder, orderDeleteBlock, orderUndoBlockers, orderDestination, produceForStockNow, sendOrderToStock, setOrderImage,
   moveOrderStatus, orderDelivery, orderReservations, productionQueue, queueShortages, reserveOrderMaterials, returnOrderToQuote,
   saveProject, startOrder, stockEstimate, updateOrderPlanning,
 } from '../../domain/production';
@@ -22,6 +22,7 @@ import { Alert, Badge, Check, Combobox, DataTable, DateField, Empty, Kpi, Modal,
 import { QUOTE_STATUS } from './Orcamentos';
 import { SaleForm, TitleModal } from './Financeiro';
 import { DESTINATION_SINCE, orderPayment } from '../../domain/orderReceivables';
+import { measuredFilamentTotal, orderResult, plannedFilamentPerUnit, recordMeasurement, type ResultColumn } from '../../domain/medicao';
 
 type Tab = 'quadro' | 'pedidos' | 'estoque' | 'ordens' | 'projetos';
 const STATUS_TONE: Record<OrderStatus, Tone> = {
@@ -85,6 +86,8 @@ function Quadro() {
   const [sel, setSel] = useState<ProductionOrder | null>(null);
   const [completing, setCompleting] = useState<ProductionOrder | null>(null);
   const [deciding, setDeciding] = useState<ProductionOrder | null>(null);
+  // Saiu da impressão: pede o peso real e a purga (ou "Não informar desta vez").
+  const [measuring, setMeasuring] = useState<{ order: ProductionOrder; then?: 'concluir' } | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
   const [over, setOver] = useState<string | null>(null);
   const since = addDaysISO(todayISO(), -30);
@@ -121,10 +124,12 @@ function Quadro() {
     }
     if (col === 'acabamento') {
       if (from === 'fila') return void toast('warning', 'Inicie a produção antes de mandar para o acabamento.');
+      if (from === 'producao') return void setMeasuring({ order: o });
       return void run((d) => moveOrderStatus(d, o.id, 'aguardando_acabamento'));
     }
     if (col === 'concluidas') {
       if (from === 'fila') return void toast('warning', 'Inicie a produção antes de concluir.');
+      if (from === 'producao') return void setMeasuring({ order: o, then: 'concluir' });
       setCompleting(o);
     }
   };
@@ -163,6 +168,8 @@ function Quadro() {
       {sel && <OrderModal order={sel} onClose={() => setSel(null)} />}
       {deciding && <DestinationDialog order={deciding} onClose={() => setDeciding(null)} onDetails={() => { setSel(deciding); setDeciding(null); }} />}
       {completing && <CompleteForm order={completing} onClose={() => setCompleting(null)} />}
+      {measuring && <MeasureDialog order={measuring.order} to="aguardando_acabamento" onClose={() => setMeasuring(null)}
+        onDone={() => { const m = measuring; setMeasuring(null); if (m.then === 'concluir') setCompleting(m.order); }} />}
     </>
   );
 }
@@ -393,6 +400,7 @@ function OrderModal({ order, onClose }: { order: ProductionOrder; onClose: () =>
   const lineName = (materialId: string, lotId?: string) => lotId ? lotName(lotId) : `${matOf(materialId)?.name ?? 'Material removido'} (lotes por ordem de entrada)`;
   const [card, setCard] = useState(false);
   const [receiving, setReceiving] = useState(false);
+  const [measuring, setMeasuring] = useState<'aguardando_acabamento' | 'em_inspecao' | null>(null);
   const pay = orderPayment(db, o);
   const cancel = async () => {
     const reason = await confirm({ title: `Cancelar ${o.number}?`, danger: true, confirmLabel: 'Cancelar', reasonLabel: 'Motivo', text: 'As reservas de material serão liberadas.' });
@@ -442,8 +450,10 @@ function OrderModal({ order, onClose }: { order: ProductionOrder; onClose: () =>
         {purposeOf(o) === 'pedido' && o.status !== 'cancelada' && <button className="btn ghost" onClick={() => setCard(true)}>Cartão de agradecimento</button>}
         {(o.status === 'planejada' || o.status === 'aguardando_material') && <button className="btn secondary" onClick={reserveAction}>Reservar material</button>}
         {(o.status === 'planejada' || o.status === 'aguardando_material' || o.status === 'pronta') && <button className="btn primary" onClick={() => run((d) => startOrder(d, o.id), 'Produção iniciada.')}>Iniciar produção</button>}
-        {o.status === 'em_producao' && <button className="btn secondary" onClick={() => run((d) => moveOrderStatus(d, o.id, 'aguardando_acabamento'))}>Aguardando acabamento</button>}
-        {(o.status === 'em_producao' || o.status === 'aguardando_acabamento') && <button className="btn secondary" onClick={() => run((d) => moveOrderStatus(d, o.id, 'em_inspecao'))}>Em inspeção</button>}
+        {o.status === 'em_producao' && <button className="btn secondary" onClick={() => setMeasuring('aguardando_acabamento')}>Aguardando acabamento</button>}
+        {o.status === 'em_producao' && <button className="btn secondary" onClick={() => setMeasuring('em_inspecao')}>Em inspeção</button>}
+        {o.status === 'aguardando_acabamento' && <button className="btn secondary" onClick={() => run((d) => moveOrderStatus(d, o.id, 'em_inspecao'))}>Em inspeção</button>}
+        {(o.status === 'aguardando_acabamento' || o.status === 'em_inspecao') && <button className="btn ghost" onClick={() => setMeasuring('aguardando_acabamento')}>{o.measured && !o.measured.skipped ? 'Corrigir medição' : 'Medir peça'}</button>}
         {['em_producao', 'aguardando_acabamento', 'em_inspecao'].includes(o.status) && <button className="btn primary" onClick={() => setCompleting(true)}>Concluir e baixar consumo</button>}
       </>}>
       <div className="stack">
@@ -495,12 +505,14 @@ function OrderModal({ order, onClose }: { order: ProductionOrder; onClose: () =>
             <td>{!open ? '—' : a.shortage.gt(0) ? <Badge tone="error">faltam {fmtNum(a.shortage)}</Badge> : o.status === 'planejada' || o.status === 'aguardando_material' ? <Badge tone="success">disponível</Badge> : <Badge tone="info">reservado</Badge>}</td></tr>)}
         </tbody></table></div>
         {reserved.length > 0 && <p className="small muted">Reservado: {reserved.map((r) => `${lotName(r.lotId)} — ${fmtNum(r.qty)}`).join(' · ')}</p>}
+        {((o.measured && !o.measured.skipped) || o.status === 'concluida') && <PieceResult order={o} />}
         {o.status === 'concluida' && <Comparison order={o} />}
         {o.notes && <p className="muted">{o.notes}</p>}
       </div>
       {completing && <CompleteForm order={o} onClose={() => setCompleting(false)} />}
       {planning && <PlanningForm order={o} onClose={() => setPlanning(false)} />}
       {receiving && pay && <TitleModal title={pay.title} onClose={() => setReceiving(false)} />}
+      {measuring && <MeasureDialog order={o} to={measuring} onClose={() => setMeasuring(null)} onDone={() => setMeasuring(null)} />}
       {titleOpenId && db.titles.find((x) => x.id === titleOpenId) && <TitleModal title={db.titles.find((x) => x.id === titleOpenId)!} onClose={() => setTitleOpenId(null)} />}
       {card && <ThankYouCardDialog customerName={db.parties.find((p) => p.id === o.customerId)?.name} orderNumber={o.number} onClose={() => setCard(false)} />}
       {confirmEl}
@@ -554,14 +566,87 @@ function Comparison({ order }: { order: ProductionOrder }) {
   );
 }
 
-function CompleteForm({ order, onClose }: { order: ProductionOrder; onClose: () => void }) {
+/** Saiu da impressão: peso real de 1 peça e purga do lote (ou "Não informar desta vez"). */
+function MeasureDialog({ order, to, onClose, onDone }: { order: ProductionOrder; to: 'aguardando_acabamento' | 'em_inspecao'; onClose: () => void; onDone: () => void }) {
   const { db, run } = useStore();
+  const planned = useMemo(() => { try { return plannedFilamentPerUnit(orderBaseInput(db, order).input); } catch { return null; } }, [db, order]);
+  const br = (v: number | null | undefined) => (v === null || v === undefined ? '' : String(v).replace('.', ','));
+  const [w, setW] = useState(br(order.measured?.pieceWeightG));
+  const [purge, setPurge] = useState(br(order.measured?.purgeG));
+  const [skip, setSkip] = useState(false);
+  const weight = num(w);
+  const realPerUnit = weight && weight > 0 ? weight + (num(purge) ?? 0) / Math.max(1, order.qtyPlanned) : null;
+  const diff = realPerUnit && planned && planned.gt(0) ? (realPerUnit - planned.toNumber()) / planned.toNumber() : null;
+  const moving = order.status === 'em_producao';
+  const submit = () => run((d) => recordMeasurement(d, order.id, { pieceWeightG: skip ? null : weight, purgeG: skip ? null : num(purge) ?? 0, skip }, to),
+    skip ? (moving ? `${order.number}: seguiu sem medição.` : 'Medição não informada.') : (moving ? `${order.number}: medição registrada e enviado para ${to === 'em_inspecao' ? 'inspeção' : 'acabamento'}.` : 'Medição registrada.'))
+    .then((r) => r.ok && onDone());
+  return (
+    <Modal title={`Medir a peça — ${order.number}`} subtitle={`${order.description} · ${order.qtyPlanned} peça(s). Pese 1 peça pronta e a purga do lote: o resultado reajustado mostra o custo real e o preço ideal.`} onClose={onClose}
+      footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={submit} disabled={!skip && !(weight && weight > 0)}>{moving ? (skip ? 'Seguir sem medir' : 'Registrar e seguir') : 'Registrar medição'}</button></>}>
+      <div className="stack">
+        <fieldset disabled={skip} className="grid g2" style={{ border: 0, padding: 0, margin: 0 }}>
+          <NumField label="Peso real de 1 peça" suffix="g" value={w} onChange={setW} hint={planned ? `Previsto no orçamento: ${fmtNum(planned)} g por peça` : 'Pese uma peça pronta, sem suportes'} />
+          <NumField label="Purga / descarte do lote inteiro" suffix="g" value={purge} onChange={setPurge} hint="Torre de purga, “poop”, saia/brim e suportes descartados — de todas as peças juntas. Vazio = 0." />
+        </fieldset>
+        {!skip && realPerUnit && <Alert tone={diff !== null && diff > 0.05 ? 'warning' : 'info'}>
+          Filamento real por peça: <b>{fmtNum(realPerUnit)} g</b>{planned ? <> (previsto {fmtNum(planned)} g{diff !== null ? <> · <b>{diff > 0 ? '+' : ''}{fmtPct(diff)}</b></> : null})</> : null}.
+        </Alert>}
+        <Check label="Não informar desta vez (seguir sem medir)" checked={skip} onChange={setSkip} />
+      </div>
+    </Modal>
+  );
+}
+
+/** Resultado da peça: Previsto (orçamento) × Realizado × Reajustado (orçamento com o peso real). */
+function PieceResult({ order }: { order: ProductionOrder }) {
+  const { db } = useStore();
+  const r = useMemo(() => orderResult(db, order), [db, order]);
+  if (!r) return null;
+  const cols: { key: string; label: string; c: ResultColumn | null; hint: string }[] = [
+    { key: 'p', label: 'Previsto (orçamento)', c: r.planned, hint: 'como foi orçado' },
+    { key: 'r', label: 'Realizado', c: r.realized, hint: r.realized ? 'consumo e tempo reais' : 'na conclusão' },
+    { key: 'a', label: 'Reajustado', c: r.adjusted, hint: r.adjusted ? 'orçamento com peso real' : 'sem medição' },
+  ];
+  const cell = (c: ResultColumn | null, f: (c: ResultColumn) => React.ReactNode) => (c ? f(c) : <span className="muted">—</span>);
+  const neg = (d: Decimal | null) => (d && d.isNegative() ? { color: 'var(--error)' } : undefined);
+  const m = r.measured;
+  return (
+    <>
+      <h3>Resultado da peça</h3>
+      {m && !m.skipped && <p className="small muted" style={{ margin: 0 }}>Medição: {fmtNum(m.pieceWeightG)} g por peça + {fmtNum(m.purgeG ?? 0)} g de purga no lote ({fmtDateTime(m.at)}).</p>}
+      <div className="card"><table className="tbl"><thead><tr><th>Por pedido ({r.qty} peça{r.qty === 1 ? '' : 's'})</th>{cols.map((x) => <th key={x.key} className="num">{x.label}<div className="small muted" style={{ fontWeight: 400 }}>{x.hint}</div></th>)}</tr></thead><tbody>
+        <tr><td>Filamento por peça</td>{cols.map((x) => <td key={x.key} className="num">{cell(x.c, (c) => (c.filamentPerUnitG ? `${fmtNum(c.filamentPerUnitG)} g` : '—'))}</td>)}</tr>
+        <tr><td>Custo por peça</td>{cols.map((x) => <td key={x.key} className="num">{cell(x.c, (c) => fmtBRL(c.unitCost))}</td>)}</tr>
+        <tr><td>Custo do pedido</td>{cols.map((x) => <td key={x.key} className="num">{cell(x.c, (c) => fmtBRL(c.totalCost))}</td>)}</tr>
+        <tr><td>Valor líquido (preço − taxas)</td>{cols.map((x) => <td key={x.key} className="num">{cell(x.c, (c) => fmtBRL(c.netRevenue))}</td>)}</tr>
+        <tr><td><b>Resultado</b></td>{cols.map((x) => <td key={x.key} className="num">{cell(x.c, (c) => <b style={neg(c.result)}>{fmtBRL(c.result)}</b>)}</td>)}</tr>
+        <tr><td>Margem</td>{cols.map((x) => <td key={x.key} className="num">{cell(x.c, (c) => (c.marginPct ? fmtPct(c.marginPct) : '—'))}</td>)}</tr>
+      </tbody></table></div>
+      {r.adjusted && r.priceUnit && r.suggestedUnit && (
+        <Alert tone={r.suggestedUnit.gt(r.priceUnit) ? 'warning' : 'success'} title="Para os próximos orçamentos desta peça">
+          Com o peso real, o preço sugerido (mesmo markup do orçamento) é <b>{fmtBRL(r.suggestedUnit)}</b> por peça — este pedido foi vendido a {fmtBRL(r.priceUnit)}.
+          {r.suggestedUnit.gt(r.priceUnit) ? ' Vale reajustar o preço.' : ' O preço atual cobre o custo real.'}
+        </Alert>
+      )}
+    </>
+  );
+}
+
+function CompleteForm({ order: orderIn, onClose }: { order: ProductionOrder; onClose: () => void }) {
+  const { db, run } = useStore();
+  const order = db.orders.find((x) => x.id === orderIn.id) ?? orderIn;
   // Ponto de partida: os lotes efetivamente reservados para a OP (o usuário corrige com o consumo real).
+  // Com a peça medida, o filamento já vem com o peso real (peso × quantidade + purga), dividido entre os lotes de filamento.
   const [mats, setMats] = useState(() => {
     const res = orderReservations(db, order.id);
     const base = res.length ? res.map((r) => ({ lotId: r.lotId, qty: r.qty.toNumber() }))
       : order.plannedMaterials.map((m) => ({ lotId: m.lotId ?? db.lots.find((l) => l.materialId === m.materialId && lotBalance(db, l.id).physical.gt(0))?.id ?? '', qty: m.qty }));
-    return base.map((m) => ({ lotId: m.lotId, qty: String(m.qty).replace('.', ',') }));
+    const measured = measuredFilamentTotal(order);
+    const isGrams = (lotId: string) => { const lot = db.lots.find((l) => l.id === lotId); return db.materials.find((x) => x.id === lot?.materialId)?.unit === 'g'; };
+    const gramsTotal = base.filter((m) => isGrams(m.lotId)).reduce((s, m) => s + m.qty, 0);
+    const scaled = measured && gramsTotal > 0 ? base.map((m) => (isGrams(m.lotId) ? { ...m, qty: Math.round(measured.toNumber() * (m.qty / gramsTotal) * 100) / 100 } : m)) : base;
+    return scaled.map((m) => ({ lotId: m.lotId, qty: String(m.qty).replace('.', ',') }));
   });
   const [f, set] = useForm({ hours: order.plannedHours as number | null, approved: String(order.qtyPlanned), rejected: '0', labor: '', notes: '', location: '' });
   const [fails, setFails] = useState<{ description: string; lotId: string; qtyLost: string; hoursLost: number | null }[]>([]);
@@ -578,6 +663,7 @@ function CompleteForm({ order, onClose }: { order: ProductionOrder; onClose: () 
       footer={<><button className="btn ghost" onClick={onClose}>Voltar</button><button className="btn primary" onClick={submit}>Concluir e baixar estoque</button></>}>
       <div className="stack">
         <p className="section-title">Consumo real das peças produzidas (sem as falhas)</p>
+        {measuredFilamentTotal(order) && <p className="small muted" style={{ margin: 0 }}>O filamento já veio preenchido com a medição: {fmtNum(measuredFilamentTotal(order))} g (peso real × {order.qtyPlanned} + purga). Confira e ajuste se precisar.</p>}
         {mats.map((m, i) => (
           <div key={i} className="line-item">
             <SelectField label="Lote utilizado" value={m.lotId} onChange={(v) => setMats((r) => r.map((x, k) => (k === i ? { ...x, lotId: v } : x)))} placeholder="— selecione —" options={lotOpts} />

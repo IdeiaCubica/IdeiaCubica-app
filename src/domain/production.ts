@@ -746,7 +746,7 @@ export interface OrderComparison {
   real: { total: Decimal; unit: Decimal | null; materialQty: Decimal; hours: Decimal; laborEstimated: boolean; result: CostResult } | null;
 }
 
-function orderBaseInput(db: DB, o: ProductionOrder): { input: QuoteInput; params: CostParams | null } {
+export function orderBaseInput(db: DB, o: ProductionOrder): { input: QuoteInput; params: CostParams | null } {
   const q = o.quoteId ? db.quotes.find((x) => x.id === o.quoteId) : undefined;
   const it = q ? quoteItemAt(q, o.quoteVersion, o.quoteItemId) : undefined;
   if (it) return { input: structuredClone(it.input), params: it.params };

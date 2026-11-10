@@ -2,6 +2,19 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.23.0 — 09/11/2026
+
+### Produção: peso real da peça e resultado reajustado
+- Ao passar de **Em produção** para **Acabamento/Inspeção** (arrastando, pelo botão do cartão ou dentro do pedido),
+  o sistema pede o **peso real de 1 peça** e a **purga/descarte do lote** (torre de purga, “poop”, brim, suportes).
+  Mostra na hora o filamento real por peça e a diferença para o orçamento. Não é obrigatório: para seguir sem medir,
+  é preciso marcar **“Não informar desta vez”**. Dá para medir ou corrigir depois, dentro do pedido.
+- No pedido, o novo bloco **Resultado da peça** mostra lado a lado **Previsto (orçamento)**, **Realizado** (consumo e
+  tempo reais da conclusão) e **Reajustado** (o orçamento recalculado com o peso e a purga reais, ao mesmo preço
+  vendido): filamento por peça, custo por peça e do pedido, valor líquido, resultado e margem.
+- Mostra o **preço sugerido com o peso real** (mesmo markup do orçamento) para acertar os próximos orçamentos.
+- Na conclusão, o consumo de filamento já vem preenchido com a medição (peso × quantidade + purga).
+
 ## v1.22.0 — 09/11/2026
 
 ### Catálogo

@@ -13,6 +13,20 @@ function slugFromUrl(): string {
   return m?.[1] ?? new URLSearchParams(window.location.search).get('c') ?? '';
 }
 
+/** Endereço de catálogos aberto sem link (ex.: catalogo.ideiacubica.com.br): página da marca, sem login. */
+function Home() {
+  return (
+    <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 24, fontFamily: 'system-ui, sans-serif', color: '#1c1c1c', textAlign: 'center', background: '#f7f7f5' }}>
+      <div style={{ maxWidth: 440 }}>
+        <img src="/brand/10_icone_simbolo_transparente.svg" alt="" width={96} height={96} />
+        <h1 style={{ fontSize: 28, margin: '12px 0 8px' }}>Ideia Cúbica</h1>
+        <p style={{ color: '#6b6b6b', lineHeight: 1.5, margin: 0 }}>Peças impressas em 3D, personalizadas para você.</p>
+        <p style={{ color: '#6b6b6b', lineHeight: 1.5 }}>Nossos catálogos são enviados por link. Peça o seu para a nossa equipe.</p>
+      </div>
+    </div>
+  );
+}
+
 function Unavailable({ expired }: { expired: boolean }) {
   return (
     <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 24, fontFamily: 'system-ui, sans-serif', color: '#1c1c1c', textAlign: 'center' }}>
@@ -31,9 +45,9 @@ function Unavailable({ expired }: { expired: boolean }) {
 function PublicCatalogPage() {
   const slug = slugFromUrl();
   const repo = catalogRepository();
-  const [state, setState] = useState<PublicResult | 'carregando' | 'erro'>('carregando');
+  const [state, setState] = useState<PublicResult | 'carregando' | 'erro' | 'inicio'>('carregando');
   useEffect(() => {
-    if (!slug) { setState({ status: 'nao_encontrado' }); return; }
+    if (!slug) { setState('inicio'); return; }
     repo.getPublic(slug).then((r) => {
       setState(r);
       if (r.status === 'ok') {
@@ -47,6 +61,7 @@ function PublicCatalogPage() {
   const load = useCallback((ref: string) => repo.publicImage(slug, ref), [slug]);
   const onEvent = useCallback((e: ViewEvent) => { repo.track(slug, e.kind, e.itemId).catch(() => undefined); }, [slug]);
 
+  if (state === 'inicio') return <Home />;
   if (state === 'carregando') return <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', fontFamily: 'system-ui, sans-serif', color: '#6b6b6b' }}>Carregando catálogo…</div>;
   if (state === 'erro') return <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', fontFamily: 'system-ui, sans-serif', padding: 24, textAlign: 'center' }}>Não foi possível abrir o catálogo agora. Verifique a internet e tente de novo.</div>;
   if (state.status !== 'ok') return <Unavailable expired={state.status === 'expirado'} />;

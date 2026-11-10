@@ -7,7 +7,8 @@
     "api/frete.ts": { "maxDuration": 30 }
   },
   "rewrites": [
-    { "source": "/c/:slug", "destination": "/catalogo.html" }
+    { "source": "/c/:slug", "destination": "/catalogo.html" },
+    { "source": "/", "has": [{ "type": "host", "value": "catalogo.ideiacubica.com.br" }], "destination": "/catalogo.html" }
   ],
   "headers": [
     {

@@ -5,6 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/brand/10_icone_simbolo_transparente.svg" />
     <title>Ideia Cúbica · Gestão</title>
+    <script>
+      // Endereço de catálogos (catalogo.<domínio>) aberto sem link: vai para a página dos catálogos, nunca para o login do sistema.
+      if (location.hostname.indexOf('catalogo.') === 0) location.replace('/catalogo.html' + location.search);
+    </script>
   </head>
   <body>
     <div id="root"></div>

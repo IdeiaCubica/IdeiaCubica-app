@@ -2,6 +2,14 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.23.1 — 09/11/2026
+
+### Domínio próprio (ideiacubica.com.br)
+- Usando o sistema em `sistema.ideiacubica.com.br`, os links, o WhatsApp e o QR Code dos catálogos saem em
+  `catalogo.ideiacubica.com.br/c/<link>` (no endereço da Vercel continua como antes). `VITE_CATALOG_URL` fixa outro endereço, se precisar.
+- `catalogo.ideiacubica.com.br` aberto sem link mostra uma página da Ideia Cúbica, nunca a tela de login do sistema.
+- Links antigos (`ideiacubica-app.vercel.app/c/…`) continuam funcionando.
+
 ## v1.23.0 — 09/11/2026
 
 ### Produção: peso real da peça e resultado reajustado

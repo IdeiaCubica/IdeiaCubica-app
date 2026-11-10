@@ -17,7 +17,19 @@ export const STATUS_LABEL: Record<CatalogStatus, { label: string; tone: Tone }> 
 };
 
 /** Endereço público do catálogo. Em desenvolvimento (sem o redirecionamento da Vercel) usa a página direta. */
-export const publicUrl = (slug: string) => (import.meta.env.DEV ? `${location.origin}/catalogo.html?c=${slug}` : `${location.origin}/c/${slug}`);
+export const publicUrl = (slug: string) => (import.meta.env.DEV ? `${location.origin}/catalogo.html?c=${slug}` : `${catalogBase()}/c/${slug}`);
+
+/**
+ * Endereço base dos catálogos. Usando o sistema em sistema.<domínio>, os links para o cliente saem em
+ * catalogo.<domínio> (ex.: sistema.ideiacubica.com.br → catalogo.ideiacubica.com.br).
+ * VITE_CATALOG_URL fixa outro endereço, se precisar.
+ */
+function catalogBase(): string {
+  const fixed = (import.meta.env.VITE_CATALOG_URL as string | undefined)?.trim().replace(/\/+$/, '');
+  if (fixed) return fixed;
+  const host = location.hostname;
+  return host.startsWith('sistema.') ? `${location.protocol}//catalogo.${host.slice('sistema.'.length)}` : location.origin;
+}
 
 export function Catalogo({ param }: { param?: string }) {
   if (param) return <CatalogEditor key={param} id={param} />;

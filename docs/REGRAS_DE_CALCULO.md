@@ -84,10 +84,13 @@ Parâmetros de Custos e podem ser alterados em cada orçamento.
   fora: depois de pagar as taxas, o lucro é custo × k.
 - **Arredondamento** sempre para cima (,90 · ,99 · inteiro · múltiplos de R$ 0,50 · centavos); markup e margem são recalculados no
   preço arredondado (por isso podem ficar um pouco acima do pedido).
-- (v1.8) O arredondamento é aplicado **uma vez no total do modelo**, não em cada peça; o preço de 1 peça = total ÷ quantidade,
-  nos centavos acima. E tem **limite de +5%**: se o ,90 (ou outra regra) aumentar mais que isso, o total fica só nos centavos.
-  Ex.: 4 peças de 10,10 g e 1 peça de 40,40 g, mesmo PLA a R$ 150/kg, markup 40%: calculado R$ 8,48 nos dois →
-  R$ 8,90 (1 peça) e 4 × R$ 2,23 = R$ 8,92. Antes: 4 × R$ 2,90 = R$ 11,60.
+- (v1.24) **Arredondamento só no valor final.** O valor sugerido de 1 peça fica nos centavos (para cima) e é o mesmo em qualquer
+  quantidade. Valor do modelo = peça (com desconto) × quantidade, e **só esse valor final** recebe o arredondamento comercial,
+  com **limite de +5%** (acima disso, fica nos centavos).
+  Ex.: R$ 6,39 × 10 = R$ 63,90 (fica igual) · R$ 6,22 × 10 = R$ 62,20 → R$ 62,90 · R$ 6,22 × 20 = R$ 124,40 → R$ 124,90.
+  Preço digitado à mão não é arredondado. Na venda e no documento do cliente, o valor de 1 peça = valor final ÷ quantidade
+  (até 6 casas: R$ 124,90 ÷ 20 = R$ 6,245), para que peça × quantidade = valor final.
+  (v1.8 a v1.23: o valor final era dividido e a peça subia ao centavo de cima — 20 peças davam R$ 128,00 em vez de R$ 127,90.)
 - **Complementos do estoque** (luminária, ímã…): custo = quantidade por peça × quantidade × custo da última compra do insumo
   (ou preço do cadastro); entram na reserva e na baixa da produção, e o custo real usa o lote consumido (sem contar duas vezes).
 - **Premium** = sugerido arredondado + valor agregado por peça, apenas com justificativa comercial.

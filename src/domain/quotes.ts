@@ -144,7 +144,9 @@ export function summarize(ev: QuoteEvaluation): QuoteSummary {
   const { costs, pricing } = ev;
   return {
     totalCost: costs.total.toString(), unitCost: costs.unitTotal.toString(),
-    unitPrice: pricing.selectedUnit ? pricing.selectedUnit.toString() : null,
+    // Com arredondamento no valor final, o preço de 1 peça leva a sua parte do arredondamento (v1.24):
+    // R$ 62,90 ÷ 10 = R$ 6,29; R$ 124,90 ÷ 20 = R$ 6,245. Assim venda = preço × quantidade = valor do modelo.
+    unitPrice: pricing.analysis ? pricing.analysis.saleUnitPrice.toString() : pricing.selectedUnit ? pricing.selectedUnit.toString() : null,
     orderPrice: pricing.analysis ? pricing.analysis.revenue.toString() : null,
     marginPct: pricing.analysis?.marginPct ? pricing.analysis.marginPct.toString() : null,
     markupPct: pricing.analysis?.markupPct ? pricing.analysis.markupPct.toString() : null,

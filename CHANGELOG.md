@@ -2,6 +2,22 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.24.0 — 12/11/2026
+
+### Correção de cálculo: arredondamento só no valor final
+- Causa: o valor do modelo era arredondado (final ,90), dividido pelas peças e o valor de 1 peça subia para o centavo
+  de cima. Com a mesma peça, 10 peças davam R$ 63,90 (R$ 6,39 cada) e 20 peças R$ 128,00 (R$ 6,40 cada).
+- Agora a peça fica **só nos centavos** (igual em qualquer quantidade) e o arredondamento é feito **uma única vez, no
+  valor final do modelo**: R$ 6,39 × 10 = R$ 63,90 (já termina em ,90); R$ 6,22 × 10 = R$ 62,20 → **R$ 62,90**;
+  R$ 6,22 × 20 = R$ 124,40 → **R$ 124,90**. Continua o limite de +5% no valor final.
+- A tela mostra “Modelo: 10 × R$ 6,22 = R$ 62,20 → R$ 62,90 (final ,90 no valor final)”, e o total do modelo indica
+  quanto foi de arredondamento.
+- Preço digitado à mão em “Valor para o cliente” não é arredondado (vale o que foi digitado).
+- Venda e documento do cliente usam o valor de 1 peça com o arredondamento rateado (R$ 62,90 ÷ 10 = R$ 6,29;
+  R$ 124,90 ÷ 20 = R$ 6,245), para que peça × quantidade dê exatamente o valor final. A venda aceita preço com até 6 casas.
+- Orçamentos já salvos mantêm o valor salvo; quando o valor sugerido muda, aparece o aviso “os custos mudaram” com o
+  botão para atualizar.
+
 ## v1.23.2 — 10/11/2026
 - Os links de catálogo saem em `catalogo.ideiacubica.com.br` também quando o sistema é usado em `app.ideiacubica.com.br`.
 

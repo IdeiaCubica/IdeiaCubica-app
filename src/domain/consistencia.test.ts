@@ -15,11 +15,12 @@ function setup() {
   const silk = saveMaterial(db, { name: 'PLA Silk', categoryId: cat.id, unit: 'g', active: true, referenceCost: '0.20', filament: { materialType: 'PLA Silk', color: 'Dourado' } });
   const ch = saveChannel(db, { name: 'Direto', taxPct: '0', commissionPct: '0', paymentFeePct: '0', otherPct: '0', fixedFeePerOrder: '0', active: true });
   const base = { ...emptyQuoteInput(db.settings), channelId: ch.id, markupPct: '40', failureRatePct: '0', rounding: 'final90' as const, labor: { perOrder: 0, perUnit: 0 }, printHoursPerUnit: null };
-  const price = (materialId: string, quantity: number, grams: number) => {
+  const analysis = (materialId: string, quantity: number, grams: number) => {
     const input = { ...base, quantity, materials: [{ materialId, qtyPerUnit: grams }] };
-    return evaluateQuote(input, resolveParams(db, input)).pricing.analysis!.revenue;
+    return evaluateQuote(input, resolveParams(db, input)).pricing.analysis!;
   };
-  return { pla: pla.id, silk: silk.id, price };
+  const price = (materialId: string, quantity: number, grams: number) => analysis(materialId, quantity, grams).revenue;
+  return { pla: pla.id, silk: silk.id, price, analysis };
 }
 
 describe('Complementos do estoque e fotos', () => {
@@ -60,14 +61,27 @@ describe('Complementos do estoque e fotos', () => {
 });
 
 describe('Mesmo material e parâmetros', () => {
-  it('4 peças de 10,10 g custam o mesmo que 1 peça de 40,40 g (antes: R$ 11,60 × R$ 8,90)', () => {
+  it('arredondamento só no valor final: peça nos centavos × quantidade, depois ,90 (v1.24)', () => {
+    const { pla, analysis } = setup();
+    for (const grams of [10.10, 21.2, 40.40, 87.3]) {
+      const unit = analysis(pla, 1, grams).effectiveUnitPrice;      // peça só nos centavos, igual em qualquer quantidade
+      expect(unit.decimalPlaces()).toBeLessThanOrEqual(2);
+      for (const qty of [1, 3, 10, 20]) {
+        const a = analysis(pla, qty, grams);
+        expect(a.effectiveUnitPrice.toString()).toBe(unit.toString());
+        expect(a.revenueBeforeRounding.toString()).toBe(unit.times(qty).toString());
+        expect(a.revenue.lte(a.revenueBeforeRounding.times('1.05'))).toBe(true);   // nunca mais que +5%
+        if (!a.roundingLimited) expect(a.revenue.mod(1).toString()).toBe('0.9');  // valor final termina em ,90
+        expect(a.saleUnitPrice.times(qty).toDecimalPlaces(2).toString()).toBe(a.revenue.toString()); // venda = valor final
+      }
+    }
+  });
+
+  it('4 peças de 10,10 g custam o mesmo que 1 peça de 40,40 g', () => {
     const { pla, price } = setup();
-    const four = price(pla, 4, 10.10);
-    const one = price(pla, 1, 40.40);
-    // 40,4 g × R$ 0,15 × 1,4 = R$ 8,484 → modelo arredondado uma vez para R$ 8,90 (+4,9%, dentro do limite)
-    expect(one.toString()).toBe('8.9');
-    expect(four.toString()).toBe('8.92'); // 4 × R$ 2,23 (antes 4 × R$ 2,90 = R$ 11,60)
-    expect(four.minus(one).abs().lte('0.04')).toBe(true); // só centavos de diferença (preço por peça em centavos)
+    // 1 peça: R$ 8,484 → R$ 8,49 → R$ 8,90 · 4 peças: 4 × R$ 2,13 = R$ 8,52 → R$ 8,90 (antes da v1.8: R$ 11,60)
+    expect(price(pla, 1, 40.40).toString()).toBe('8.9');
+    expect(price(pla, 4, 10.10).toString()).toBe('8.9');
   });
 
   it('filamentos com preços diferentes dão valores diferentes, mesmo em peça pequena', () => {
@@ -75,6 +89,9 @@ describe('Mesmo material e parâmetros', () => {
     const a = price(pla, 4, 10);
     const b = price(silk, 4, 10);
     expect(b.gt(a)).toBe(true);
-    expect(b.div(a).toDecimalPlaces(2).toString()).toBe(D('1.33').toString()); // 0,20 ÷ 0,15
+    // 0,20 ÷ 0,15 = 1,33; o ,90 por peça pode somar até +5% (R$ 2,80 → R$ 2,90; R$ 2,10 fica em R$ 2,10)
+    const ratio = b.div(a);
+    expect(ratio.gte(D('1.33'))).toBe(true);
+    expect(ratio.lte(D('4').div(3).times('1.05'))).toBe(true);
   });
 });

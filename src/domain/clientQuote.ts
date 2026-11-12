@@ -84,7 +84,9 @@ export function buildClientQuote(db: DB, quote: Quote, opts: Partial<ClientQuote
     const a = evaluateQuote(it.input, it.params).pricing.analysis;
     if (!a) throw new Error(`A peça "${it.name}" ainda não tem valor para o cliente. Complete as informações e salve antes de gerar o documento.`);
     const qty = it.input.quantity;
-    const gross = cents(a.unitPrice.times(qty));
+    // Preço de 1 peça com o arredondamento do valor final rateado (R$ 62,90 ÷ 10 = R$ 6,29).
+    const unitPrice = a.saleUnitPrice;
+    const gross = cents(unitPrice.times(qty));
     const materials = [...new Set(it.input.materials.map((m) => {
       const mat = db.materials.find((x) => x.id === (m.materialId || db.lots.find((l) => l.id === m.lotId)?.materialId));
       if (!mat) return null;
@@ -92,7 +94,7 @@ export function buildClientQuote(db: DB, quote: Quote, opts: Partial<ClientQuote
     }).filter((x): x is string => !!x))];
     const discount = gross.minus(a.revenue);
     return {
-      description: it.name, image: it.image ?? null, materials, dimensions: formatDimensions(it.input.dimensionsCm), quantity: qty, unitPrice: a.unitPrice, total: a.revenue,
+      description: it.name, image: it.image ?? null, materials, dimensions: formatDimensions(it.input.dimensionsCm), quantity: qty, unitPrice, total: a.revenue,
       discountPct: a.discountPct, discount: discount.gt(0) ? discount : ZERO, ready: !!it.finishedGoodId,
     };
   });

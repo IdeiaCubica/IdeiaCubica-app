@@ -123,7 +123,8 @@ function applySale(db: DB, inputIn: SaleInput, existing?: Sale): Sale {
   assert(isISODate(input.date), 'Informe a data da venda.');
   const description = requireText(input.description, 'a descrição do produto vendido');
   assert(Number.isInteger(input.qty) && input.qty > 0, 'Quantidade deve ser um inteiro maior que zero.');
-  const unitPrice = cents(D(input.unitPrice));
+  // Até 6 casas: o preço de 1 peça pode trazer o arredondamento do valor final rateado (R$ 124,90 ÷ 20 = R$ 6,245).
+  const unitPrice = D(input.unitPrice).toDecimalPlaces(6, Decimal.ROUND_HALF_UP);
   assert(unitPrice.gt(0), 'Preço unitário deve ser maior que zero.');
   const discount = cents(D(input.discount || '0'));
   const freightCharged = cents(D(input.freightCharged || '0'));

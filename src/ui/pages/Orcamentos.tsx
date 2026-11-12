@@ -160,8 +160,8 @@ function CompareQuotesDialog({ onClose }: { onClose: () => void }) {
     for (const r of [...compRows].sort((x, y) => y.delta.abs().cmp(x.delta.abs())).filter((r) => r.delta.abs().gte('0.01')).slice(0, 4)) {
       reasons.push(`${r.label}: ${fmtBRL(r.delta.abs(), 2)} por peça a ${r.delta.isPositive() ? 'mais' : 'menos'} no orçamento 1${r.adjusted ? ' (valor ajustado à mão em um deles)' : ''}.`);
     }
-    const roundA = A.ev.pricing.recommendedRoundedUnit && A.ev.pricing.recommendedUnit ? A.ev.pricing.recommendedRoundedUnit.minus(A.ev.pricing.recommendedUnit) : null;
-    const roundB = B.ev.pricing.recommendedRoundedUnit && B.ev.pricing.recommendedUnit ? B.ev.pricing.recommendedRoundedUnit.minus(B.ev.pricing.recommendedUnit) : null;
+    const roundOf = (x: typeof A) => { const an = x.ev.pricing.analysis; return an && x.it.input.quantity > 0 ? an.roundingAdjustment.div(x.it.input.quantity) : null; };
+    const roundA = roundOf(A), roundB = roundOf(B);
     if (roundA && roundB && roundA.minus(roundB).abs().gte('0.05')) reasons.push(`Arredondamento: +${fmtBRL(roundA, 2)} por peça no 1 e +${fmtBRL(roundB, 2)} no 2.`);
     if (A.it.input.manualPriceUnit || B.it.input.manualPriceUnit) reasons.push('Um dos modelos tem o preço digitado à mão: o valor não segue o cálculo.');
     const perOrderA = laborTotals(A.it.input.labor).perOrder, perOrderB = laborTotals(B.it.input.labor).perOrder;
@@ -422,7 +422,8 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
       let unit: Decimal | null = null, total: Decimal | null = null;
       try {
         const ev = evaluateQuote(it.input, paramsOf(it));
-        unit = ev.pricing.analysis?.effectiveUnitPrice ?? null;
+        // Valor final do modelo ÷ quantidade (inclui o arredondamento do valor final).
+        unit = ev.pricing.analysis && it.input.quantity > 0 ? ev.pricing.analysis.revenue.div(it.input.quantity) : null;
         total = ev.pricing.analysis?.revenue ?? null;
         if (!refused) { cost = cost.plus(ev.costs.total); if (!total) pending = true; }
       } catch { if (!refused) pending = true; }
@@ -1162,14 +1163,14 @@ function ResultPanel({ ev, input, patch, locked }: { ev: QuoteEvaluation; input:
               {input.manualPriceUnit && <button type="button" className="btn ghost sm" onClick={() => patch({ manualPriceUnit: null })} disabled={locked}>Usar sugerido</button>}
             </div>
             <small>Sugerido: <b>{fmtBRL(pricing.recommendedRoundedUnit)}</b> (markup {input.markupPct ? fmtNum(input.markupPct) + '%' : '—'} sobre o custo{pricing.channel ? ` + encargos de ${pricing.channel.name}` : ''}) · Mínimo: {fmtBRL(pricing.minimumUnit)}</small>
-            {pricing.recommendedUnit && pricing.recommendedRoundedUnit && <small>
-              Calculado {fmtBRL(pricing.recommendedUnit.times(q), 2)} no modelo → {fmtBRL(pricing.recommendedRoundedUnit.times(q))} ({ROUNDING_LABEL[input.rounding].toLowerCase()}{pricing.roundingLimited ? ': passaria de +5% e ficou só nos centavos' : ''}; arredondado uma vez no total do modelo, não em cada peça)
+            {pricing.analysis && pricing.selectedSource === 'recomendado' && input.rounding !== 'nenhum' && <small>
+              Modelo: {fmtNum(q)} × {fmtBRL(pricing.analysis.effectiveUnitPrice)} = {fmtBRL(pricing.analysis.revenueBeforeRounding)} → <b>{fmtBRL(pricing.analysis.revenue)}</b> ({ROUNDING_LABEL[input.rounding].toLowerCase()} no valor final{pricing.analysis.roundingLimited ? ': passaria de +5% e ficou só nos centavos' : ''}; não arredonda cada peça)
             </small>}
           </div>
           {a && (
             <>
               <div className="big-figures">
-                <div><span>Total deste modelo ({q} peça{q === 1 ? '' : 's'})</span><b>{fmtBRL(a.revenue)}</b><small>{q} × {fmtBRL(a.effectiveUnitPrice)}{a.discountPct.gt(0) ? ` (com ${fmtNum(a.discountPct)}% de desconto)` : ''}</small></div>
+                <div><span>Total deste modelo ({q} peça{q === 1 ? '' : 's'})</span><b>{fmtBRL(a.revenue)}</b><small>{q} × {fmtBRL(a.effectiveUnitPrice)}{a.discountPct.gt(0) ? ` (com ${fmtNum(a.discountPct)}% de desconto)` : ''}{a.roundingAdjustment.gt(0) ? ` + ${fmtBRL(a.roundingAdjustment)} de arredondamento` : ''}</small></div>
                 <div><span>R$/h (valor ÷ horas)</span><b>{pricePerHour ? fmtBRL(pricePerHour) : '—'}</b><small>quanto cada hora de máquina fatura</small></div>
                 <div><span>Lucro estimado do modelo</span><b style={neg(a.result)}>{fmtBRL(a.result)}</b><small>{q > 1 ? `${fmtBRL(a.result.div(q))} por peça · ` : ''}após custos e taxas ({fmtBRL(a.fees)})</small></div>
               </div>

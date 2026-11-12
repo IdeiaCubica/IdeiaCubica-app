@@ -287,6 +287,27 @@ describe('Arredondamento comercial', () => {
     expect(commercialRound(D('47.23'), 'final90')).toEqual({ value: D('47.9'), limited: false });
     expect(commercialRound(D('8.6'), 'final90').value.toString()).toBe('8.9'); // +3,5%: dentro do limite
   });
+  it('arredonda só o valor final do modelo, não cada peça (exemplos da Ideia Cúbica)', () => {
+    const ch = { name: 'Direto', rates: D(0), fixedFee: D(0) };
+    const at = (unit: string, qty: number) => analyzeAtPrice(D(unit), { direct: D(1), structure: D(0), quantity: qty }, ch, D(0), 'final90');
+    expect(at('6.39', 10).revenue.toString()).toBe('63.9');            // já termina em ,90: fica igual
+    expect(at('6.39', 10).roundingAdjustment.toString()).toBe('0');
+    const a = at('6.22', 10);                                          // R$ 62,20 → R$ 62,90
+    expect(a.revenueBeforeRounding.toString()).toBe('62.2');
+    expect(a.revenue.toString()).toBe('62.9');
+    expect(a.saleUnitPrice.toString()).toBe('6.29');
+    const b = at('6.22', 20);                                          // R$ 124,40 → R$ 124,90
+    expect(b.revenue.toString()).toBe('124.9');
+    expect(b.saleUnitPrice.toString()).toBe('6.245');                  // venda: 20 × 6,245 = 124,90
+    expect(b.saleUnitPrice.times(20).toString()).toBe('124.9');
+    expect(at('2.05', 1).revenue.toString()).toBe('2.05');             // ,90 passaria de +5%: fica nos centavos
+  });
+  it('preço digitado à mão não é arredondado', () => {
+    const p = params({ overheadPerMachineHour: '0' });
+    const i = input({ rounding: 'final90', markupPct: '30', manualPriceUnit: '10', quantity: 10 });
+    const pr = computePricing(i, p, computeCosts(i, p));
+    expect(pr.analysis!.revenue.toString()).toBe('100');
+  });
   it('markup e margem são recalculados no preço arredondado', () => {
     const p = params({ overheadPerMachineHour: '0' });
     const i = input({ rounding: 'final90', markupPct: '30' });

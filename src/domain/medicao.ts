@@ -14,6 +14,7 @@ import { D, Decimal, cents, sum } from './money';
 import { BusinessError, assert, audit, byId, nowISO } from './core';
 import { compareOrder, moveOrderStatus, orderBaseInput } from './production';
 import { evaluateQuote, resolveParams } from './quotes';
+import { analyzeAtPrice } from './pricing';
 
 export interface MeasureInput { pieceWeightG: number | null; purgeG: number | null; skip: boolean }
 
@@ -92,7 +93,10 @@ export function orderResult(db: DB, o: ProductionOrder) {
     adj.manualPriceUnit = priceUnit ? priceUnit.toString() : null;
     try {
       const evA = evaluateQuote(adj, p);
-      const aa = evA.pricing.analysis;
+      // Mesmo preço vendido, inclusive o arredondamento do valor final quando o preço era o sugerido.
+      const aa = priceUnit && evA.pricing.channel
+        ? analyzeAtPrice(priceUnit, evA.costs, evA.pricing.channel, D(input.discountPct ?? '0'), ev.pricing.selectedSource === 'recomendado' ? input.rounding : 'nenhum')
+        : evA.pricing.analysis;
       adjusted = { filamentPerUnitG: realPerUnit, unitCost: evA.costs.unitTotal, totalCost: evA.costs.total, netRevenue, result: aa ? aa.result : null, marginPct: aa ? aa.marginPct : null };
       const evS = evaluateQuote({ ...adj, manualPriceUnit: null }, p);
       suggestedUnit = evS.pricing.recommendedRoundedUnit ?? evS.pricing.recommendedUnit;

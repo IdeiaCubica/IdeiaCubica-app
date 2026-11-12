@@ -5,7 +5,11 @@
 import type { ClientQuoteDoc } from '../../domain/clientQuote';
 import { fmtDate, fmtPhone } from '../../domain/core';
 import { cents, fmtBRL, fmtNum } from '../../domain/money';
+import type { Decimal } from '../../domain/money';
 import '../clientQuote.css';
+
+/** Preço de 1 peça: com o arredondamento do valor final rateado pode ter mais de 2 casas (R$ 124,90 ÷ 20 = R$ 6,245). */
+const fmtUnit = (v: Decimal) => (cents(v).equals(v) ? fmtBRL(v) : fmtBRL(v, 3));
 
 const firstName = (name: string) => name.trim().split(/\s+/)[0] ?? '';
 
@@ -81,7 +85,7 @@ export function ClientQuoteDocument({ doc }: { doc: ClientQuoteDoc }) {
                 <span>{[it.materials.join(' + '), it.ready ? 'pronta-entrega' : 'sob medida'].filter(Boolean).join(' · ')}</span>
                 {it.dimensions && <span className="cq-dim">Dimensões aprox.: <b>{it.dimensions}</b></span>}
               </div>
-              <div className="cq-row-qty">{it.quantity} × {fmtBRL(it.unitPrice)}</div>
+              <div className="cq-row-qty">{it.quantity} × {fmtUnit(it.unitPrice)}</div>
               <div className="cq-row-total">{fmtBRL(cents(it.unitPrice.times(it.quantity)))}{it.discount.gt(0) && <small>− {fmtBRL(it.discount)} ({fmtNum(it.discountPct)}%)</small>}</div>
             </div>
           ))}
@@ -92,7 +96,7 @@ export function ClientQuoteDocument({ doc }: { doc: ClientQuoteDoc }) {
         <table>
           <tbody>
             {single ? <>
-              <tr><th>Valor por peça</th><td>{fmtBRL(single.unitPrice)}</td></tr>
+              <tr><th>Valor por peça</th><td>{fmtUnit(single.unitPrice)}</td></tr>
               {qty > 1 && <tr><th>Quantidade</th><td>× {qty}</td></tr>}
             </> : <tr><th>Peças</th><td>{doc.items.reduce((s, x) => s + x.quantity, 0)} un</td></tr>}
             {(qty > 1 || !single || doc.discount.gt(0) || doc.freight) && <tr className="cq-sub"><th>Subtotal</th><td>{fmtBRL(doc.subtotal)}</td></tr>}

@@ -2,6 +2,18 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.26.0 — 13/11/2026
+
+### Orçamentos → Kit do catálogo
+- A janela **Peça do catálogo** ganhou as abas **Produtos** e **Kits**. Escolhe o kit e a quantidade de kits.
+- Cada produto do kit entra como uma peça do orçamento (ex.: “Suporte de Natal (Kit Natal)”), na quantidade de kits,
+  com os custos da origem de cada produto (como na peça do catálogo).
+- O **preço do kit** (promocional, se houver; senão o de referência) é repartido entre as peças na proporção do preço de
+  cada produto (se algum produto não tem preço, em partes iguais). A soma das peças dá exatamente o preço do kit:
+  3 kits de R$ 20,00 = R$ 60,00, sem arredondamento ,90.
+- O preço fica travado; se o preço do kit mudar no catálogo, cada peça mostra a nova parte dela com o botão
+  **Usar preço atual do catálogo**. Kit sem preço ou sem produtos não pode ser orçado.
+
 ## v1.25.0 — 13/11/2026
 
 ### Orçamentos → Peça do catálogo

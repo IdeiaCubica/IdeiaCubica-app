@@ -5,7 +5,7 @@ import { saveChannel, saveMaterial } from './catalog';
 import { emptyQuoteInput, evaluateQuote, latestVersion, resolveParams, saveQuote } from './quotes';
 import { registerFinishedGood } from './production';
 import type { CatalogProduct, CatalogRecord } from './catalogo';
-import { catalogProductDraft, catalogProductPrice, catalogsForQuote, currentCatalogPrice } from './catalogoOrcamento';
+import { catalogKitDrafts, catalogProductDraft, catalogProductPrice, catalogsForQuote, currentCatalogPrice, kitPriceShares } from './catalogoOrcamento';
 
 function setup() {
   const db = createEmptyDB();
@@ -20,7 +20,10 @@ function setup() {
   const product = (over: Partial<CatalogProduct>): CatalogProduct => ({ id: over.id ?? 'p', name: 'Produto', description: '', image: null, originalPrice: null, promoPrice: null, showPrice: true, badge: null, ...over });
   const catalog = {
     id: 'cat1', name: 'Natal 2026', theme: 'natal', status: 'publicado', createdAt: '', updatedAt: '', links: [],
-    data: { version: 1, settings: {}, sections: [], kits: [], products: [
+    data: { version: 1, settings: {}, sections: [], kits: [
+      { id: 'k1', name: 'Kit Natal', description: '', productIds: ['p1', 'p3'], image: null, referencePrice: '27', promoPrice: '20', showPrice: true, badge: null },
+      { id: 'k2', name: 'Kit sem preço', description: '', productIds: ['p1', 'p4'], image: null, referencePrice: null, promoPrice: null, showPrice: true, badge: null },
+    ], products: [
       product({ id: 'p1', name: 'Chaveiro de Natal', originalPrice: '12', promoPrice: '9.5', source: { kind: 'orcamento', quoteId: q.id, itemId, label: 'x' } }),
       product({ id: 'p2', name: 'Vaso', originalPrice: '40', source: { kind: 'estoque', finishedGoodId: fg.id, label: 'y' } }),
       product({ id: 'p3', name: 'Sem origem', originalPrice: '15' }),
@@ -74,5 +77,29 @@ describe('Peça do catálogo no orçamento', () => {
     expect(catalogProductPrice({ promoPrice: '0', originalPrice: '12' })).toBe('12');
     const geral = { ...catalog, id: 'g', data: { ...catalog.data, kind: 'geral' } } as CatalogRecord;
     expect(catalogsForQuote([catalog, geral]).map((c) => c.id)).toEqual(['cat1']);
+  });
+
+  it('kit: uma peça por produto, preço do kit repartido e total exato', () => {
+    const { db, catalog, pla } = setup();
+    const ds = catalogKitDrafts(db, catalog, 'k1', 3);
+    expect(ds.map((d) => d.name)).toEqual(['Chaveiro de Natal (Kit Natal)', 'Sem origem (Kit Natal)']);
+    expect(ds.map((d) => d.input.manualPriceUnit)).toEqual(['7.76', '12.24']); // 20 × 9,50/24,50 e o resto
+    expect(ds.every((d) => d.input.quantity === 3)).toBe(true);
+    expect(ds[0].input.catalogRef).toMatchObject({ kitId: 'k1', kitName: 'Kit Natal', productId: 'p1', price: '7.76' });
+    expect(ds[0].input.materials[0].materialId).toBe(pla);
+    expect(evaluateQuote(ds[0].input, resolveParams(db, ds[0].input)).pricing.analysis!.revenue.toString()).toBe('23.28'); // sem ,90
+    const total = ds.reduce((a, d) => a + Number(d.input.manualPriceUnit) * d.input.quantity, 0);
+    expect(total).toBeCloseTo(60, 10); // 3 kits × 20,00, sem ,90
+  });
+
+  it('kit: sem preço não deixa orçar; produto sem preço reparte em partes iguais; preço atual do kit', () => {
+    const { db, catalog } = setup();
+    expect(() => catalogKitDrafts(db, catalog, 'k2', 1)).toThrow(/não tem preço/);
+    expect(kitPriceShares('10', [{ promoPrice: null, originalPrice: '5' }, { promoPrice: null, originalPrice: null }, { promoPrice: null, originalPrice: '1' }])).toEqual(['3.33', '3.33', '3.34']);
+    const d = catalogKitDrafts(db, catalog, 'k1', 1)[1];
+    catalog.data.kits[0].promoPrice = '24.5';
+    expect(currentCatalogPrice(catalog, d.input.catalogRef!)).toBe('15');
+    catalog.data.kits[0].productIds = ['p1'];
+    expect(currentCatalogPrice(catalog, d.input.catalogRef!)).toBeNull();
   });
 });

@@ -30,7 +30,7 @@ import { formatDimensions } from '../../domain/clientQuote';
 import { PartyForm, priceLabel } from './Cadastros';
 import { catalogRepository } from '../../data/catalogRepo';
 import type { CatalogRecord } from '../../domain/catalogo';
-import { catalogProductDraft, catalogProductPrice, catalogsForQuote, currentCatalogPrice } from '../../domain/catalogoOrcamento';
+import { catalogKitDrafts, catalogKitPrice, catalogProductDraft, catalogProductPrice, catalogsForQuote, currentCatalogPrice, kitProducts } from '../../domain/catalogoOrcamento';
 
 export const QUOTE_STATUS: Record<QuoteStatus, { label: string; tone: Tone }> = {
   rascunho: { label: 'Rascunho', tone: 'neutral' }, enviado: { label: 'Enviado ao cliente', tone: 'info' }, aprovado: { label: 'Aprovado', tone: 'success' },
@@ -717,10 +717,10 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
           setActive(replace ? 0 : items.length); setAddingStock(false); setBlankStart(false);
         }} />}
       {addingCatalog && <CatalogPieceDialog onClose={() => setAddingCatalog(false)}
-        onAdd={(d) => {
-          const piece = { name: d.name, image: d.image ?? null, input: d.input, finishedGoodId: d.finishedGoodId };
+        onAdd={(ds) => {
+          const pieces = ds.map((d) => ({ name: d.name, image: d.image ?? null, input: d.input, finishedGoodId: d.finishedGoodId }));
           const replace = items.length === 1 && isPristine(items[0]);
-          setItems((s) => (replace ? [piece] : [...s, piece]));
+          setItems((s) => (replace ? pieces : [...s, ...pieces]));
           setActive(replace ? 0 : items.length); setAddingCatalog(false); setBlankStart(false);
         }} />}
       {confirmEl}
@@ -953,25 +953,28 @@ function CatalogPriceNote({ ref_, locked, onUpdate }: { ref_: NonNullable<QuoteI
     let alive = true;
     catalogRepository().get(ref_.catalogId).then((c) => { if (alive) setCurrent(currentCatalogPrice(c, ref_)); }).catch(() => { if (alive) setCurrent(undefined); });
     return () => { alive = false; };
-  }, [ref_.catalogId, ref_.productId]);
+  }, [ref_.catalogId, ref_.productId, ref_.kitId]);
   const changed = current && !D(current).equals(D(ref_.price));
   return (
     <small>
-      Preço do catálogo <b>{ref_.catalogName}</b> ({ref_.productName}). Para mudar o preço, altere no catálogo.
-      {current === null && <> · <span style={{ color: 'var(--warning)' }}>o produto não está mais no catálogo (ou ficou sem preço).</span></>}
+      {ref_.kitId
+        ? <>Parte desta peça no preço do kit <b>{ref_.kitName}</b> do catálogo <b>{ref_.catalogName}</b>. Para mudar o preço, altere o kit no catálogo.</>
+        : <>Preço do catálogo <b>{ref_.catalogName}</b> ({ref_.productName}). Para mudar o preço, altere no catálogo.</>}
+      {current === null && <> · <span style={{ color: 'var(--warning)' }}>{ref_.kitId ? 'o kit (ou este produto nele) não está mais no catálogo, ou ficou sem preço.' : 'o produto não está mais no catálogo (ou ficou sem preço).'}</span></>}
       {changed && !locked && <> · <b style={{ color: 'var(--warning)' }}>No catálogo agora: {fmtBRL(current)}.</b>{' '}
         <button type="button" className="btn ghost sm" onClick={() => { onUpdate(current!); toast('success', 'Preço atualizado com o do catálogo. Salve o orçamento.'); }}>Usar preço atual do catálogo</button></>}
     </small>
   );
 }
 
-/** Adiciona ao orçamento um produto de um catálogo, com o preço do catálogo (v1.25). */
-function CatalogPieceDialog({ onClose, onAdd }: { onClose: () => void; onAdd: (d: QuoteItemDraft) => void }) {
+/** Adiciona ao orçamento um produto ou um kit de um catálogo, com o preço do catálogo (v1.25; kits v1.26). */
+function CatalogPieceDialog({ onClose, onAdd }: { onClose: () => void; onAdd: (ds: QuoteItemDraft[]) => void }) {
   const { db, toast } = useStore();
   const [list, setList] = useState<CatalogRecord[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [catalogId, setCatalogId] = useState('');
-  const [productId, setProductId] = useState('');
+  const [mode, setMode] = useState<'produto' | 'kit'>('produto');
+  const [selId, setSelId] = useState('');
   const [qty, setQty] = useState<string | null>('1');
   const [q, setQ] = useState('');
   const [busy, setBusy] = useState(false);
@@ -983,41 +986,65 @@ function CatalogPieceDialog({ onClose, onAdd }: { onClose: () => void; onAdd: (d
     }).catch((e) => { setError(e instanceof Error ? e.message : String(e)); setList([]); });
   }, []);
   const catalog = list?.find((c) => c.id === catalogId);
-  const products = (catalog?.data.products ?? []).filter((p) => !q.trim() || p.name.toLowerCase().includes(q.trim().toLowerCase()));
-  const sel = catalog?.data.products.find((p) => p.id === productId);
+  const match = (name: string) => !q.trim() || name.toLowerCase().includes(q.trim().toLowerCase());
+  const products = (catalog?.data.products ?? []).filter((p) => match(p.name));
+  const kits = (catalog?.data.kits ?? []).filter((k) => match(k.name));
+  const selProduct = mode === 'produto' ? catalog?.data.products.find((p) => p.id === selId) : undefined;
+  const selKit = mode === 'kit' ? catalog?.data.kits.find((k) => k.id === selId) : undefined;
+  const switchMode = (m: 'produto' | 'kit') => { setMode(m); setSelId(''); };
   const add = async () => {
-    if (!catalog || !sel) return;
+    if (!catalog || (!selProduct && !selKit)) return;
     setBusy(true);
     try {
       const full = (await catalogRepository().get(catalog.id)) ?? catalog; // com as fotos
-      onAdd(catalogProductDraft(db, full, sel.id, Math.round(Number(qty ?? 0))));
+      const n = Math.round(Number(qty ?? 0));
+      onAdd(selKit ? catalogKitDrafts(db, full, selKit.id, n) : [catalogProductDraft(db, full, selProduct!.id, n)]);
     } catch (e) { toast('error', e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
   };
+  const footerText = selProduct ? `${selProduct.name} · ${fmtBRL(catalogProductPrice(selProduct))}`
+    : selKit ? `Kit ${selKit.name} · ${fmtBRL(catalogKitPrice(selKit))}` : mode === 'kit' ? 'Nenhum kit escolhido' : 'Nenhum produto escolhido';
   return (
-    <Modal wide title="Peça do catálogo" subtitle="Escolha o catálogo e o produto. A peça entra com o preço do catálogo (promocional, se houver). Para mudar o preço, altere no catálogo."
+    <Modal wide title="Peça do catálogo" subtitle="Escolha o catálogo e o produto (ou o kit). A peça entra com o preço do catálogo (promocional, se houver). Para mudar o preço, altere no catálogo."
       onClose={onClose}
-      footer={<><span className="muted small" style={{ marginRight: 'auto' }}>{sel ? `${sel.name} · ${fmtBRL(catalogProductPrice(sel))}` : 'Nenhum produto escolhido'}</span><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={add} disabled={!sel || busy}>{busy ? 'Carregando…' : 'Adicionar ao orçamento'}</button></>}>
+      footer={<><span className="muted small" style={{ marginRight: 'auto' }}>{footerText}</span><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={add} disabled={!(selProduct || selKit) || busy}>{busy ? 'Carregando…' : 'Adicionar ao orçamento'}</button></>}>
       {error ? <Alert tone="error" title="Não foi possível carregar os catálogos">{error}</Alert>
         : list === null ? <p className="muted">Carregando catálogos…</p>
         : list.length === 0 ? <Empty title="Nenhum catálogo com produtos" text="Monte um catálogo em Catálogo → Novo catálogo." />
         : <div className="stack">
           <div className="grid g2">
-            <SelectField label="Catálogo" value={catalogId} onChange={(v) => { setCatalogId(v); setProductId(''); }} options={list.map((c) => ({ value: c.id, label: `${c.name} · ${c.data.products.length} produto(s)` }))} />
-            <input type="search" className="search-lg" style={{ alignSelf: 'end' }} placeholder="Buscar produto…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Buscar produto do catálogo" />
+            <SelectField label="Catálogo" value={catalogId} onChange={(v) => { setCatalogId(v); setSelId(''); }} options={list.map((c) => ({ value: c.id, label: `${c.name} · ${c.data.products.length} produto(s)${c.data.kits.length ? ` · ${c.data.kits.length} kit(s)` : ''}` }))} />
+            <input type="search" className="search-lg" style={{ alignSelf: 'end' }} placeholder={mode === 'kit' ? 'Buscar kit…' : 'Buscar produto…'} value={q} onChange={(e) => setQ(e.target.value)} aria-label="Buscar no catálogo" />
           </div>
-          <div className="card tbl-scroll" style={{ maxHeight: 360, overflowY: 'auto' }}><table className="tbl"><thead><tr><th></th><th>Produto</th><th>Origem</th><th className="num">Preço no catálogo</th></tr></thead><tbody>
-            {products.length === 0 && <tr><td colSpan={4} className="muted">Nenhum produto neste catálogo.</td></tr>}
-            {products.map((p) => { const price = catalogProductPrice(p); return (
-              <tr key={p.id} className={p.id === productId ? 'diff-row' : ''} style={{ cursor: price ? 'pointer' : 'not-allowed', opacity: price ? 1 : 0.6 }} onClick={() => price && setProductId(p.id)}>
-                <td><input type="radio" name="produto-catalogo" aria-label={`Escolher ${p.name}`} checked={p.id === productId} disabled={!price} onChange={() => setProductId(p.id)} /></td>
-                <td><b>{p.name}</b>{p.badge && <div className="muted small">{p.badge}</div>}</td>
-                <td className="muted small">{p.source?.label ?? 'sem origem (custo a preencher)'}</td>
-                <td className="num">{price ? <>{fmtBRL(price)}{p.promoPrice && p.originalPrice && <div className="muted small"><s>{fmtBRL(p.originalPrice)}</s></div>}</> : <span className="muted">sem preço</span>}</td>
-              </tr>); })}
-          </tbody></table></div>
-          {sel && <div className="grid g2">
-            <DecField label="Quantidade" value={qty} onChange={setQty} suffix="peças" />
-            <p className="small muted" style={{ alignSelf: 'end' }}>{sel.source?.kind === 'estoque' ? 'Peça pronta: se houver saldo, entra como pronta-entrega; senão, sob encomenda.' : sel.source ? 'Os custos vêm da peça de origem (para mostrar o lucro).' : 'Sem origem: preencha filamento e tempo para ver o custo e o lucro.'}</p>
+          <Tabs<'produto' | 'kit'> value={mode} onChange={switchMode} tabs={[
+            { id: 'produto', label: 'Produtos', count: catalog?.data.products.length ?? 0 },
+            { id: 'kit', label: 'Kits', count: catalog?.data.kits.length ?? 0 },
+          ]} />
+          {mode === 'produto'
+            ? <div className="card tbl-scroll" style={{ maxHeight: 360, overflowY: 'auto' }}><table className="tbl"><thead><tr><th></th><th>Produto</th><th>Origem</th><th className="num">Preço no catálogo</th></tr></thead><tbody>
+              {products.length === 0 && <tr><td colSpan={4} className="muted">Nenhum produto neste catálogo.</td></tr>}
+              {products.map((p) => { const price = catalogProductPrice(p); return (
+                <tr key={p.id} className={p.id === selId ? 'diff-row' : ''} style={{ cursor: price ? 'pointer' : 'not-allowed', opacity: price ? 1 : 0.6 }} onClick={() => price && setSelId(p.id)}>
+                  <td><input type="radio" name="produto-catalogo" aria-label={`Escolher ${p.name}`} checked={p.id === selId} disabled={!price} onChange={() => setSelId(p.id)} /></td>
+                  <td><b>{p.name}</b>{p.badge && <div className="muted small">{p.badge}</div>}</td>
+                  <td className="muted small">{p.source?.label ?? 'sem origem (custo a preencher)'}</td>
+                  <td className="num">{price ? <>{fmtBRL(price)}{p.promoPrice && p.originalPrice && <div className="muted small"><s>{fmtBRL(p.originalPrice)}</s></div>}</> : <span className="muted">sem preço</span>}</td>
+                </tr>); })}
+            </tbody></table></div>
+            : <div className="card tbl-scroll" style={{ maxHeight: 360, overflowY: 'auto' }}><table className="tbl"><thead><tr><th></th><th>Kit</th><th>Produtos do kit</th><th className="num">Preço do kit</th></tr></thead><tbody>
+              {kits.length === 0 && <tr><td colSpan={4} className="muted">Nenhum kit neste catálogo.</td></tr>}
+              {kits.map((k) => { const price = catalogKitPrice(k); const ps = catalog ? kitProducts(catalog, k) : []; const ok = !!price && ps.length > 0; return (
+                <tr key={k.id} className={k.id === selId ? 'diff-row' : ''} style={{ cursor: ok ? 'pointer' : 'not-allowed', opacity: ok ? 1 : 0.6 }} onClick={() => ok && setSelId(k.id)}>
+                  <td><input type="radio" name="kit-catalogo" aria-label={`Escolher kit ${k.name}`} checked={k.id === selId} disabled={!ok} onChange={() => setSelId(k.id)} /></td>
+                  <td><b>{k.name}</b>{k.badge && <div className="muted small">{k.badge}</div>}</td>
+                  <td className="muted small">{ps.map((p) => p.name).join(' + ') || 'sem produtos'}</td>
+                  <td className="num">{price ? <>{fmtBRL(price)}{k.promoPrice && k.referencePrice && <div className="muted small"><s>{fmtBRL(k.referencePrice)}</s></div>}</> : <span className="muted">sem preço</span>}</td>
+                </tr>); })}
+            </tbody></table></div>}
+          {(selProduct || selKit) && <div className="grid g2">
+            <DecField label="Quantidade" value={qty} onChange={setQty} suffix={selKit ? 'kits' : 'peças'} />
+            <p className="small muted" style={{ alignSelf: 'end' }}>{selKit
+              ? 'Cada produto do kit entra como uma peça do orçamento, na quantidade de kits. O preço do kit é repartido entre as peças na proporção do preço de cada produto; a soma dá o preço do kit.'
+              : selProduct!.source?.kind === 'estoque' ? 'Peça pronta: se houver saldo, entra como pronta-entrega; senão, sob encomenda.' : selProduct!.source ? 'Os custos vêm da peça de origem (para mostrar o lucro).' : 'Sem origem: preencha filamento e tempo para ver o custo e o lucro.'}</p>
           </div>}
         </div>}
     </Modal>

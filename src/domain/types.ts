@@ -437,6 +437,9 @@ export interface CatalogPriceRef {
   productName: string;
   /** Preço de 1 peça no catálogo quando foi trazido (promocional, se houver; senão o original). */
   price: DecStr;
+  /** Peça que veio de um kit: `price` é a parte desta peça no preço do kit (v1.26). */
+  kitId?: ID;
+  kitName?: string;
 }
 
 /** Fechamento do mês: os principais números congelados na data do fechamento. */

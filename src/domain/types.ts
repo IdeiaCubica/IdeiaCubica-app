@@ -422,9 +422,21 @@ export interface QuoteInput {
   marketPriceUnit: DecStr | null;
   premium: { amountPerUnit: DecStr | null; justification: string };
   manualPriceUnit: DecStr | null;
+  /** Peça vinda de um catálogo (v1.25): o preço de 1 peça é o do catálogo e só é alterado lá. */
+  catalogRef?: CatalogPriceRef | null;
   rounding: RoundingRule;
   /** Valores de rubricas ajustados manualmente pelo usuário (total do pedido), por chave do componente. */
   overrides?: Record<string, DecStr>;
+}
+
+/** Vínculo da peça do orçamento com o produto do catálogo de onde veio o preço. */
+export interface CatalogPriceRef {
+  catalogId: ID;
+  catalogName: string;
+  productId: ID;
+  productName: string;
+  /** Preço de 1 peça no catálogo quando foi trazido (promocional, se houver; senão o original). */
+  price: DecStr;
 }
 
 /** Fechamento do mês: os principais números congelados na data do fechamento. */

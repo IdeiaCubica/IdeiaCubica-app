@@ -28,6 +28,9 @@ import { ClientQuoteExport } from '../components/ClientQuoteExport';
 import { DimensionsFields } from '../components/DimensionsFields';
 import { formatDimensions } from '../../domain/clientQuote';
 import { PartyForm, priceLabel } from './Cadastros';
+import { catalogRepository } from '../../data/catalogRepo';
+import type { CatalogRecord } from '../../domain/catalogo';
+import { catalogProductDraft, catalogProductPrice, catalogsForQuote, currentCatalogPrice } from '../../domain/catalogoOrcamento';
 
 export const QUOTE_STATUS: Record<QuoteStatus, { label: string; tone: Tone }> = {
   rascunho: { label: 'Rascunho', tone: 'neutral' }, enviado: { label: 'Enviado ao cliente', tone: 'info' }, aprovado: { label: 'Aprovado', tone: 'success' },
@@ -381,6 +384,7 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
   const [addingStock, setAddingStock] = useState(false);
   const [duplicating, setDuplicating] = useState(false);
   const [copyingPiece, setCopyingPiece] = useState(false);
+  const [addingCatalog, setAddingCatalog] = useState(false);
   // Novo orçamento começa sem modelo: o usuário escolhe "Criar nova peça", "Peça de outro orçamento" ou "Peça do estoque".
   const [blankStart, setBlankStart] = useState(!quote);
   const isPristine = (it: DraftItem) => !it.itemId && !it.name.trim() && !it.finishedGoodId && !it.image
@@ -564,6 +568,9 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
                   <button type="button" className="start-option" onClick={() => setAddingStock(true)}>
                     <b>Peça do estoque</b><span>Peça pronta (pronta-entrega) de Estoque → Peças produzidas, com o preço previsto dela.</span>
                   </button>
+                  <button type="button" className="start-option" onClick={() => setAddingCatalog(true)}>
+                    <b>Peça do catálogo</b><span>Produto de um catálogo, com o preço do catálogo (o preço só é alterado no catálogo).</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -574,6 +581,7 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
             right={<><button type="button" className="btn secondary sm" onClick={duplicate}>Duplicar modelo</button>
                 <button type="button" className="btn secondary sm" onClick={() => setCopyingPiece(true)}>+ Peça de outro orçamento</button>
                 <button type="button" className="btn secondary sm" onClick={() => setAddingStock(true)}>+ Peça do estoque</button>
+                <button type="button" className="btn secondary sm" onClick={() => setAddingCatalog(true)}>+ Peça do catálogo</button>
                 <button type="button" className="btn primary sm" onClick={addItem}>+ Criar nova peça</button></>}>
             <div>
               <div className="piece-tabs" role="tablist" aria-label="Peças do orçamento">
@@ -707,6 +715,13 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
           const replace = items.length === 1 && isPristine(items[0]);
           setItems((s) => (replace ? [piece] : [...s, piece]));
           setActive(replace ? 0 : items.length); setAddingStock(false); setBlankStart(false);
+        }} />}
+      {addingCatalog && <CatalogPieceDialog onClose={() => setAddingCatalog(false)}
+        onAdd={(d) => {
+          const piece = { name: d.name, image: d.image ?? null, input: d.input, finishedGoodId: d.finishedGoodId };
+          const replace = items.length === 1 && isPristine(items[0]);
+          setItems((s) => (replace ? [piece] : [...s, piece]));
+          setActive(replace ? 0 : items.length); setAddingCatalog(false); setBlankStart(false);
         }} />}
       {confirmEl}
     </>
@@ -926,6 +941,85 @@ function QuotePieceDialog({ excludeQuoteId, onClose, onAdd }: { excludeQuoteId?:
           <p className="small muted" style={{ alignSelf: 'end' }}>O valor é recalculado com os custos de hoje e a quantidade escolhida, então pode ficar diferente do orçamento de origem.{sel.it.finishedGoodId ? ' Era peça do estoque: aqui vira peça sob encomenda.' : ''}</p>
         </div>}
       </div>
+    </Modal>
+  );
+}
+
+/** Preço vindo do catálogo: travado no orçamento; confere e traz o preço atual do catálogo. */
+function CatalogPriceNote({ ref_, locked, onUpdate }: { ref_: NonNullable<QuoteInput['catalogRef']>; locked: boolean; onUpdate: (price: string) => void }) {
+  const { toast } = useStore();
+  const [current, setCurrent] = useState<string | null | undefined>(undefined); // undefined = carregando
+  useEffect(() => {
+    let alive = true;
+    catalogRepository().get(ref_.catalogId).then((c) => { if (alive) setCurrent(currentCatalogPrice(c, ref_)); }).catch(() => { if (alive) setCurrent(undefined); });
+    return () => { alive = false; };
+  }, [ref_.catalogId, ref_.productId]);
+  const changed = current && !D(current).equals(D(ref_.price));
+  return (
+    <small>
+      Preço do catálogo <b>{ref_.catalogName}</b> ({ref_.productName}). Para mudar o preço, altere no catálogo.
+      {current === null && <> · <span style={{ color: 'var(--warning)' }}>o produto não está mais no catálogo (ou ficou sem preço).</span></>}
+      {changed && !locked && <> · <b style={{ color: 'var(--warning)' }}>No catálogo agora: {fmtBRL(current)}.</b>{' '}
+        <button type="button" className="btn ghost sm" onClick={() => { onUpdate(current!); toast('success', 'Preço atualizado com o do catálogo. Salve o orçamento.'); }}>Usar preço atual do catálogo</button></>}
+    </small>
+  );
+}
+
+/** Adiciona ao orçamento um produto de um catálogo, com o preço do catálogo (v1.25). */
+function CatalogPieceDialog({ onClose, onAdd }: { onClose: () => void; onAdd: (d: QuoteItemDraft) => void }) {
+  const { db, toast } = useStore();
+  const [list, setList] = useState<CatalogRecord[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [catalogId, setCatalogId] = useState('');
+  const [productId, setProductId] = useState('');
+  const [qty, setQty] = useState<string | null>('1');
+  const [q, setQ] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    catalogRepository().list().then((l) => {
+      const cs = catalogsForQuote(l);
+      setList(cs);
+      setCatalogId(cs[0]?.id ?? '');
+    }).catch((e) => { setError(e instanceof Error ? e.message : String(e)); setList([]); });
+  }, []);
+  const catalog = list?.find((c) => c.id === catalogId);
+  const products = (catalog?.data.products ?? []).filter((p) => !q.trim() || p.name.toLowerCase().includes(q.trim().toLowerCase()));
+  const sel = catalog?.data.products.find((p) => p.id === productId);
+  const add = async () => {
+    if (!catalog || !sel) return;
+    setBusy(true);
+    try {
+      const full = (await catalogRepository().get(catalog.id)) ?? catalog; // com as fotos
+      onAdd(catalogProductDraft(db, full, sel.id, Math.round(Number(qty ?? 0))));
+    } catch (e) { toast('error', e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
+  };
+  return (
+    <Modal wide title="Peça do catálogo" subtitle="Escolha o catálogo e o produto. A peça entra com o preço do catálogo (promocional, se houver). Para mudar o preço, altere no catálogo."
+      onClose={onClose}
+      footer={<><span className="muted small" style={{ marginRight: 'auto' }}>{sel ? `${sel.name} · ${fmtBRL(catalogProductPrice(sel))}` : 'Nenhum produto escolhido'}</span><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={add} disabled={!sel || busy}>{busy ? 'Carregando…' : 'Adicionar ao orçamento'}</button></>}>
+      {error ? <Alert tone="error" title="Não foi possível carregar os catálogos">{error}</Alert>
+        : list === null ? <p className="muted">Carregando catálogos…</p>
+        : list.length === 0 ? <Empty title="Nenhum catálogo com produtos" text="Monte um catálogo em Catálogo → Novo catálogo." />
+        : <div className="stack">
+          <div className="grid g2">
+            <SelectField label="Catálogo" value={catalogId} onChange={(v) => { setCatalogId(v); setProductId(''); }} options={list.map((c) => ({ value: c.id, label: `${c.name} · ${c.data.products.length} produto(s)` }))} />
+            <input type="search" className="search-lg" style={{ alignSelf: 'end' }} placeholder="Buscar produto…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Buscar produto do catálogo" />
+          </div>
+          <div className="card tbl-scroll" style={{ maxHeight: 360, overflowY: 'auto' }}><table className="tbl"><thead><tr><th></th><th>Produto</th><th>Origem</th><th className="num">Preço no catálogo</th></tr></thead><tbody>
+            {products.length === 0 && <tr><td colSpan={4} className="muted">Nenhum produto neste catálogo.</td></tr>}
+            {products.map((p) => { const price = catalogProductPrice(p); return (
+              <tr key={p.id} className={p.id === productId ? 'diff-row' : ''} style={{ cursor: price ? 'pointer' : 'not-allowed', opacity: price ? 1 : 0.6 }} onClick={() => price && setProductId(p.id)}>
+                <td><input type="radio" name="produto-catalogo" aria-label={`Escolher ${p.name}`} checked={p.id === productId} disabled={!price} onChange={() => setProductId(p.id)} /></td>
+                <td><b>{p.name}</b>{p.badge && <div className="muted small">{p.badge}</div>}</td>
+                <td className="muted small">{p.source?.label ?? 'sem origem (custo a preencher)'}</td>
+                <td className="num">{price ? <>{fmtBRL(price)}{p.promoPrice && p.originalPrice && <div className="muted small"><s>{fmtBRL(p.originalPrice)}</s></div>}</> : <span className="muted">sem preço</span>}</td>
+              </tr>); })}
+          </tbody></table></div>
+          {sel && <div className="grid g2">
+            <DecField label="Quantidade" value={qty} onChange={setQty} suffix="peças" />
+            <p className="small muted" style={{ alignSelf: 'end' }}>{sel.source?.kind === 'estoque' ? 'Peça pronta: se houver saldo, entra como pronta-entrega; senão, sob encomenda.' : sel.source ? 'Os custos vêm da peça de origem (para mostrar o lucro).' : 'Sem origem: preencha filamento e tempo para ver o custo e o lucro.'}</p>
+          </div>}
+        </div>}
     </Modal>
   );
 }
@@ -1159,9 +1253,10 @@ function ResultPanel({ ev, input, patch, locked }: { ev: QuoteEvaluation; input:
             <span>Valor para o cliente — 1 peça</span>
             <div className="row" style={{ gap: 10, flexWrap: 'nowrap' }}>
               <InlineDec prefix="R$" ariaLabel="Valor para o cliente por peça" value={input.manualPriceUnit} onChange={(v) => patch({ manualPriceUnit: v })}
-                placeholder={pricing.recommendedRoundedUnit ? pricing.recommendedRoundedUnit.toFixed(2).replace('.', ',') : '—'} disabled={locked} />
-              {input.manualPriceUnit && <button type="button" className="btn ghost sm" onClick={() => patch({ manualPriceUnit: null })} disabled={locked}>Usar sugerido</button>}
+                placeholder={pricing.recommendedRoundedUnit ? pricing.recommendedRoundedUnit.toFixed(2).replace('.', ',') : '—'} disabled={locked || !!input.catalogRef} />
+              {input.manualPriceUnit && !input.catalogRef && <button type="button" className="btn ghost sm" onClick={() => patch({ manualPriceUnit: null })} disabled={locked}>Usar sugerido</button>}
             </div>
+            {input.catalogRef && <CatalogPriceNote ref_={input.catalogRef} locked={locked} onUpdate={(price) => patch({ manualPriceUnit: price, catalogRef: { ...input.catalogRef!, price } })} />}
             <small>Sugerido: <b>{fmtBRL(pricing.recommendedRoundedUnit)}</b> (markup {input.markupPct ? fmtNum(input.markupPct) + '%' : '—'} sobre o custo{pricing.channel ? ` + encargos de ${pricing.channel.name}` : ''}) · Mínimo: {fmtBRL(pricing.minimumUnit)}</small>
             {pricing.analysis && pricing.selectedSource === 'recomendado' && input.rounding !== 'nenhum' && <small>
               Modelo: {fmtNum(q)} × {fmtBRL(pricing.analysis.effectiveUnitPrice)} = {fmtBRL(pricing.analysis.revenueBeforeRounding)} → <b>{fmtBRL(pricing.analysis.revenue)}</b> ({ROUNDING_LABEL[input.rounding].toLowerCase()} no valor final{pricing.analysis.roundingLimited ? ': passaria de +5% e ficou só nos centavos' : ''}; não arredonda cada peça)

@@ -2,6 +2,21 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.25.0 — 13/11/2026
+
+### Orçamentos → Peça do catálogo
+- Novo orçamento ganhou a opção **Peça do catálogo** (junto de “Criar nova peça”, “Peça de outro orçamento” e
+  “Peça do estoque”), e dentro do orçamento o botão **+ Peça do catálogo**. Escolhe o catálogo, o produto e a quantidade.
+- A peça entra com o **preço do catálogo** (o promocional, se houver; senão o original), com o nome comercial e a foto
+  do catálogo. O preço fica **travado no orçamento**: para mudar, altere no catálogo.
+- Se o preço no catálogo mudar depois, o orçamento mostra “No catálogo agora: R$ …” com o botão
+  **Usar preço atual do catálogo**. Orçamentos salvos não mudam sozinhos.
+- Os custos (para mostrar margem e lucro) vêm da origem do produto: peça de orçamento (filamento, peso, tempo) ou peça
+  pronta do estoque (pronta-entrega se houver saldo; senão sob encomenda). Produto sem origem entra só com nome e preço,
+  e o custo fica para preencher.
+- O preço do catálogo não recebe o arredondamento ,90 (é o preço final). Produto sem preço no catálogo não pode ser
+  orçado. O Catálogo Geral não aparece na lista (os produtos estão nos catálogos que ele junta). Kits do catálogo ainda não.
+
 ## v1.24.0 — 12/11/2026
 
 ### Correção de cálculo: arredondamento só no valor final

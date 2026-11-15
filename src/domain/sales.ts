@@ -12,7 +12,7 @@
 import type { DB, FinTitle, ID, ISODate, PaymentTerms, Sale } from './types';
 import { D, Decimal, Dn, ZERO, cents, sum } from './money';
 import { BusinessError, assert, audit, byId, isISODate, newId, nextCode, nowISO, requireText } from './core';
-import { categoryByName, cancelTitle, createTitlesFromTerms, titlePaid } from './finance';
+import { categoryByName, cancelTitle, createTitlesFromTerms, settleTitle, titleOpen, titlePaid } from './finance';
 import { SYS_FIN } from './schema';
 import { channelRates } from './pricing';
 import { compareOrder, finishedGoodBalance, markOrderDelivered } from './production';
@@ -253,6 +253,58 @@ export function saleStatus(db: DB, s: Sale, today: ISODate): { status: 'pago' | 
     status: s.status === 'cancelada' ? 'cancelada' : open.gt(0) ? 'a_pagar' : 'pago',
     total, received, open, nextDue, overdue: !!nextDue && nextDue < today && open.gt(0), titleIds: pending.map((t) => t.id),
   };
+}
+
+/**
+ * Quanto do total da venda já foi recebido, em % e por peça. Como o valor da venda é qty × preço da peça,
+ * receber X% da venda é receber X% de cada peça; fica a receber o restante de cada uma.
+ */
+export function salePaymentSplit(db: DB, s: Sale) {
+  const st = saleStatus(db, s, '9999-12-31');
+  const pct = st.total.isZero() ? ZERO : st.received.div(st.total).times(100);
+  return {
+    total: st.total, received: st.received, open: st.open, receivedPct: pct, openPct: Decimal.max(ZERO, D(100).minus(pct)),
+    perPiece: { total: st.total.div(s.qty), received: st.received.div(s.qty), open: st.open.div(s.qty) },
+  };
+}
+
+/** Valor do sinal: X% do total da venda (em centavos). */
+export function downPaymentAmount(db: DB, s: Sale, pct: string): Decimal {
+  return cents(saleStatus(db, s, '9999-12-31').total.times(D(pct || '0')).div(100));
+}
+
+/**
+ * Sinal (recebimento de um % da venda), v1.27. Recebe X% do total da venda na data informada: vira
+ * recebimento nas contas a receber da venda (vencimento mais próximo primeiro) e entra no extrato da conta.
+ * Rateio por peça: X% de cada peça fica recebido; o restante de cada peça continua a receber.
+ */
+export function receiveSaleDownPayment(db: DB, input: { saleId: ID; pct: string; date: ISODate; accountId: ID; method?: string }) {
+  const s = byId(db.sales, input.saleId, 'Venda');
+  assert(s.status === 'ativa', 'Venda cancelada não recebe sinal.');
+  assert(isISODate(input.date), 'Informe a data em que o sinal foi recebido.');
+  assert(input.accountId, 'Selecione a conta em que o dinheiro entrou.');
+  byId(db.accounts, input.accountId, 'Conta financeira');
+  const pct = D(input.pct || '0');
+  assert(pct.gt(0) && pct.lte(100), 'O percentual do sinal deve ser maior que 0% e até 100%.');
+  const split = salePaymentSplit(db, s);
+  const amount = downPaymentAmount(db, s, input.pct);
+  assert(split.open.gt(0), 'Esta venda já está totalmente recebida.');
+  assert(amount.gt(0), 'O sinal ficou em R$ 0,00. Aumente o percentual.');
+  if (amount.gt(split.open)) {
+    throw new BusinessError(`${pct.toFixed(2).replace('.', ',')}% da venda (R$ ${amount.toFixed(2)}) é mais do que falta receber: ${split.openPct.toFixed(2).replace('.', ',')}% (R$ ${split.open.toFixed(2)}).`);
+  }
+  const titles = db.titles.filter((t) => t.origin.kind === 'venda' && t.origin.id === s.id && t.direction === 'in' && t.status === 'aberto')
+    .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+  let left = amount;
+  for (const t of titles) {
+    if (left.isZero()) break;
+    const part = Decimal.min(left, titleOpen(t));
+    if (part.lte(0)) continue;
+    settleTitle(db, { titleId: t.id, date: input.date, amount: part.toString(), accountId: input.accountId, method: input.method?.trim() ? `Sinal · ${input.method.trim()}` : 'Sinal' });
+    left = left.minus(part);
+  }
+  audit(db, 'Sinal da venda', `${s.number}: ${pct.toString()}% = R$ ${amount.toFixed(2)} (R$ ${amount.div(s.qty).toFixed(3)} por peça, ${s.qty} peça(s))`);
+  return { amount, perPiece: amount.div(s.qty) };
 }
 
 export function saleEconomics(s: Sale): SaleEconomics {

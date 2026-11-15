@@ -2,6 +2,18 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.27.0 — 15/11/2026
+
+### Vendas → Sinal (% da venda)
+- Na lista de **Vendas**, a venda a pagar ganhou o botão **Sinal**: informe o **percentual recebido**, a **data** em que
+  o dinheiro entrou, a **conta** e a forma (PIX, cartão…).
+- O sinal é **rateado entre as peças**: 50% de uma venda de 10 peças = 50% de cada peça recebido, e fica a receber
+  só os outros 50% de cada peça. A janela mostra o valor por peça e o total (sinal agora e o que fica a receber).
+- Vira **recebimento** da conta a receber da venda (com a forma “Sinal · PIX”), entra no **extrato** da conta na data
+  informada e baixa o “A receber”. Em venda parcelada, o sinal baixa primeiro a parcela que vence antes.
+- A lista mostra “recebido 50%” na venda. O sinal não pode passar do que falta receber. Para corrigir, estorne o
+  recebimento em Financeiro → Contas a pagar e receber.
+
 ## v1.26.0 — 13/11/2026
 
 ### Orçamentos → Kit do catálogo

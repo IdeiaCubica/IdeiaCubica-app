@@ -19,7 +19,7 @@ import { compareOrder, finishedGoodBalance, markOrderDelivered } from './product
 import { quoteItem } from './quotes';
 import { addMovement } from './inventory';
 import { consumeKit } from './deliveryKits';
-import { orderReceivable, provisionOrderReceivable, restoreOrderAdvance, takeOrderAdvance } from './orderReceivables';
+import { orderReceivable, provisionOrderReceivable, restoreOrderAdvance, takeAllocationAdvance, takeOrderAdvance } from './orderReceivables';
 
 export interface SaleInput {
   date: ISODate;
@@ -169,7 +169,9 @@ function applySale(db: DB, inputIn: SaleInput, existing?: Sale): Sale {
   const receivable = gross.plus(freightCharged).minus(input.feesWithheld ? fees : ZERO);
   assert(receivable.gt(0), 'O valor líquido a receber deve ser maior que zero.');
   // O que o cliente já pagou no pedido (antes da entrega) entra como parte recebida desta venda.
-  const advance = existing ? ZERO : takeOrderAdvance(db, input.orderId ?? fgItem?.orderId, sale, receivable);
+  // Peça do estoque separada para o pedido (v1.30): o que o cliente pagou na separação também entra como recebido.
+  const advance = existing ? ZERO : takeOrderAdvance(db, input.orderId ?? fgItem?.orderId, sale, receivable)
+    .plus(!existing && alloc && fgItem ? takeAllocationAdvance(db, alloc, fgItem.id, sale, receivable) : ZERO);
   if (receivable.gt(advance)) {
     createTitlesFromTerms(db, {
       direction: 'in', description: `Venda ${sale.number} — ${description}${customer ? ' — ' + customer.name : ''}${advance.gt(0) ? ' (restante)' : ''}`,

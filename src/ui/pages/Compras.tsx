@@ -287,6 +287,9 @@ function PurchaseForm({ onClose, purchase, template }: { onClose: () => void; pu
             <NumField label="Intervalo" suffix="dias" value={pay.intervalDays} onChange={setPay('intervalDays')} />
           </>)}
         </div>
+        <p className="small muted" style={{ margin: 0 }}>{pay.mode === 'avista'
+          ? <>À vista: o valor <b>sai do extrato</b> na data da compra, na conta escolhida. Cartão de crédito ou parcelado: use “A prazo” — cada parcela só sai do extrato quando for paga.</>
+          : <>A prazo: gera contas a pagar; cada parcela só sai do extrato quando você registrar o pagamento.</>}</p>
         <TextArea label="Observações" value={f.notes} onChange={set('notes')} />
       </div>
       {creatingFor !== null && <MaterialForm onClose={() => setCreatingFor(null)}

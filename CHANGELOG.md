@@ -2,6 +2,22 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.30.0 — 15/11/2026
+
+### Correções de vendas e extrato (conferência orçamento × pedido × venda)
+- **Venda nasce “A receber”.** Antes, a venda (inclusive a da entrega no quadro de produção) abria como
+  “À vista (recebido agora)” e, sem trocar, lançava o dinheiro como recebido no extrato. Agora o padrão é
+  “A receber (o cliente ainda vai pagar)”, com vencimento na data da venda; “À vista — o cliente JÁ PAGOU agora”
+  só se escolhido, com aviso do valor e da conta em que entra.
+- **Peça do estoque separada para o pedido** (“Pedido aprovado”, pronta-entrega) passa a gerar conta a receber e
+  aparecer em Vendas, com sinal/recebimento antes da entrega. Na venda, o que foi pago entra como recebido; cancelar
+  a venda devolve o pagamento e a separação. Separações antigas são levadas para Contas a receber ao abrir o sistema.
+- **Peças do orçamento fora do pedido**: o pedido em Vendas avisa (⚠) as peças não aprovadas ou não enviadas para
+  produção, com o valor — para o total de Vendas não ficar diferente do orçamento sem explicação.
+- **Frete cobrado do cliente** (orçamento) entra no 1º pedido enviado para produção e na venda desse pedido.
+- Compras: aviso de que “à vista” sai do extrato na data da compra (cartão/parcelado = “A prazo”).
+- Scripts de auditoria somente leitura em `scripts/` (sobre o backup exportado).
+
 ## v1.29.0 — 15/11/2026
 
 ### Orçamentos → excluir peça

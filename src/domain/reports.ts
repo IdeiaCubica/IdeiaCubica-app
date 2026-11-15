@@ -50,6 +50,10 @@ function titleDetail(db: DB, t: FinTitle): { label: string; detail: string } {
     const c = db.parties.find((x) => x.id === t.partyId)?.name;
     return { label: `Pedido ${o?.number ?? ''}`.trim(), detail: o ? `${o.qtyPlanned} × ${o.description}${c ? ` — ${c}` : ''} (recebido antes da entrega)` : '' };
   }
+  if (t.origin.kind === 'separacao') {
+    const c = db.parties.find((x) => x.id === t.partyId)?.name;
+    return { label: t.description.split(' — ')[0], detail: `${t.description.split(' — ').slice(1).join(' — ')}${c && !t.description.includes(c) ? ` — ${c}` : ''} (recebido antes da entrega)` };
+  }
   return { label: 'Lançamento manual', detail: t.notes ?? '' };
 }
 

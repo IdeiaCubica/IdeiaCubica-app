@@ -15,6 +15,7 @@ import { depreciationPerHour, overheadRate } from './catalog';
 import { lotLabel } from './inventory';
 import { shippingDefaults } from './shipping';
 import { unusualUnitCost } from './costSanity';
+import { dropAllocationReceivable, provisionAllocationReceivable } from './orderReceivables';
 
 /** Novo orçamento já preenchido com os padrões de Parâmetros de Custos (todos alteráveis no orçamento). */
 export function emptyQuoteInput(settings: Settings): QuoteInput {
@@ -381,9 +382,13 @@ export function setItemStatus(db: DB, quoteId: ID, itemId: ID, status: QuoteItem
       const available = fg.qtyProduced - db.sales.filter((s) => s.finishedGoodId === fg.id && s.status === 'ativa').reduce((a, s) => a + s.qty, 0)
         - fg.adjustments.reduce((a, x) => a + x.qty, 0) - (fg.allocations ?? []).reduce((a, x) => a + x.qty, 0);
       assert(it.input.quantity <= available, `Só há ${available} peça(s) de ${fg.code} disponível(is) no estoque.`);
-      fg.allocations = [...(fg.allocations ?? []), { id: newId(), quoteId: q.id, itemId, qty: it.input.quantity, customerId: q.customerId, dueDate: opts.dueDate || undefined, createdAt: nowISO() }];
+      const allocId = newId();
+      fg.allocations = [...(fg.allocations ?? []), { id: allocId, quoteId: q.id, itemId, qty: it.input.quantity, customerId: q.customerId, dueDate: opts.dueDate || undefined, createdAt: nowISO() }];
+      // v1.30: o pedido aprovado do estoque entra em Contas a receber e em Vendas (o cliente pode pagar o sinal).
+      provisionAllocationReceivable(db, allocId);
       audit(db, 'Pedido aprovado (estoque)', `${q.number}: ${it.input.quantity} un. de ${fg.code} separadas`);
     } else if (status !== 'aprovado' && alloc) {
+      dropAllocationReceivable(db, alloc.id);
       fg.allocations = (fg.allocations ?? []).filter((a) => a.id !== alloc.id);
     }
   }

@@ -9,7 +9,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import type { DB } from '../domain/types';
 import { createRepository, requestPersistentStorage, type Repository } from '../data/repository';
 import { withTimeout } from '../data/supabase';
-import { pendingOrderReceivables, provisionOrderReceivables } from '../domain/orderReceivables';
+import { pendingAllocationReceivables, pendingOrderReceivables, provisionOrderReceivables } from '../domain/orderReceivables';
 
 type ToastKind = 'success' | 'error' | 'info' | 'warning';
 interface Toast { id: number; kind: ToastKind; text: string }
@@ -85,9 +85,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!db || provisioned.current) return;
     provisioned.current = true;
-    if (!pendingOrderReceivables(db).length) return;
+    if (!pendingOrderReceivables(db).length && !pendingAllocationReceivables(db)) return;
     setTimeout(() => run((d) => provisionOrderReceivables(d)).then((r) => {
-      if (r.ok && r.value) toast('info', `${r.value} pedido(s) da produção foram levados para Contas a receber.`);
+      if (r.ok && r.value) toast('info', `${r.value} pedido(s) (produção ou peças separadas do estoque) foram levados para Contas a receber.`);
     }), 1500);
   }, [db, run, toast]);
 

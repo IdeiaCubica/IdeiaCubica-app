@@ -62,7 +62,7 @@ export function PedidosVendas({ onNew }: { onNew: () => void }) {
           columns={[
             { key: 'n', header: 'Pedido', render: (p) => <span className="mono">{p.number}</span>, sort: (p) => p.number },
             { key: 'd', header: 'Data', render: (p) => fmtDate(p.date), sort: (p) => p.date },
-            { key: 'c', header: 'Cliente / peças', render: (p) => <><b>{customer(p.customerId) || 'sem cliente'}</b><div className="muted small">{p.lines.filter((l) => !l.cancelled).length} modelo(s) · {p.qty} peça(s): {p.lines.filter((l) => !l.cancelled).map((l) => l.label).join(', ')}</div></> },
+            { key: 'c', header: 'Cliente / peças', render: (p) => <><b>{customer(p.customerId) || 'sem cliente'}</b><div className="muted small">{p.lines.filter((l) => !l.cancelled).length} modelo(s) · {p.qty} peça(s): {p.lines.filter((l) => !l.cancelled).map((l) => l.label).join(', ')}</div>{p.pendingItems.length > 0 && <div className="small" style={{ color: 'var(--warning, #b26b00)' }}>⚠ {p.pendingItems.length} peça(s) do orçamento fora do pedido: {fmtBRL(p.pendingTotal)} (não aprovadas ou não enviadas)</div>}</> },
             { key: 'e', header: 'Entrega', render: (p) => <Badge tone={DELIVERY[p.delivery].tone}>{DELIVERY[p.delivery].label}</Badge>, sort: (p) => p.delivery },
             { key: 't', header: 'Valor', num: true, render: (p) => fmtBRL(p.total), sort: (p) => p.total.toNumber() },
             { key: 'r', header: 'Recebido', num: true, render: (p) => <>{fmtBRL(p.received)}<div className="muted small">{pctTxt(p.receivedPct)}</div></>, sort: (p) => p.received.toNumber() },
@@ -101,6 +101,9 @@ function PedidoModal({ pedido: p, onClose }: { pedido: Pedido; onClose: () => vo
     <Modal wide title={`Pedido ${p.number}`} subtitle={`${customer ?? 'sem cliente'} · ${p.qty} peça(s) · ${fmtBRL(p.total)} · ${DELIVERY[p.delivery].label}`} onClose={onClose}
       footer={<button className="btn ghost" onClick={onClose}>Fechar</button>}>
       <div className="stack">
+        {p.pendingItems.length > 0 && <Alert tone="warning" title={`Peças do orçamento que ainda não estão neste pedido: ${fmtBRL(p.pendingTotal)}`}>
+          {p.pendingItems.map((x) => `${x.name} (${x.qty} un · ${fmtBRL(x.price)} · ${x.state})`).join(" · ")}. Elas não estão cobradas nem em Contas a receber. Se o cliente fechou, aprove e envie para produção (Venda) no orçamento{p.quoteId ? <> — <a href={`#/orcamentos/${p.quoteId}`}>abrir orçamento</a></> : null}.
+        </Alert>}
         <div className="kpis">
           <Kpi label="Valor do pedido" value={fmtBRL(p.total)} hint={`${p.qty} peça(s)`} />
           <Kpi label="Recebido" value={fmtBRL(p.received)} hint={pctTxt(p.receivedPct)} />

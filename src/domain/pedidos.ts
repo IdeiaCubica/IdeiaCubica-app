@@ -14,6 +14,7 @@ import { D, Decimal, ZERO, cents, sum } from './money';
 import { BusinessError, assert, audit, byId, isISODate } from './core';
 import { settleTitle, titleOpen, titlePaid } from './finance';
 import { orderOnTrack, orderReceivable } from './orderReceivables';
+import { ITEM_STATE_LABEL, itemState, quoteItems } from './quotes';
 
 export interface PedidoLine {
   key: string;
@@ -48,6 +49,9 @@ export interface Pedido {
   payment: 'pago' | 'parcial' | 'a_receber' | 'cancelado';
   nextDue: ISODate | null;
   overdue: boolean;
+  /** Peças do orçamento que ainda não viraram pedido nem venda (não aprovadas ou não enviadas para produção). */
+  pendingItems: { name: string; qty: number; price: Decimal | null; state: string }[];
+  pendingTotal: Decimal;
 }
 
 function lineFromTitles(base: Omit<PedidoLine, 'total' | 'received' | 'open' | 'nextDue'>): PedidoLine {
@@ -58,6 +62,20 @@ function lineFromTitles(base: Omit<PedidoLine, 'total' | 'received' | 'open' | '
 
 /** Pedidos (orçamentos) com todas as peças: vendidas (entregues) e em produção (a entregar). */
 export function salesPedidos(db: DB, today: ISODate): Pedido[] {
+  // v1.30: peças do orçamento que ficaram de fora (não aprovadas ou não enviadas) — aparecem como aviso no pedido.
+  const pending = (quoteId: ID | undefined, lines: PedidoLine[]) => {
+    const q = quoteId ? db.quotes.find((x) => x.id === quoteId) : undefined;
+    if (!q) return { pendingItems: [], pendingTotal: ZERO };
+    const items = quoteItems(q).filter((it) => {
+      const st = itemState(db, q, it.itemId);
+      if (st === 'recusado') return false;
+      const inLines = lines.some((l) => !l.cancelled && ((l.order?.quoteItemId === it.itemId) || l.sale?.quoteItemId === it.itemId || (l.sale?.orderId && db.orders.find((o) => o.id === l.sale!.orderId)?.quoteItemId === it.itemId)
+        || (l.key.startsWith('s:') && db.finishedGoods.some((g) => g.allocations?.some((a) => `s:${a.id}` === l.key && a.itemId === it.itemId)))));
+      return !inLines;
+    });
+    const list = items.map((it) => ({ name: it.name, qty: it.input.quantity, price: it.summary.orderPrice ? D(it.summary.orderPrice) : null, state: ITEM_STATE_LABEL[itemState(db, q, it.itemId)] }));
+    return { pendingItems: list, pendingTotal: sum(list.map((x) => x.price ?? ZERO)) };
+  };
   const groups = new Map<string, { quoteId?: ID; customerId?: ID; date: ISODate; lines: PedidoLine[] }>();
   const put = (key: string, info: { quoteId?: ID; customerId?: ID; date: ISODate }, line: PedidoLine) => {
     const g = groups.get(key) ?? { ...info, lines: [] };
@@ -81,6 +99,17 @@ export function salesPedidos(db: DB, today: ISODate): Pedido[] {
     put(key, { quoteId: o.quoteId, customerId: o.customerId, date },
       lineFromTitles({ key: `o:${o.id}`, kind: 'pedido', label: o.description, number: o.number, qty: Math.max(1, o.actual?.qtyApproved || o.qtyPlanned), delivered: false, cancelled: false, titles: [t], order: o }));
   }
+  // v1.30: peças do estoque separadas para o pedido (conta a receber da separação).
+  for (const t of db.titles) {
+    if (t.origin.kind !== 'separacao' || t.status === 'cancelado') continue;
+    let found: { fg: (typeof db.finishedGoods)[number]; a: NonNullable<(typeof db.finishedGoods)[number]['allocations']>[number] } | undefined;
+    for (const fg of db.finishedGoods) { const a = fg.allocations?.find((x) => x.id === t.origin.id); if (a) { found = { fg, a }; break; } }
+    if (!found) continue;
+    const q = db.quotes.find((x) => x.id === found!.a.quoteId);
+    const it = q?.versions.length ? q.versions[q.versions.length - 1].items.find((x) => x.itemId === found!.a.itemId) : undefined;
+    put(`q:${found.a.quoteId}`, { quoteId: found.a.quoteId, customerId: found.a.customerId ?? q?.customerId, date: t.competenceDate },
+      lineFromTitles({ key: `s:${found.a.id}`, kind: 'pedido', label: it?.name ?? found.fg.description, number: found.fg.code, qty: found.a.qty, delivered: false, cancelled: false, titles: [t] }));
+  }
   const out: Pedido[] = [];
   for (const [key, g] of groups) {
     const live = g.lines.filter((l) => !l.cancelled);
@@ -95,7 +124,7 @@ export function salesPedidos(db: DB, today: ISODate): Pedido[] {
       receivedPct: total.isZero() ? ZERO : received.div(total).times(100),
       delivery: !live.length ? 'cancelado' : delivered === live.length ? 'entregue' : delivered === 0 ? 'a_entregar' : 'parcial',
       payment: !live.length ? 'cancelado' : open.isZero() ? 'pago' : received.gt(0) ? 'parcial' : 'a_receber',
-      nextDue, overdue: !!nextDue && nextDue < today && open.gt(0),
+      nextDue, overdue: !!nextDue && nextDue < today && open.gt(0), ...pending(g.quoteId, g.lines),
     });
   }
   return out.sort((a, b) => b.date.localeCompare(a.date) || b.number.localeCompare(a.number));

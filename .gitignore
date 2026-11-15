@@ -19,3 +19,6 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 .idea
+
+# Backups exportados e relatórios de auditoria (dados de clientes: nunca vão para o GitHub)
+backups/

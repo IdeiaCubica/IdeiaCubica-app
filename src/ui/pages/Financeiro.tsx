@@ -10,7 +10,9 @@ import { itemState, latestVersion, quoteItem, quoteItemAt, quoteItems } from '..
 import { kitUnitCost } from '../../domain/deliveryKits';
 import { addDays, fmtDate, todayISO } from '../../domain/core';
 import { D, Decimal, ZERO, cents, fmtBRL, fmtPct, parseBR, sum } from '../../domain/money';
-import { orderReceivable, pendingOrderReceivables, provisionOrderReceivables } from '../../domain/orderReceivables';
+import { orderReceivable, pendingAllocationReceivables, pendingOrderReceivables, provisionOrderReceivables, saleFreightDefault } from '../../domain/orderReceivables';
+/** Frete para o campo do formulário (vazio = sem frete). */
+const brFreight = (d: Decimal) => (d.isZero() ? '' : d.toFixed(2).replace('.', ','));
 import { Alert, Badge, Check, Combobox, DataTable, DateField, Empty, Field, Kpi, Modal, NumField, PageHead, SelectField, Tabs, TextArea, TextField, dec, num, useConfirm, useForm, type Tone } from '../components/ui';
 import { NATURE_LABEL } from './Configuracoes';
 import { Extrato, ExtratoTotal, Fechamento } from './RelatoriosFinanceiros';
@@ -152,6 +154,7 @@ function Painel() {
 function Titulos() {
   const { db, run } = useStore();
   const pendingOrders = pendingOrderReceivables(db);
+  const pendingCount = pendingOrders.length + pendingAllocationReceivables(db);
   const today = todayISO();
   const [dir, setDir] = useState<'' | 'in' | 'out'>('');
   const [status, setStatus] = useState('aberto');
@@ -160,7 +163,7 @@ function Titulos() {
   const total = rows.reduce((a, t) => a.plus(titleOpen(t).times(t.direction === 'in' ? 1 : -1)), ZERO);
   return (
     <div className="stack">
-    {pendingOrders.length > 0 && <Alert tone="info" title={`${pendingOrders.length} pedido(s) em produção ainda fora de Contas a receber`}>
+    {pendingCount > 0 && <Alert tone="info" title={`${pendingCount} pedido(s) ainda fora de Contas a receber`}>
       {pendingOrders.map((o) => o.number).join(', ')}.{' '}
       <button type="button" className="link-btn" onClick={() => run((d) => provisionOrderReceivables(d), 'Pedidos levados para Contas a receber.')}>Levar para Contas a receber</button>
     </Alert>}
@@ -211,7 +214,7 @@ export function TitleModal({ title, onClose }: { title: FinTitle; onClose: () =>
     ...(coreEditable ? { amount: dec(e.amount) ?? '0', competenceDate: e.competenceDate, categoryId: e.categoryId } : {}) }), 'Título corrigido.').then((r) => r.ok && setEditing(false));
   return (
     <Modal wide title={t.description} subtitle={`${t.direction === 'in' ? 'Conta a receber' : 'Conta a pagar'} · ${cat?.name} (${cat ? NATURE_LABEL[cat.nature] : ''})`} onClose={onClose}
-      footer={<><button className="btn ghost" onClick={onClose}>Fechar</button>{t.status !== 'cancelado' && titlePaid(t).isZero() && t.origin.kind !== 'pedido' && <button className="btn danger" onClick={cancel}>Cancelar título</button>}
+      footer={<><button className="btn ghost" onClick={onClose}>Fechar</button>{t.status !== 'cancelado' && titlePaid(t).isZero() && t.origin.kind !== 'pedido' && t.origin.kind !== 'separacao' && <button className="btn danger" onClick={cancel}>Cancelar título</button>}
         {t.status !== 'cancelado' && !editing && <button className="btn secondary" onClick={() => setEditing(true)}>Editar</button>}</>}>
       <div className="stack">
         {t.status === 'cancelado' && <Alert tone="error" title="Cancelado">{t.cancelReason}</Alert>}
@@ -236,7 +239,7 @@ export function TitleModal({ title, onClose }: { title: FinTitle; onClose: () =>
           <dt>Valor</dt><dd>{fmtBRL(t.amount)}</dd><dt>Competência</dt><dd>{fmtDate(t.competenceDate)}</dd><dt>Vencimento</dt><dd>{fmtDate(t.dueDate)}</dd>
           <dt>Pago/recebido</dt><dd>{fmtBRL(titlePaid(t))}</dd><dt>Em aberto</dt><dd><b>{fmtBRL(open)}</b></dd>
           {t.partyId && <><dt>{t.direction === 'in' ? 'Cliente' : 'Fornecedor'}</dt><dd>{db.parties.find((p) => p.id === t.partyId)?.name}</dd></>}
-          <dt>Origem</dt><dd>{t.origin.kind === 'compra' ? `Compra ${db.purchases.find((p) => p.id === t.origin.id)?.number}` : t.origin.kind === 'venda' ? `Venda ${db.sales.find((s) => s.id === t.origin.id)?.number}${t.advance ? ' (pago antes da entrega)' : ''}` : t.origin.kind === 'pedido' ? `Pedido ${db.orders.find((o) => o.id === t.origin.id)?.number ?? ''} (em produção; vira venda na entrega)` : 'Lançamento manual'}</dd>
+          <dt>Origem</dt><dd>{t.origin.kind === 'compra' ? `Compra ${db.purchases.find((p) => p.id === t.origin.id)?.number}` : t.origin.kind === 'venda' ? `Venda ${db.sales.find((s) => s.id === t.origin.id)?.number}${t.advance ? ' (pago antes da entrega)' : ''}` : t.origin.kind === 'pedido' ? `Pedido ${db.orders.find((o) => o.id === t.origin.id)?.number ?? ''} (em produção; vira venda na entrega)` : t.origin.kind === 'separacao' ? 'Peças do estoque separadas para o pedido (vira venda na entrega)' : 'Lançamento manual'}</dd>
         </dl>
         {t.settlements.length > 0 && <div className="card"><table className="tbl"><thead><tr><th>Data</th><th>Conta</th><th className="num">Valor</th><th /></tr></thead><tbody>
           {t.settlements.map((s) => <tr key={s.id} className={s.reversed ? 'muted' : ''}><td>{fmtDate(s.date)}</td><td>{db.accounts.find((a) => a.id === s.accountId)?.name} {s.method && <span className="muted small">· {s.method}</span>}</td>
@@ -262,22 +265,34 @@ export function TitleModal({ title, onClose }: { title: FinTitle; onClose: () =>
 }
 
 /* ---------------- Condições de pagamento (compartilhado) ---------------- */
-function useTerms(defaultDate: string, initial?: PaymentTerms) {
+/**
+ * Condição de pagamento/recebimento. v1.30: na VENDA o padrão é "a receber" (vencimento na data da venda):
+ * "à vista" lança o dinheiro como recebido no extrato e só acontece se o usuário escolher — com aviso do valor.
+ */
+function useTerms(defaultDate: string, initial?: PaymentTerms, opts: { defaultMode?: PaymentTerms['mode']; dueSameDay?: boolean } = {}) {
   const { db } = useStore();
-  const [p, set] = useForm(() => ({ mode: (initial?.mode ?? 'avista') as PaymentTerms['mode'], accountId: initial?.accountId ?? db.accounts.find((a) => a.active)?.id ?? '', method: initial?.method ?? 'PIX',
-    installments: String(initial?.installments ?? 1), firstDue: initial?.mode === 'aprazo' ? initial.firstDue : addDays(defaultDate, 30), intervalDays: String(initial?.intervalDays ?? 30) }));
+  const [p, set] = useForm(() => ({ mode: (initial?.mode ?? opts.defaultMode ?? 'avista') as PaymentTerms['mode'], accountId: initial?.accountId ?? db.accounts.find((a) => a.active)?.id ?? '', method: initial?.method ?? 'PIX',
+    installments: String(initial?.installments ?? 1), firstDue: initial?.mode === 'aprazo' ? initial.firstDue : opts.dueSameDay ? defaultDate : addDays(defaultDate, 30), intervalDays: String(initial?.intervalDays ?? 30) }));
   const toTerms = (date: string): PaymentTerms => p.mode === 'avista'
     ? { mode: 'avista', accountId: p.accountId || undefined, method: p.method, installments: 1, firstDue: date, intervalDays: 30 }
-    : { mode: 'aprazo', method: p.method, installments: num(p.installments) ?? 0, firstDue: p.firstDue, intervalDays: num(p.intervalDays) ?? 0 };
-  const fields = (labelIn: boolean) => (
-    <div className="grid g4">
-      <SelectField label="Condição" value={p.mode} onChange={(v) => set('mode')(v as PaymentTerms['mode'])} options={[{ value: 'avista', label: labelIn ? 'À vista (recebido agora)' : 'À vista (pago agora)' }, { value: 'aprazo', label: labelIn ? 'A prazo (conta a receber)' : 'A prazo (conta a pagar)' }]} />
-      <TextField label="Forma" value={p.method} onChange={set('method')} placeholder="PIX, cartão, boleto…" />
-      {p.mode === 'avista' ? <SelectField label="Conta" value={p.accountId} onChange={set('accountId')} placeholder="— selecione —" options={db.accounts.filter((a) => a.active).map((a) => ({ value: a.id, label: a.name }))} />
-        : <><NumField label="Parcelas" value={p.installments} onChange={set('installments')} /><DateField label="1º vencimento" value={p.firstDue} onChange={set('firstDue')} /><NumField label="Intervalo" suffix="dias" value={p.intervalDays} onChange={set('intervalDays')} /></>}
+    : { mode: 'aprazo', method: p.method, installments: num(p.installments) ?? 0, firstDue: p.firstDue < date ? date : p.firstDue, intervalDays: num(p.intervalDays) ?? 0 };
+  const accountName = db.accounts.find((a) => a.id === p.accountId)?.name ?? 'a conta escolhida';
+  const fields = (labelIn: boolean, amount?: Decimal | null) => (
+    <div className="stack">
+      <div className="grid g4">
+        <SelectField label="Condição" value={p.mode} onChange={(v) => set('mode')(v as PaymentTerms['mode'])} options={labelIn
+          ? [{ value: 'aprazo', label: 'A receber (o cliente ainda vai pagar)' }, { value: 'avista', label: 'À vista — o cliente JÁ PAGOU agora' }]
+          : [{ value: 'avista', label: 'À vista (pago agora)' }, { value: 'aprazo', label: 'A prazo (conta a pagar)' }]} />
+        <TextField label="Forma" value={p.method} onChange={set('method')} placeholder="PIX, cartão, boleto…" />
+        {p.mode === 'avista' ? <SelectField label="Conta" value={p.accountId} onChange={set('accountId')} placeholder="— selecione —" options={db.accounts.filter((a) => a.active).map((a) => ({ value: a.id, label: a.name }))} />
+          : <><NumField label="Parcelas" value={p.installments} onChange={set('installments')} /><DateField label={labelIn ? 'Vencimento (1ª parcela)' : '1º vencimento'} value={p.firstDue} onChange={set('firstDue')} /><NumField label="Intervalo" suffix="dias" value={p.intervalDays} onChange={set('intervalDays')} /></>}
+      </div>
+      {p.mode === 'avista' && <Alert tone="warning" title={labelIn ? 'Isto lança o dinheiro como RECEBIDO no extrato' : 'Isto lança a saída de dinheiro no extrato'}>
+        {amount ? <b>{fmtBRL(amount)}</b> : 'O valor'} {labelIn ? 'entra' : 'sai'} hoje em <b>{accountName}</b>. Use só se o dinheiro {labelIn ? 'já entrou de fato' : 'já saiu de fato'}; senão, escolha {labelIn ? '“A receber”' : '“A prazo”'}.
+      </Alert>}
     </div>
   );
-  return { toTerms, fields };
+  return { toTerms, fields, mode: p.mode };
 }
 
 function ManualForm({ onClose }: { onClose: () => void }) {
@@ -439,7 +454,7 @@ export function SaleForm({ onClose, preset, sale }: { onClose: () => void; prese
     if (pq) {
       const it = quoteItem(pq, preset?.itemId);
       return { ...base, quoteId: pq.id, quoteItemId: it.itemId, finishedGoodId: it.finishedGoodId ?? '', description: it.name, projectId: pq.projectId ?? '', customerId: pq.customerId ?? '',
-        qty: String(it.input.quantity), unitPrice: it.summary.unitPrice ? it.summary.unitPrice.replace('.', ',') : '', channelId: it.input.channelId ?? base.channelId, ...kitDefault(pq) };
+        qty: String(it.input.quantity), unitPrice: it.summary.unitPrice ? it.summary.unitPrice.replace('.', ',') : '', channelId: it.input.channelId ?? base.channelId, ...kitDefault(pq), freightCharged: brFreight(saleFreightDefault(db, { quoteId: pq.id })) };
     }
     const fg = db.finishedGoods.find((x) => x.id === preset?.finishedGoodId);
     if (fg) return { ...base, finishedGoodId: fg.id, description: fg.description, projectId: fg.projectId ?? '', unitPrice: fg.suggestedPrice ? fg.suggestedPrice.replace('.', ',') : '' };
@@ -451,11 +466,12 @@ export function SaleForm({ onClose, preset, sale }: { onClose: () => void; prese
       // Preço: o do orçamento; produção para estoque: o sugerido da peça (ou da estimativa).
       const price = it?.summary.unitPrice ?? fg?.suggestedPrice ?? o.estimate?.summary.unitPrice ?? null;
       return { ...base, orderId: o.id, quoteId: q?.id ?? '', quoteItemId: it?.itemId ?? '', finishedGoodId: o.finishedGoodId ?? '', description: o.description, projectId: o.projectId ?? '', customerId: o.customerId ?? q?.customerId ?? '',
-        qty: String(o.actual?.qtyApproved ?? o.qtyPlanned), unitPrice: price ? price.replace('.', ',') : '', channelId: it?.input.channelId ?? base.channelId, ...(q ? kitDefault(q) : {}) };
+        qty: String(o.actual?.qtyApproved ?? o.qtyPlanned), unitPrice: price ? price.replace('.', ',') : '', channelId: it?.input.channelId ?? base.channelId, ...(q ? kitDefault(q) : {}), freightCharged: brFreight(saleFreightDefault(db, { quoteId: q?.id, orderId: o.id })) };
     }
     return base;
   });
-  const terms = useTerms(f.date, sale?.payment);
+  // v1.30: venda nova nasce "a receber" (vencimento na data da venda). "À vista" só se o usuário escolher.
+  const terms = useTerms(f.date, sale?.payment, { defaultMode: 'aprazo', dueSameDay: true });
   const editBlock = sale ? saleEditBlock(db, sale) : null;
   const kitInput = f.kitId ? { kitId: f.kitId, qty: Math.max(1, Math.round(num(f.kitQty) ?? 1)) } : null;
   const kitModel = db.deliveryKits.find((k) => k.id === f.kitId);
@@ -556,7 +572,7 @@ export function SaleForm({ onClose, preset, sale }: { onClose: () => void; prese
         )}
         <p className="section-title">Recebimento{advance.gt(0) ? ' do restante' : ''}</p>
         {advance.gt(0) && <Alert tone="success" title={`O cliente já pagou ${fmtBRL(advance)} neste pedido`}>Esse valor entra como recebido nesta venda (não gera nova conta).{remaining?.isZero() ? ' Não há restante a receber.' : ' Informe abaixo como será recebido o restante.'}</Alert>}
-        {!(advance.gt(0) && remaining?.isZero()) && terms.fields(true)}
+        {!(advance.gt(0) && remaining?.isZero()) && terms.fields(true, remaining)}
         <TextArea label="Observações" value={f.notes} onChange={set('notes')} />
         <p className="small muted">Ao escolher uma peça pronta do estoque, a venda baixa o saldo de pronta-entrega (cancelar a venda devolve as peças ao saldo).</p>
       </div>

@@ -412,6 +412,11 @@ details.params-details[open] > summary { border-bottom: 1px solid var(--border);
 .piece-tab.on { background: var(--surface); border-color: var(--ic-ideia); box-shadow: var(--shadow-card); }
 .piece-tab.refused { opacity: 0.6; }
 .piece-tab:focus-visible { outline: 2px solid var(--ic-tecnologia); outline-offset: 2px; }
+.piece-tab-wrap { position: relative; }
+.piece-tab-wrap > .piece-tab { width: 100%; padding-right: 34px; }
+.piece-del { all: unset; position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; border-radius: 8px; display: grid; place-items: center; font-size: 12px; cursor: pointer; color: var(--muted, #667); }
+.piece-del:hover { background: rgb(200 40 40 / 0.12); color: var(--error, #c22); }
+.piece-del:focus-visible { outline: 2px solid var(--ic-tecnologia); outline-offset: 1px; }
 .piece-tab img, .piece-num { grid-row: 1 / span 2; width: 44px; height: 44px; border-radius: 10px; object-fit: cover; }
 .piece-num { display: flex; align-items: center; justify-content: center; background: var(--ic-realizacao); color: var(--ic-ideia); font-weight: 800; font-size: 18px; }
 .piece-txt { min-width: 0; }

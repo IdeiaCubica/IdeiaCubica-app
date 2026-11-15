@@ -16,7 +16,9 @@ import { materialLabel } from './catalog';
 import { MAX_IMAGE_CHARS, emptyQuoteInput, quoteItemImage, evaluateQuote, isItemLocked, itemState, latestVersion, quoteItem, quoteItemAt, quoteItems, refreshQuoteStatus, resolveParams, saveQuote, summarize, type QuoteItemDraft } from './quotes';
 import { computeCosts, laborTotals, type CostResult } from './costing';
 import { dropOrderReceivable, orderOnTrack, orderReceivable, provisionOrderReceivable } from './orderReceivables';
-import { titlePaid } from './finance';
+import { dropOrderPurges } from './purges';
+import { categoryByName, createTitlesFromTerms, titlePaid } from './finance';
+import { SYS_FIN } from './schema';
 
 export const ORDER_STATUS_LABEL: Record<OrderStatus, string> = {
   planejada: 'Planejada', aguardando_material: 'Aguardando material', pronta: 'Pronta para produção', em_producao: 'Em produção',
@@ -147,6 +149,7 @@ export function returnOrderToQuote(db: DB, orderId: ID, reason: string) {
   const blockers = orderUndoBlockers(db, o);
   if (blockers.length) throw new BusinessError(`Para retornar ${o.number}: ${blockers.map((b) => b.text).join(' ')}`);
   dropOrderReceivable(db, o);
+  dropOrderPurges(db, o.id);
   if (o.status === 'concluida') {
     // Desfaz a produção: o consumo de material deixa de existir e as peças prontas geradas saem do estoque.
     db.movements = db.movements.filter((m) => !(m.ref.kind === 'op' && m.ref.id === o.id));
@@ -680,6 +683,7 @@ export function cancelOrder(db: DB, orderId: ID, reason: string) {
   assert(o.status !== 'concluida', 'Ordem concluída não pode ser cancelada (o consumo já ocorreu).');
   assert(o.status !== 'cancelada', 'Ordem já cancelada.');
   dropOrderReceivable(db, o);
+  dropOrderPurges(db, o.id);
   releaseAll(db, o.id, 'op', 'liberacao_cancelamento');
   o.status = 'cancelada';
   o.cancelReason = requireText(reason, 'o motivo do cancelamento');
@@ -735,6 +739,7 @@ export function deleteOrder(db: DB, orderId: ID, reason: string) {
   const block = orderDeleteBlock(db, o);
   if (block) throw new BusinessError(block);
   dropOrderReceivable(db, o);
+  dropOrderPurges(db, o.id);
   db.movements = db.movements.filter((m) => !(m.ref.kind === 'op' && m.ref.id === o.id));
   if (o.finishedGoodId) db.finishedGoods = db.finishedGoods.filter((g) => g.id !== o.finishedGoodId);
   db.orders = db.orders.filter((x) => x.id !== o.id);
@@ -749,7 +754,53 @@ export function deleteOrder(db: DB, orderId: ID, reason: string) {
 /* ---------------- Previsto × realizado ---------------- */
 export interface OrderComparison {
   estimated: { total: Decimal | null; unit: Decimal | null; materialQty: Decimal; hours: Decimal | null; complete: boolean };
-  real: { total: Decimal; unit: Decimal | null; materialQty: Decimal; hours: Decimal; laborEstimated: boolean; result: CostResult } | null;
+  real: { total: Decimal; unit: Decimal | null; materialQty: Decimal; hours: Decimal; laborEstimated: boolean; result: CostResult; extras: Decimal } | null;
+}
+
+/* ---------------- Gastos não previstos (acabamento), v1.29 ---------------- */
+export const orderExtraTotal = (o: ProductionOrder): Decimal => sum((o.extraCosts ?? []).map((e) => D(e.amount)));
+
+/**
+ * Lança um gasto que não estava previsto (ex.: cordão comprado para o enfeite). Entra no custo real do pedido
+ * (custo por peça = custo real ÷ peças aprovadas). Opcional: lança o pagamento no financeiro (sai da conta na data),
+ * na categoria "Gastos extras de produção" — que não é despesa do mês: o valor entra no resultado pelo custo da peça.
+ */
+export function addOrderExtraCost(db: DB, orderId: ID, input: { description: string; amount: string; date: string; pay?: { accountId: ID; method?: string } | null }) {
+  const o = byId(db.orders, orderId, 'Pedido/produção');
+  assert(o.status !== 'cancelada', 'Pedido cancelado não recebe gastos.');
+  assert(o.status !== 'concluida', 'Produção já concluída: o custo real já foi fechado. Lance o gasto antes de concluir (no acabamento).');
+  const description = requireText(input.description, 'o que foi o gasto');
+  const amount = D(input.amount || '0').toDecimalPlaces(2);
+  assert(amount.gt(0), 'O valor do gasto deve ser maior que zero.');
+  assert(/^\d{4}-\d{2}-\d{2}$/.test(input.date ?? ''), 'Informe a data do gasto.');
+  const e = { id: newId(), description, amount: amount.toString(), date: input.date, createdAt: nowISO() } as NonNullable<ProductionOrder['extraCosts']>[number];
+  if (input.pay) {
+    const [t] = createTitlesFromTerms(db, {
+      direction: 'out', description: `${o.number} — gasto extra: ${description}`, categoryId: categoryByName(db, SYS_FIN.extrasProducao).id, amount,
+      competenceDate: input.date, projectId: o.projectId, origin: { kind: 'manual' },
+      terms: { mode: 'avista', accountId: input.pay.accountId, method: input.pay.method, installments: 1, firstDue: input.date, intervalDays: 30 },
+    });
+    e.titleId = t.id;
+  }
+  o.extraCosts = [...(o.extraCosts ?? []), e];
+  audit(db, 'Gasto extra no pedido', `${o.number}: ${description} R$ ${amount.toFixed(2)}`);
+  return e;
+}
+
+/** Remove o gasto extra (antes de concluir). Se foi lançado no financeiro, o pagamento é estornado e a conta cancelada. */
+export function removeOrderExtraCost(db: DB, orderId: ID, extraId: ID) {
+  const o = byId(db.orders, orderId, 'Pedido/produção');
+  assert(o.status !== 'concluida' && o.status !== 'cancelada', 'Produção encerrada: o custo real já foi fechado.');
+  const e = (o.extraCosts ?? []).find((x) => x.id === extraId);
+  if (!e) throw new BusinessError('Gasto não encontrado.');
+  const t = e.titleId ? db.titles.find((x) => x.id === e.titleId) : undefined;
+  if (t && t.status !== 'cancelado') {
+    for (const s of t.settlements) if (!s.reversed) s.reversed = { at: nowISO(), reason: `Gasto extra removido do pedido ${o.number}` };
+    t.status = 'cancelado';
+    t.cancelReason = `Gasto extra removido do pedido ${o.number}`;
+  }
+  o.extraCosts = (o.extraCosts ?? []).filter((x) => x.id !== extraId);
+  audit(db, 'Gasto extra removido', `${o.number}: ${e.description}`);
 }
 
 export function orderBaseInput(db: DB, o: ProductionOrder): { input: QuoteInput; params: CostParams | null } {
@@ -816,10 +867,13 @@ export function compareOrder(db: DB, o: ProductionOrder): OrderComparison {
   const fresh = resolveParams(db, real);
   const realParams: CostParams = { ...baseParams, lots: { ...baseParams.lots, ...fresh.lots }, materials: { ...baseParams.materials, ...fresh.materials }, printer: fresh.printer ?? baseParams.printer };
   const r = computeCosts(real, realParams);
+  // Gastos não previstos lançados no acabamento (v1.29): entram no custo real do pedido.
+  const extras = orderExtraTotal(o);
+  const realTotal = r.total.plus(extras);
   return {
     estimated,
     real: {
-      total: r.total, unit: a.qtyApproved > 0 ? r.total.div(a.qtyApproved) : null,
+      total: realTotal, unit: a.qtyApproved > 0 ? realTotal.div(a.qtyApproved) : null, extras,
       materialQty: sum([...lotTotals.values()]), hours: D(realHours), laborEstimated, result: r,
     },
   };

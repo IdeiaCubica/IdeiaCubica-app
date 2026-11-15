@@ -1,22 +1,20 @@
 /**
- * Módulo Vendas: peças entregues (vendidas), com a situação do pagamento — pago ou a pagar.
- * As vendas entram aqui pelo quadro de produção (Produzidas → Peça entregue), pelos pedidos,
- * pelo estoque de peças produzidas ou pelo botão Registrar venda.
+ * Módulo Vendas: o PEDIDO completo (todas as peças do orçamento), entregue ou não, com a situação do
+ * pagamento. Os pedidos entram aqui quando a peça vai para produção como Venda; as vendas avulsas
+ * (Registrar venda, estoque de peças prontas) formam um pedido sozinhas (v1.29).
  */
 import { useState } from 'react';
 import { PageHead } from '../components/ui';
-import { OrdersInProduction, SaleForm, SalesList } from './Financeiro';
+import { SaleForm } from './Financeiro';
+import { PedidosVendas } from './VendasPedidos';
 
 export function Vendas() {
   const [selling, setSelling] = useState(false);
   return (
     <>
-      <PageHead eyebrow="Vendas" title="Vendas" text="Pedidos de venda em produção (já cobráveis: registre o sinal) e peças entregues aos clientes, com a situação de cada pagamento. Clique numa venda para editar; use Sinal ou Receber quando o cliente pagar."
+      <PageHead eyebrow="Vendas" title="Vendas" text="Cada linha é um pedido completo, com todas as peças. Filtre por entregues e não entregues; abra o pedido para receber o sinal ou uma parte (rateado pelas peças) e ver a purga real por cor."
         actions={<button className="btn primary" onClick={() => setSelling(true)}>Registrar venda</button>} />
-      <div className="stack">
-        <OrdersInProduction />
-        <SalesList onNew={() => setSelling(true)} />
-      </div>
+      <PedidosVendas onNew={() => setSelling(true)} />
       {selling && <SaleForm onClose={() => setSelling(false)} />}
     </>
   );

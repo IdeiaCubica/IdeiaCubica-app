@@ -613,14 +613,66 @@ export interface ProductionOrder {
   destination?: 'estoque' | 'entregue';
   destinationAt?: ISODateTime;
   /** Medição ao sair da impressão (Em produção → Acabamento): peso real de 1 peça e purga do lote. */
-  measured?: { pieceWeightG: number | null; purgeG: number | null; skipped: boolean; at: ISODateTime };
+  measured?: {
+    pieceWeightG: number | null; purgeG: number | null; skipped: boolean; at: ISODateTime;
+    /** Purga por cor (v1.29). `purgeG` é a soma. Cada cor entra no estoque de purgas. */
+    purges?: OrderPurge[];
+  };
+  /** Gastos não previstos lançados no acabamento (ex.: cordão comprado depois). Entram no custo real (v1.29). */
+  extraCosts?: OrderExtraCost[];
 }
 
 /**
  * Peças prontas em estoque para venda (pronta-entrega). Saldo = produzidas −
  * vendidas (vendas ativas com finishedGoodId) − baixas manuais.
  */
+/** Purga de uma cor medida na produção. */
+export interface OrderPurge { materialId?: ID; color: string; g: number }
+
+export interface OrderExtraCost {
+  id: ID;
+  description: string;
+  /** Valor total do gasto no pedido (todas as peças). */
+  amount: DecStr;
+  date: ISODate;
+  /** Conta a pagar/paga gerada no financeiro, se o usuário lançou o pagamento. */
+  titleId?: ID;
+  createdAt: ISODateTime;
+}
+
+/* ------------------------------------------------------------------ */
+/* Purgas (v1.29)                                                      */
+/* ------------------------------------------------------------------ */
+/** Estoque de purga: um por cor (nunca repete a cor). */
+export interface PurgeStock {
+  id: ID;
+  color: string;
+  /** Cor normalizada (minúsculas, sem acento): garante uma purga por cor. */
+  key: string;
+  createdAt: ISODateTime;
+}
+
+/**
+ * Movimento da purga, em gramas. Entradas: manual (cadastro) e producao (medida no pedido).
+ * Saídas: reaproveitado (uso avulso), peca (virou peça de purga) e descarte (jogado fora).
+ * `costPerG`: entrada = preço do filamento daquela cor; saída = custo médio na data.
+ */
+export interface PurgeMove {
+  id: ID;
+  purgeId: ID;
+  date: ISODate;
+  kind: 'manual' | 'producao' | 'reaproveitado' | 'peca' | 'descarte';
+  g: number;
+  costPerG: DecStr;
+  orderId?: ID;
+  finishedGoodId?: ID;
+  note?: string;
+  createdAt: ISODateTime;
+}
+
 export interface FinishedGood {
+  /** Peça feita com purga reaproveitada (v1.29): material já custeado no pedido de origem. */
+  purge?: { uses: { purgeId: ID; color: string; g: number; value: DecStr }[]; materialValue: DecStr; extraCost: DecStr };
   id: ID;
   code: string;
   description: string;
@@ -783,5 +835,7 @@ export interface DB {
   finCategories: FinCategory[];
   titles: FinTitle[];
   sales: Sale[];
+  purgeStocks: PurgeStock[];
+  purgeMoves: PurgeMove[];
   audit: AuditEntry[];
 }

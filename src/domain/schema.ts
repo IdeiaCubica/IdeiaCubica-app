@@ -21,6 +21,7 @@ export const SYS_FIN = {
   taxasVenda: 'Taxas e comissões de venda',
   freteVenda: 'Frete de vendas',
   equipamentos: 'Impressoras e equipamentos',
+  extrasProducao: 'Gastos extras de produção',
 } as const;
 
 export function createEmptyDB(): DB {
@@ -73,11 +74,14 @@ export function createEmptyDB(): DB {
       fin('Energia elétrica', 'out', 'despesa_fixa'),
       fin('Manutenção de equipamentos', 'out', 'despesa_fixa'),
       fin(SYS_FIN.equipamentos, 'out', 'investimento', true),
+      fin(SYS_FIN.extrasProducao, 'out', 'estoque', true),
       fin('Retirada dos sócios', 'out', 'retirada'),
       fin('Outras despesas', 'out', 'outros'),
     ],
     titles: [],
     sales: [],
+    purgeStocks: [],
+    purgeMoves: [],
     audit: [],
   };
   ensureCategorySiglas(db);
@@ -104,6 +108,8 @@ export function migrate(raw: unknown): DB {
   delete (db as { trends?: unknown }).trends;
   ensureCategorySiglas(db);
   migrateQuoteItems(db);
+  // v1.29: categoria dos gastos extras de produção (custo da peça, não despesa do mês).
+  if (!db.finCategories.some((c) => c.name === SYS_FIN.extrasProducao)) db.finCategories.push(fin(SYS_FIN.extrasProducao, 'out', 'estoque', true));
   once(db, 'numeracao-orc-203', () => {
     // Pedido da empresa: novos orçamentos a partir de ORC-00000203.
     db.counters.quote = Math.max(db.counters.quote ?? 0, 202);

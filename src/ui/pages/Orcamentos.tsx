@@ -464,13 +464,17 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
   };
   const addItem = () => { setItems((s) => [...s, newDraft(db)]); setActive(items.length); };
   const duplicate = () => { setItems((s) => [...s, { ...structuredClone(cur), itemId: undefined, finishedGoodId: undefined, name: cur.name ? `${cur.name} (cópia)` : '' }]); setActive(items.length); };
-  const removeItem = async () => {
-    if (items.length === 1) return toast('warning', 'O orçamento precisa ter ao menos uma peça.');
-    if (curLocked) return toast('warning', 'Esta peça está em produção e não pode ser removida.');
-    const ok = await confirm({ title: `Remover "${cur.name || `Peça ${idx + 1}`}"?`, confirmLabel: 'Remover peça', danger: true, text: 'A peça sai do orçamento ao salvar. Versões anteriores continuam no histórico.' });
+  /** Exclui a peça da relação do orçamento (sempre com confirmação). A última vira um modelo em branco. */
+  const removeItem = async (at: number = idx) => {
+    const it = items[at];
+    if (!it) return;
+    if (lockedItem(it)) return toast('warning', 'Esta peça está em produção ou separada do estoque e não pode ser excluída. Use “Retornar para o orçamento” no pedido.');
+    const label = it.name || `Modelo ${at + 1}`;
+    const ok = await confirm({ title: `Excluir "${label}" do orçamento?`, confirmLabel: 'Excluir peça', danger: true,
+      text: items.length === 1 ? 'É a única peça: ela é apagada e fica um modelo em branco para preencher. A exclusão vale ao salvar o orçamento.' : 'A peça sai da relação do orçamento. A exclusão vale ao salvar o orçamento; versões anteriores continuam no histórico.' });
     if (ok === null) return;
-    setItems((s) => s.filter((_, k) => k !== idx));
-    setActive(Math.max(0, idx - 1));
+    setItems((s) => (s.length === 1 ? [newDraft(db)] : s.filter((_, k) => k !== at)));
+    setActive((a) => (a > at ? a - 1 : a === at ? Math.max(0, at - 1) : a));
   };
   const setStatus = (it: DraftItem, status: QuoteItemStatus) => {
     if (!quote || !it.itemId) return toast('warning', 'Salve o orçamento antes de aprovar ou recusar peças.');
@@ -590,11 +594,14 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
                   let price: Decimal | null = null;
                   try { price = evaluateQuote(it.input, paramsOf(it)).pricing.analysis?.revenue ?? null; } catch { price = null; }
                   return (
-                    <button key={it.itemId ?? `novo-${i}`} type="button" role="tab" aria-selected={i === idx} className={`piece-tab${i === idx ? ' on' : ''}${st === 'recusado' ? ' refused' : ''}`} onClick={() => setActive(i)}>
-                      {it.image ? <img src={it.image} alt="" /> : <span className="piece-num">{i + 1}</span>}
-                      <span className="piece-txt"><b>{it.name || `Modelo ${i + 1}`}</b><small>{it.input.quantity} peça{it.input.quantity === 1 ? '' : 's'} · {price ? `${fmtBRL(price)} total` : '—'}</small></span>
-                      <Badge tone={ITEM_TONE[st]}>{ITEM_STATE_LABEL[st]}</Badge>
-                    </button>
+                    <div key={it.itemId ?? `novo-${i}`} className="piece-tab-wrap">
+                      <button type="button" role="tab" aria-selected={i === idx} className={`piece-tab${i === idx ? ' on' : ''}${st === 'recusado' ? ' refused' : ''}`} onClick={() => setActive(i)}>
+                        {it.image ? <img src={it.image} alt="" /> : <span className="piece-num">{i + 1}</span>}
+                        <span className="piece-txt"><b>{it.name || `Modelo ${i + 1}`}</b><small>{it.input.quantity} peça{it.input.quantity === 1 ? '' : 's'} · {price ? `${fmtBRL(price)} total` : '—'}</small></span>
+                        <Badge tone={ITEM_TONE[st]}>{ITEM_STATE_LABEL[st]}</Badge>
+                      </button>
+                      {!lockedItem(it) && <button type="button" className="piece-del" title="Excluir esta peça do orçamento" aria-label={`Excluir ${it.name || `Modelo ${i + 1}`} do orçamento`} onClick={() => removeItem(i)}>✕</button>}
+                    </div>
                   );
                 })}
               </div>
@@ -625,7 +632,7 @@ function QuoteEditor({ quoteId }: { quoteId?: string }) {
                   </div>
                 </Field>
                 <div className="row" style={{ alignItems: 'end', justifyContent: 'flex-end' }}>
-                  <button type="button" className="btn ghost sm" onClick={removeItem} disabled={items.length === 1}>Remover este modelo</button>
+                  <button type="button" className="btn ghost sm" onClick={() => removeItem()}>Excluir esta peça</button>
                 </div>
               </div>
               <DimensionsFields value={input.dimensionsCm} onChange={(v) => patch({ dimensionsCm: v })} />

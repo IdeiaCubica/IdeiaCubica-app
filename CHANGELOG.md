@@ -2,6 +2,44 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.29.0 — 15/11/2026
+
+### Orçamentos → excluir peça
+- Cada peça na relação do orçamento ganhou um **✕** para excluir (também “Excluir esta peça” dentro do modelo).
+  Sempre pede confirmação. Vale ao salvar; a única peça vira um modelo em branco. Peça em produção ou separada do
+  estoque não pode ser excluída (use “Retornar para o orçamento”).
+
+### Produção → purga por cor
+- Ao medir a peça (saída da impressão), a purga é informada **por cor** (uma linha por cor do pedido, com
+  “+ Outra cor”). O total do lote é a soma.
+- No pedido aparece a **purga por cor**: gramas, filamento da cor e **% de purga** por cor e total, comparado com a
+  perda % do orçamento (indicador para saber se a perda prevista está correta). O mesmo resumo aparece no pedido em Vendas.
+
+### Produção → gastos não previstos no acabamento
+- No pedido em produção/acabamento: **Gastos não previstos** (ex.: cordão comprado depois). Entram no **custo real**
+  do pedido e no custo por peça. Opcional: lançar o pagamento no financeiro (sai da conta na data), na categoria
+  “Gastos extras de produção” — não é despesa do mês; pesa no resultado pelo custo da peça vendida.
+  Excluir o gasto estorna o pagamento. Depois de concluída a produção, o custo fica fechado.
+
+### Vendas → visão por pedido
+- A tela de Vendas mostra o **pedido completo** (todas as peças do orçamento), entregue ou não, com filtro
+  **Não entregues / Entregues / Todos / Cancelados**, pagamento e mês.
+- Ao abrir o pedido: cada peça com situação, valor, recebido e a receber (também por peça), e **Receber do pedido**
+  por **% do pedido** (X% de cada peça — ex.: 50% de 10 peças = metade de cada peça recebida) ou por **valor**
+  (rateado pelo que falta em cada peça). Entra no extrato na data informada. Peças em produção: na entrega, a venda
+  aproveita o que já foi recebido.
+
+### Novo módulo: Purgas
+- **Purga por cor**: uma por cor, sempre (sem repetir; “azul” e “Azul” são a mesma). Soma o **cadastro manual** com a
+  purga medida na produção; cor nova vira purga nova. Saldo, custo médio e **valor parado** (preço do filamento da cor).
+- **Reaproveitei** e **Descartar** por cor; **Lançamentos** com o histórico.
+- **Peças de purga**: peça feita com purga (cores e gramas usadas, gasto adicional, preço sugerido). Entra no estoque de
+  peças prontas e é vendida normalmente (mesmo financeiro). **Resultado das purgas** à parte: receita − taxas − gastos
+  adicionais, e o material recuperado.
+- Resultado da empresa sem contar duas vezes: a purga já entra no custo real do pedido que a gerou (desperdício);
+  a peça de purga custa só o gasto adicional. No Financeiro → Resultado gerencial aparecem a purga gerada no mês e o
+  resultado das peças de purga vendidas.
+
 ## v1.28.0 — 15/11/2026
 
 ### Produção → Venda ou Estoque; pedidos em produção na tela de Vendas

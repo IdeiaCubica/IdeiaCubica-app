@@ -9,14 +9,19 @@
  *     realmente tem — e o preço sugerido com ele, para acertar os próximos orçamentos.
  * Não é obrigatório: para não informar, o usuário marca "Não informar desta vez".
  */
-import type { DB, ID, ProductionOrder, QuoteInput } from './types';
+import type { DB, ID, OrderPurge, ProductionOrder, QuoteInput } from './types';
+import { dropOrderPurges, filamentColor, purgeKey, syncOrderPurges } from './purges';
 import { D, Decimal, cents, sum } from './money';
 import { BusinessError, assert, audit, byId, nowISO } from './core';
 import { compareOrder, moveOrderStatus, orderBaseInput } from './production';
 import { evaluateQuote, resolveParams } from './quotes';
 import { analyzeAtPrice } from './pricing';
 
-export interface MeasureInput { pieceWeightG: number | null; purgeG: number | null; skip: boolean }
+export interface MeasureInput {
+  pieceWeightG: number | null; purgeG: number | null; skip: boolean;
+  /** Purga por cor (v1.29). Quando informada, `purgeG` é a soma. */
+  purges?: OrderPurge[];
+}
 
 /** Registra a medição e (se ainda estiver imprimindo) leva o pedido para acabamento/inspeção. */
 export function recordMeasurement(db: DB, orderId: ID, m: MeasureInput, to: 'aguardando_acabamento' | 'em_inspecao' = 'aguardando_acabamento') {
@@ -24,13 +29,68 @@ export function recordMeasurement(db: DB, orderId: ID, m: MeasureInput, to: 'agu
   assert(['em_producao', 'aguardando_acabamento', 'em_inspecao'].includes(o.status), 'Só é possível medir peças que estão sendo produzidas.');
   if (m.skip) {
     o.measured = { pieceWeightG: null, purgeG: null, skipped: true, at: nowISO() };
+    dropOrderPurges(db, o.id);
   } else {
     if (m.pieceWeightG === null || !(m.pieceWeightG > 0)) throw new BusinessError('Informe o peso real de 1 peça (em gramas) ou marque "Não informar desta vez".');
-    if (m.purgeG !== null && m.purgeG < 0) throw new BusinessError('A purga não pode ser negativa.');
-    o.measured = { pieceWeightG: m.pieceWeightG, purgeG: m.purgeG ?? 0, skipped: false, at: nowISO() };
+    const purges = (m.purges ?? []).map((p) => ({ ...p, color: p.color.trim(), g: Math.round((p.g || 0) * 100) / 100 })).filter((p) => p.g !== 0);
+    if (purges.some((p) => p.g < 0) || (m.purgeG !== null && m.purgeG < 0)) throw new BusinessError('A purga não pode ser negativa.');
+    if (purges.some((p) => !p.color)) throw new BusinessError('Informe a cor de cada purga.');
+    // Uma linha por cor (somando se repetiu a cor).
+    const byColor = new Map<string, OrderPurge>();
+    for (const p of purges) { const k = purgeKey(p.color); const cur = byColor.get(k); byColor.set(k, cur ? { ...cur, g: cur.g + p.g } : p); }
+    const list = [...byColor.values()];
+    const purgeG = m.purges ? list.reduce((s, p) => s + p.g, 0) : m.purgeG ?? 0;
+    o.measured = { pieceWeightG: m.pieceWeightG, purgeG, skipped: false, at: nowISO(), ...(m.purges ? { purges: list } : {}) };
+    syncOrderPurges(db, o.id, m.purges ? list : []);
   }
   if (o.status === 'em_producao') moveOrderStatus(db, o.id, to);
-  audit(db, 'Medição da peça', m.skip ? `${o.number}: não informada` : `${o.number}: ${m.pieceWeightG} g por peça, purga ${m.purgeG ?? 0} g`);
+  audit(db, 'Medição da peça', m.skip ? `${o.number}: não informada` : `${o.number}: ${m.pieceWeightG} g por peça, purga ${o.measured.purgeG ?? 0} g${o.measured.purges?.length ? ` (${o.measured.purges.map((p) => `${p.color} ${p.g} g`).join(', ')})` : ''}`);
+}
+
+/** Cores de filamento do pedido (para pedir a purga por cor). */
+export function orderFilamentColors(db: DB, o: ProductionOrder): { materialId: ID; color: string }[] {
+  const out = new Map<string, { materialId: ID; color: string }>();
+  for (const pm of o.plannedMaterials) {
+    const mid = pm.materialId ?? db.lots.find((l) => l.id === pm.lotId)?.materialId;
+    const c = filamentColor(db, mid);
+    if (mid && c && !out.has(purgeKey(c))) out.set(purgeKey(c), { materialId: mid, color: c });
+  }
+  return [...out.values()];
+}
+
+/**
+ * Purga real do pedido, por cor e total: gramas e % sobre o filamento daquela cor (peças + purga).
+ * Filamento da cor: o consumo real da conclusão; antes de concluir, o previsto do pedido + a purga.
+ * Compara com o % previsto no orçamento (perda %, quando o consumo é só da peça).
+ */
+export function orderPurgeReport(db: DB, o: ProductionOrder) {
+  const m = usable(o);
+  if (!m || !m.purges?.length) return null;
+  const used = new Map<string, number>();
+  const add = (materialId: ID | undefined, g: number) => {
+    const mat = materialId ? db.materials.find((x) => x.id === materialId) : undefined;
+    if (!mat || mat.unit !== 'g' || !mat.filament) return;
+    const k = purgeKey(mat.filament.color ?? '');
+    used.set(k, (used.get(k) ?? 0) + g);
+  };
+  if (o.actual) {
+    o.actual.materials.forEach((x) => add(db.lots.find((l) => l.id === x.lotId)?.materialId, x.qty));
+  } else {
+    o.plannedMaterials.forEach((x) => add(x.materialId ?? db.lots.find((l) => l.id === x.lotId)?.materialId, x.qty));
+    for (const p of m.purges) used.set(purgeKey(p.color), (used.get(purgeKey(p.color)) ?? 0) + p.g);
+  }
+  const rows = m.purges.map((p) => {
+    const base = used.get(purgeKey(p.color)) ?? 0;
+    return { color: p.color, purgeG: p.g, filamentG: base, pct: base > 0 ? D(p.g).div(base).times(100) : null };
+  });
+  const purgeG = rows.reduce((s, r) => s + r.purgeG, 0);
+  const filamentG = [...used.values()].reduce((s, g) => s + g, 0);
+  let plannedPct: Decimal | null = null;
+  try {
+    const { input } = orderBaseInput(db, o);
+    plannedPct = input.consumptionBasis === 'peca' && input.wastePct ? D(input.wastePct) : null;
+  } catch { plannedPct = null; }
+  return { rows, purgeG, filamentG, pct: filamentG > 0 ? D(purgeG).div(filamentG).times(100) : null, plannedPct, basis: o.actual ? 'realizado' as const : 'previsto' as const };
 }
 
 const usable = (o: ProductionOrder) => (o.measured && !o.measured.skipped && (o.measured.pieceWeightG ?? 0) > 0 ? o.measured : null);

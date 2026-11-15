@@ -6,7 +6,7 @@ import type { OrderStatus, PieceDimensions, ProductionOrder, Project } from '../
 import {
   ORDER_STATUS_LABEL, QUEUE_STATUSES, addProjectFileVersion, orderBaseInput, byDelivery, cancelOrder, checkAvailability, compareOrder, completeOrder, createManualOrder, deleteOrder, orderDeleteBlock, orderUndoBlockers, orderDestination, produceForStockNow, sendOrderToStock, setOrderImage,
   moveOrderStatus, orderDelivery, orderReservations, productionQueue, queueShortages, reserveOrderMaterials, returnOrderToQuote,
-  saveProject, startOrder, stockEstimate, updateOrderPlanning,
+  saveProject, startOrder, stockEstimate, updateOrderPlanning, addOrderExtraCost, orderExtraTotal, removeOrderExtraCost,
 } from '../../domain/production';
 import { lotBalance, lotLabel, reorderAnalysis } from '../../domain/inventory';
 import { materialLabel } from '../../domain/catalog';
@@ -17,12 +17,12 @@ import { quoteItemAt, quoteItems } from '../../domain/quotes';
 import { clientQuoteSettings } from '../../domain/clientQuote';
 import { fmtDuration } from '../../domain/conversions';
 import { BusinessError, addDays as addDaysISO, fmtDate, fmtDateTime, todayISO } from '../../domain/core';
-import { Decimal, ZERO, fmtBRL, fmtNum, fmtPct, sum } from '../../domain/money';
-import { Alert, Badge, Check, Combobox, DataTable, DateField, Empty, Kpi, Modal, NumField, PageHead, SelectField, Tabs, TextArea, TextField, TimeField, num, useConfirm, useForm, type Tone } from '../components/ui';
+import { D, Decimal, ZERO, fmtBRL, fmtNum, fmtPct, sum } from '../../domain/money';
+import { Alert, Badge, Check, Combobox, DataTable, DateField, Empty, Field, Kpi, Modal, NumField, PageHead, SelectField, Tabs, TextArea, TextField, TimeField, dec, num, useConfirm, useForm, type Tone } from '../components/ui';
 import { QUOTE_STATUS } from './Orcamentos';
 import { SaleForm, TitleModal } from './Financeiro';
 import { DESTINATION_SINCE, orderPayment } from '../../domain/orderReceivables';
-import { measuredFilamentTotal, orderResult, plannedFilamentPerUnit, recordMeasurement, type ResultColumn } from '../../domain/medicao';
+import { measuredFilamentTotal, orderFilamentColors, orderPurgeReport, orderResult, plannedFilamentPerUnit, recordMeasurement, type ResultColumn } from '../../domain/medicao';
 
 type Tab = 'quadro' | 'pedidos' | 'estoque' | 'ordens' | 'projetos';
 const STATUS_TONE: Record<OrderStatus, Tone> = {
@@ -505,6 +505,8 @@ function OrderModal({ order, onClose }: { order: ProductionOrder; onClose: () =>
             <td>{!open ? '—' : a.shortage.gt(0) ? <Badge tone="error">faltam {fmtNum(a.shortage)}</Badge> : o.status === 'planejada' || o.status === 'aguardando_material' ? <Badge tone="success">disponível</Badge> : <Badge tone="info">reservado</Badge>}</td></tr>)}
         </tbody></table></div>
         {reserved.length > 0 && <p className="small muted">Reservado: {reserved.map((r) => `${lotName(r.lotId)} — ${fmtNum(r.qty)}`).join(' · ')}</p>}
+        {(o.status !== 'cancelada' && (['em_producao', 'aguardando_acabamento', 'em_inspecao'].includes(o.status) || (o.extraCosts?.length ?? 0) > 0)) && <ExtraCosts order={o} />}
+        <PurgeReport order={o} />
         {((o.measured && !o.measured.skipped) || o.status === 'concluida') && <PieceResult order={o} />}
         {o.status === 'concluida' && <Comparison order={o} />}
         {o.notes && <p className="muted">{o.notes}</p>}
@@ -517,6 +519,78 @@ function OrderModal({ order, onClose }: { order: ProductionOrder; onClose: () =>
       {card && <ThankYouCardDialog customerName={db.parties.find((p) => p.id === o.customerId)?.name} orderNumber={o.number} onClose={() => setCard(false)} />}
       {confirmEl}
     </Modal>
+  );
+}
+
+/** Gastos não previstos no acabamento (v1.29): entram no custo real por peça; opcionalmente no financeiro. */
+function ExtraCosts({ order: o }: { order: ProductionOrder }) {
+  const { db, run } = useStore();
+  const [confirm, confirmEl] = useConfirm();
+  const editable = o.status !== 'concluida' && o.status !== 'cancelada';
+  const [f, set, setF] = useForm({ description: '', amount: '', date: todayISO(), pay: db.accounts.some((a) => a.active), accountId: db.accounts.find((a) => a.active)?.id ?? '', method: 'PIX' });
+  const list = o.extraCosts ?? [];
+  const total = orderExtraTotal(o);
+  const qty = Math.max(1, o.actual?.qtyApproved || o.qtyPlanned);
+  const add = () => run((d) => addOrderExtraCost(d, o.id, { description: f.description, amount: dec(f.amount) ?? '0', date: f.date, pay: f.pay ? { accountId: f.accountId, method: f.method } : null }),
+    f.pay ? 'Gasto lançado no pedido e pago no financeiro.' : 'Gasto lançado no custo do pedido.').then((r) => { if (r.ok) setF((s) => ({ ...s, description: '', amount: '' })); });
+  const remove = async (id: string, label: string, paid: boolean) => {
+    const ok = await confirm({ title: `Excluir o gasto "${label}"?`, danger: true, confirmLabel: 'Excluir gasto', text: paid ? 'O gasto sai do custo do pedido e o pagamento lançado no financeiro é estornado (a conta é cancelada).' : 'O gasto sai do custo do pedido.' });
+    if (ok !== null) run((d) => removeOrderExtraCost(d, o.id, id), 'Gasto excluído.');
+  };
+  return (
+    <>
+      <h3>Gastos não previstos (acabamento)</h3>
+      <p className="small muted" style={{ margin: 0 }}>Algo que não estava no orçamento e apareceu na produção (ex.: um cordão para o enfeite). Entra no custo real do pedido: {list.length ? <>total <b>{fmtBRL(total)}</b> = <b>{fmtBRL(total.div(qty))}</b> por peça ({qty} peça{qty === 1 ? '' : 's'}).</> : 'nenhum lançado.'}</p>
+      {list.length > 0 && <div className="card"><table className="tbl"><thead><tr><th>Data</th><th>Gasto</th><th className="num">Valor</th><th className="num">Por peça</th><th>Financeiro</th><th /></tr></thead><tbody>
+        {list.map((e) => { const t = e.titleId ? db.titles.find((x) => x.id === e.titleId) : undefined; return (
+          <tr key={e.id}><td>{fmtDate(e.date)}</td><td>{e.description}</td><td className="num">{fmtBRL(e.amount)}</td><td className="num">{fmtBRL(D(e.amount).div(qty))}</td>
+            <td className="small">{t ? (t.status === 'cancelado' ? 'estornado' : `pago · ${db.accounts.find((a) => a.id === t.settlements[0]?.accountId)?.name ?? ''}`) : <span className="muted">só no custo</span>}</td>
+            <td className="right">{editable && <button className="btn ghost sm" onClick={() => remove(e.id, e.description, !!t && t.status !== 'cancelado')}>Excluir</button>}</td></tr>); })}
+      </tbody></table></div>}
+      {editable && <div className="card"><div className="card-body stack">
+        <div className="grid g3">
+          <TextField label="O que foi" value={f.description} onChange={set('description')} placeholder="Ex.: cordão dourado" />
+          <NumField label="Valor total (todas as peças)" suffix="R$" value={f.amount} onChange={set('amount')} />
+          <DateField label="Data" value={f.date} onChange={set('date')} />
+        </div>
+        <Check label="Lançar o pagamento no financeiro (sai da conta agora)" checked={f.pay} onChange={(v) => setF((s) => ({ ...s, pay: v }))} />
+        {f.pay && <div className="grid g3">
+          <SelectField label="Conta" value={f.accountId} onChange={set('accountId')} placeholder="— selecione —" options={db.accounts.filter((a) => a.active).map((a) => ({ value: a.id, label: a.name }))} />
+          <TextField label="Forma" value={f.method} onChange={set('method')} placeholder="PIX, cartão…" />
+        </div>}
+        <p className="small muted" style={{ margin: 0 }}>Se o item já foi lançado como compra (Compras), deixe desmarcado para não pagar duas vezes. No financeiro entra como “{'Gastos extras de produção'}”: não é despesa do mês — o valor pesa no resultado pelo custo da peça vendida.</p>
+        <div className="row" style={{ justifyContent: 'flex-end' }}><button className="btn primary sm" onClick={add}>Lançar gasto</button></div>
+      </div></div>}
+      {confirmEl}
+    </>
+  );
+}
+
+/** Purga real por cor (medição) e total, com o % sobre o filamento da cor (v1.29). */
+function PurgeReport({ order: o }: { order: ProductionOrder }) {
+  const { db } = useStore();
+  const r = orderPurgeReport(db, o);
+  if (!r) return null;
+  return (
+    <>
+      <h3>Purga por cor</h3>
+      <PurgeTable report={r} />
+    </>
+  );
+}
+
+export function PurgeTable({ report: r }: { report: NonNullable<ReturnType<typeof orderPurgeReport>> }) {
+  const pct = (d: Decimal | null) => (d ? `${d.toDecimalPlaces(1).toString().replace('.', ',')}%` : '—');
+  return (
+    <>
+      <div className="card"><table className="tbl"><thead><tr><th>Cor</th><th className="num">Purga</th><th className="num">Filamento da cor ({r.basis})</th><th className="num">% de purga</th></tr></thead><tbody>
+        {r.rows.map((x) => <tr key={x.color}><td>{x.color}</td><td className="num">{fmtNum(x.purgeG)} g</td><td className="num">{x.filamentG ? `${fmtNum(x.filamentG)} g` : '—'}</td><td className="num">{pct(x.pct)}</td></tr>)}
+        <tr><td><b>Total</b></td><td className="num"><b>{fmtNum(r.purgeG)} g</b></td><td className="num">{fmtNum(r.filamentG)} g</td><td className="num"><b>{pct(r.pct)}</b></td></tr>
+      </tbody></table></div>
+      <p className="small muted" style={{ margin: 0 }}>% de purga = purga da cor ÷ filamento gasto daquela cor (peças + purga). {r.plannedPct
+        ? <>Previsto no orçamento: <b>{pct(r.plannedPct)}</b> de perda{r.pct ? <> — real {pct(r.pct)} ({r.pct.gt(r.plannedPct) ? 'acima do previsto: reveja a perda % nos orçamentos' : 'dentro do previsto'})</> : null}.</>
+        : 'No orçamento, o consumo é o do fatiador (já inclui a purga): compare o % real com o que o fatiador estima.'}</p>
+    </>
   );
 }
 
@@ -575,22 +649,51 @@ function MeasureDialog({ order, to, onClose, onDone }: { order: ProductionOrder;
   const planned = useMemo(() => { try { return plannedFilamentPerUnit(orderBaseInput(db, order).input); } catch { return null; } }, [db, order]);
   const br = (v: number | null | undefined) => (v === null || v === undefined ? '' : String(v).replace('.', ','));
   const [w, setW] = useState(br(order.measured?.pieceWeightG));
-  const [purge, setPurge] = useState(br(order.measured?.purgeG));
+  // Purga por cor (v1.29): uma linha por cor de filamento do pedido; dá para acrescentar outra cor.
+  const [purges, setPurges] = useState<{ color: string; materialId?: string; g: string }[]>(() => {
+    const saved = order.measured?.purges;
+    const colors = orderFilamentColors(db, order);
+    const rows: { color: string; materialId?: string; g: string }[] = colors.map((c) => ({ color: c.color, materialId: c.materialId, g: br(saved?.find((p) => p.color.toLowerCase() === c.color.toLowerCase())?.g) }));
+    for (const p of saved ?? []) if (!rows.some((r) => r.color.toLowerCase() === p.color.toLowerCase())) rows.push({ color: p.color, materialId: p.materialId, g: br(p.g) });
+    if (!rows.length) rows.push({ color: '', g: br(order.measured?.purgeG) });
+    return rows;
+  });
+  const colorOptions = [...new Set([...db.purgeStocks.map((p) => p.color), ...db.materials.filter((m) => m.filament?.color).map((m) => m.filament!.color!)])];
+  const purgeTotal = purges.reduce((s, p) => s + (num(p.g) ?? 0), 0);
   const [skip, setSkip] = useState(false);
   const weight = num(w);
-  const realPerUnit = weight && weight > 0 ? weight + (num(purge) ?? 0) / Math.max(1, order.qtyPlanned) : null;
+  const realPerUnit = weight && weight > 0 ? weight + purgeTotal / Math.max(1, order.qtyPlanned) : null;
   const diff = realPerUnit && planned && planned.gt(0) ? (realPerUnit - planned.toNumber()) / planned.toNumber() : null;
   const moving = order.status === 'em_producao';
-  const submit = () => run((d) => recordMeasurement(d, order.id, { pieceWeightG: skip ? null : weight, purgeG: skip ? null : num(purge) ?? 0, skip }, to),
+  const setP = (i: number, p: Partial<{ color: string; g: string }>) => setPurges((r) => r.map((x, k) => (k === i ? { ...x, ...p } : x)));
+  const submit = () => run((d) => recordMeasurement(d, order.id, {
+    pieceWeightG: skip ? null : weight, purgeG: skip ? null : purgeTotal, skip,
+    purges: skip ? undefined : purges.filter((p) => (num(p.g) ?? 0) > 0).map((p) => ({ color: p.color, materialId: p.materialId, g: num(p.g) ?? 0 })),
+  }, to),
     skip ? (moving ? `${order.number}: seguiu sem medição.` : 'Medição não informada.') : (moving ? `${order.number}: medição registrada e enviado para ${to === 'em_inspecao' ? 'inspeção' : 'acabamento'}.` : 'Medição registrada.'))
     .then((r) => r.ok && onDone());
   return (
     <Modal title={`Medir a peça — ${order.number}`} subtitle={`${order.description} · ${order.qtyPlanned} peça(s). Pese 1 peça pronta e a purga do lote: o resultado reajustado mostra o custo real e o preço ideal.`} onClose={onClose}
       footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={submit} disabled={!skip && !(weight && weight > 0)}>{moving ? (skip ? 'Seguir sem medir' : 'Registrar e seguir') : 'Registrar medição'}</button></>}>
       <div className="stack">
-        <fieldset disabled={skip} className="grid g2" style={{ border: 0, padding: 0, margin: 0 }}>
+        <fieldset disabled={skip} className="stack" style={{ border: 0, padding: 0, margin: 0 }}>
           <NumField label="Peso real de 1 peça" suffix="g" value={w} onChange={setW} hint={planned ? `Previsto no orçamento: ${fmtNum(planned)} g por peça` : 'Pese uma peça pronta, sem suportes'} />
-          <NumField label="Purga / descarte do lote inteiro" suffix="g" value={purge} onChange={setPurge} hint="Torre de purga, “poop”, saia/brim e suportes descartados — de todas as peças juntas. Vazio = 0." />
+          <p className="section-title" style={{ margin: 0 }}>Purga / descarte do lote inteiro, por cor</p>
+          <p className="small muted" style={{ margin: 0 }}>Torre de purga, “poop”, saia/brim e suportes descartados — de todas as peças juntas, separado por cor. Vazio = 0. Cada cor entra no estoque de Purgas.</p>
+          <datalist id="purge-colors">{colorOptions.map((c) => <option key={c} value={c} />)}</datalist>
+          {purges.map((p, i) => (
+            <div key={i} className="grid g3" style={{ alignItems: 'end' }}>
+              <Field label={`Cor ${purges.length > 1 ? i + 1 : ''}`.trim()}>
+                <input list="purge-colors" value={p.color} onChange={(e) => setP(i, { color: e.target.value })} placeholder="Ex.: Azul" aria-label={`Cor da purga ${i + 1}`} />
+              </Field>
+              <NumField label="Purga desta cor" suffix="g" value={p.g} onChange={(v) => setP(i, { g: v })} />
+              {purges.length > 1 ? <button type="button" className="btn ghost sm" onClick={() => setPurges((r) => r.filter((_, k) => k !== i))} aria-label={`Remover cor ${i + 1}`}>✕ Remover cor</button> : <span />}
+            </div>
+          ))}
+          <div className="row" style={{ justifyContent: 'space-between' }}>
+            <button type="button" className="btn secondary sm" onClick={() => setPurges((r) => [...r, { color: '', g: '' }])}>+ Outra cor</button>
+            <span className="small">Purga total do lote: <b>{fmtNum(purgeTotal)} g</b></span>
+          </div>
         </fieldset>
         {!skip && realPerUnit && <Alert tone={diff !== null && diff > 0.05 ? 'warning' : 'info'}>
           Filamento real por peça: <b>{fmtNum(realPerUnit)} g</b>{planned ? <> (previsto {fmtNum(planned)} g{diff !== null ? <> · <b>{diff > 0 ? '+' : ''}{fmtPct(diff)}</b></> : null})</> : null}.

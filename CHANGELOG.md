@@ -2,6 +2,20 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.28.0 — 15/11/2026
+
+### Produção → Venda ou Estoque; pedidos em produção na tela de Vendas
+- Ao **Enviar para produção** (orçamento), é obrigatório escolher o destino: **Venda** (pedido do cliente) ou
+  **Estoque** (pronta-entrega).
+- **Venda**: o pedido já entra no financeiro (Contas a receber, vencimento na entrega) e aparece na tela de **Vendas**,
+  no novo quadro **Pedidos em produção (vendas a entregar)**, com valor, recebido e a receber. Ali dá para registrar o
+  **Sinal** (% recebido, data, conta e forma, rateado por peça) ou um recebimento parcial (**Receber**). Entra no extrato
+  na data informada. Na entrega, a venda aproveita o que já foi pago e só o restante fica a receber.
+- **Estoque**: número EST, sem cliente e sem conta a receber; ao concluir, as peças vão para o estoque de peças prontas.
+- No **planejamento do pedido** (quadro de produção) dá para trocar o destino entre venda e estoque enquanto não for
+  concluído (se já houver sinal recebido, estorne antes de mudar para estoque).
+- Pedidos que já estavam em produção continuam como venda e aparecem em Vendas.
+
 ## v1.27.0 — 15/11/2026
 
 ### Vendas → Sinal (% da venda)

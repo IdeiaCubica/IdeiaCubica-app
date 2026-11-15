@@ -5,15 +5,18 @@
  */
 import { useState } from 'react';
 import { PageHead } from '../components/ui';
-import { SaleForm, SalesList } from './Financeiro';
+import { OrdersInProduction, SaleForm, SalesList } from './Financeiro';
 
 export function Vendas() {
   const [selling, setSelling] = useState(false);
   return (
     <>
-      <PageHead eyebrow="Vendas" title="Vendas" text="Peças entregues aos clientes e a situação de cada pagamento: pago ou a pagar. Clique numa venda para editar; use Receber quando o cliente pagar."
+      <PageHead eyebrow="Vendas" title="Vendas" text="Pedidos de venda em produção (já cobráveis: registre o sinal) e peças entregues aos clientes, com a situação de cada pagamento. Clique numa venda para editar; use Sinal ou Receber quando o cliente pagar."
         actions={<button className="btn primary" onClick={() => setSelling(true)}>Registrar venda</button>} />
-      <SalesList onNew={() => setSelling(true)} />
+      <div className="stack">
+        <OrdersInProduction />
+        <SalesList onNew={() => setSelling(true)} />
+      </div>
       {selling && <SaleForm onClose={() => setSelling(false)} />}
     </>
   );

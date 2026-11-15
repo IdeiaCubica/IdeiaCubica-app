@@ -767,20 +767,32 @@ function ProduceDialog({ quote, onClose }: { quote: Quote; onClose: () => void }
   const [sel, setSel] = useState<string[]>(() => items.filter((it) => itemState(db, quote, it.itemId) === 'aprovado').map((it) => it.itemId).concat(
     items.every((it) => itemState(db, quote, it.itemId) !== 'aprovado') ? items.map((it) => it.itemId) : []));
   const [dueDate, setDueDate] = useState('');
+  const [purpose, setPurpose] = useState<'' | 'pedido' | 'estoque'>('');
+  const sale = purpose === 'pedido';
   const toggle = (id: string) => setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
-  const submit = () => run((d) => createOrdersFromQuote(d, quote.id, sel, { dueDate }), `${sel.length} pedido(s) criado(s) e colocados no quadro pela data de entrega.`)
+  const submit = () => run((d) => createOrdersFromQuote(d, quote.id, sel, { dueDate, purpose: purpose || undefined }),
+    sale ? `${sel.length} pedido(s) de venda criado(s): já estão em Vendas e no quadro de produção.` : `${sel.length} produção(ões) para estoque criada(s) no quadro de produção.`)
     .then((r) => { if (r.ok) { onClose(); navigate('producao/quadro'); } });
   return (
-    <Modal title="Enviar para produção" subtitle={`${quote.number} · cada peça vira um pedido`} onClose={onClose}
-      footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={submit} disabled={!sel.length}>Criar {sel.length} pedido(s)</button></>}>
+    <Modal title="Enviar para produção" subtitle={`${quote.number} · cada peça vira uma produção`} onClose={onClose}
+      footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={submit} disabled={!sel.length || !purpose}>{!purpose ? 'Escolha: venda ou estoque' : sale ? `Criar ${sel.length} pedido(s) de venda` : `Produzir ${sel.length} para estoque`}</button></>}>
       <div className="stack">
-        <DateField label="Data de entrega ao cliente" required value={dueDate} onChange={setDueDate} hint="O quadro de produção é organizado por esta data (próximas entregas no topo)." />
-        <p className="section-title">Peças que o cliente aprovou</p>
+        <Field label="Esta produção é para *">
+          <div className="row" style={{ gap: 16 }} role="radiogroup" aria-label="Destino da produção">
+            <label className="row" style={{ gap: 6 }}><input type="radio" name="destino-producao" checked={purpose === 'pedido'} onChange={() => setPurpose('pedido')} /> <b>Venda</b> (pedido do cliente)</label>
+            <label className="row" style={{ gap: 6 }}><input type="radio" name="destino-producao" checked={purpose === 'estoque'} onChange={() => setPurpose('estoque')} /> <b>Estoque</b> (pronta-entrega)</label>
+          </div>
+        </Field>
+        {purpose && <p className="small muted" style={{ margin: 0 }}>{sale
+          ? 'Venda: o pedido vai para a tela de Vendas e para Contas a receber, com vencimento na entrega. Você já pode registrar o sinal (% recebido) em Vendas.'
+          : 'Estoque: não gera conta a receber. Ao concluir, as peças vão para o estoque de peças prontas, para vender depois.'}</p>}
+        <DateField label={purpose === 'estoque' ? 'Data prevista da produção' : 'Data de entrega ao cliente'} required value={dueDate} onChange={setDueDate} hint="O quadro de produção é organizado por esta data (próximas entregas no topo)." />
+        <p className="section-title">Peças do orçamento</p>
         {items.map((it) => (
           <Check key={it.itemId} checked={sel.includes(it.itemId)} onChange={() => toggle(it.itemId)}
             label={`${it.name} · ${it.input.quantity} un · ${fmtBRL(it.summary.orderPrice)} · ${ITEM_STATE_LABEL[itemState(db, quote, it.itemId)]}`} />
         ))}
-        <p className="small muted">O valor de cada pedido entra em Financeiro → Contas a receber com vencimento na data de entrega; o cliente pode pagar antes (sinal ou total) pelo próprio pedido. As peças enviadas ficam travadas no orçamento. Para alterar depois, use “Retornar para o orçamento” no pedido.</p>
+        <p className="small muted">As peças enviadas ficam travadas no orçamento. Para alterar depois, use “Retornar para o orçamento” no pedido; o destino (venda ou estoque) pode ser trocado no planejamento do pedido enquanto não for concluído.</p>
       </div>
     </Modal>
   );

@@ -88,10 +88,12 @@ function nextSequence(db: DB): number {
  * Envia peças do orçamento para produção: um PEDIDO por peça, com data de entrega
  * obrigatória. Peças recusadas, já em produção ou vindas do estoque não entram.
  */
-export function createOrdersFromQuote(db: DB, quoteId: ID, itemIds: ID[], opts: { dueDate: string; printerId?: ID; responsible?: string; notes?: string }): ProductionOrder[] {
+export function createOrdersFromQuote(db: DB, quoteId: ID, itemIds: ID[], opts: { dueDate: string; printerId?: ID; responsible?: string; notes?: string; purpose?: 'pedido' | 'estoque' }): ProductionOrder[] {
   const q = byId(db.quotes, quoteId, 'Orçamento');
   assert(itemIds.length > 0, 'Escolha ao menos uma peça para produzir.');
-  assert(/^\d{4}-\d{2}-\d{2}$/.test(opts.dueDate ?? ''), 'Informe a data de entrega do pedido.');
+  // v1.28: o usuário define se a produção é VENDA (pedido do cliente: vai para Vendas e Contas a receber) ou ESTOQUE.
+  const purpose = opts.purpose ?? 'pedido';
+  assert(/^\d{4}-\d{2}-\d{2}$/.test(opts.dueDate ?? ''), purpose === 'pedido' ? 'Informe a data de entrega do pedido.' : 'Informe a data prevista da produção.');
   const v = latestVersion(q);
   const orders = itemIds.map((itemId) => {
     const it = quoteItem(q, itemId);
@@ -101,18 +103,22 @@ export function createOrdersFromQuote(db: DB, quoteId: ID, itemIds: ID[], opts: 
     assert(!it.finishedGoodId, `A peça "${it.name}" vem do estoque de peças prontas: aprove-a (Pedido aprovado) em vez de produzir.`);
     assert(it.input.materials.length > 0, `A peça "${it.name}" não possui filamento selecionado.`);
     const order: ProductionOrder = {
-      id: newId(), number: nextCode(db, 'pedido', 'PED'), projectId: q.projectId, quoteId: q.id, quoteVersion: v.version, quoteItemId: itemId,
+      id: newId(), number: purpose === 'estoque' ? nextCode(db, 'estoque', 'EST') : nextCode(db, 'pedido', 'PED'), projectId: q.projectId, quoteId: q.id, quoteVersion: v.version, quoteItemId: itemId,
       description: it.name, printerId: opts.printerId ?? it.input.printerId, qtyPlanned: it.input.quantity,
       plannedMaterials: plannedFromInput(db, it.input),
       plannedHours: it.input.printHoursPerUnit !== null ? D(it.input.printHoursPerUnit).times(it.input.quantity).toNumber() : null,
       status: 'planejada', responsible: opts.responsible, notes: opts.notes, createdAt: nowISO(),
-      purpose: 'pedido', customerId: q.customerId, dueDate: opts.dueDate, sequence: nextSequence(db),
+      purpose, customerId: purpose === 'pedido' ? q.customerId : undefined, dueDate: opts.dueDate, sequence: nextSequence(db),
     };
     db.orders.push(order);
-    // Conta a receber do pedido: vencimento na entrega; o cliente pode pagar antes.
-    provisionOrderReceivable(db, order);
-    q.itemStatus = { ...q.itemStatus, [itemId]: 'aprovado' };
-    audit(db, 'Pedido criado', `${order.number}: ${it.name} (${q.number} v${v.version}), entrega ${opts.dueDate}`);
+    if (purpose === 'pedido') {
+      // Venda: conta a receber do pedido (aparece em Vendas), vencimento na entrega; o cliente pode pagar antes (sinal).
+      provisionOrderReceivable(db, order);
+      q.itemStatus = { ...q.itemStatus, [itemId]: 'aprovado' };
+      audit(db, 'Pedido criado', `${order.number}: ${it.name} (${q.number} v${v.version}), entrega ${opts.dueDate}`);
+    } else {
+      audit(db, 'Produção para estoque criada', `${order.number}: ${it.name} (${q.number} v${v.version}), previsão ${opts.dueDate}`);
+    }
     return order;
   });
   refreshQuoteStatus(db, q);

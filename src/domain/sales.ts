@@ -9,7 +9,7 @@
  * O custo de fabricação da venda é um snapshot: realizado (OP concluída) ou
  * estimado (orçamento), sempre identificado.
  */
-import type { DB, FinTitle, ID, ISODate, PaymentTerms, Sale } from './types';
+import type { DB, FinTitle, ID, ISODate, PaymentTerms, ProductionOrder, Sale } from './types';
 import { D, Decimal, Dn, ZERO, cents, sum } from './money';
 import { BusinessError, assert, audit, byId, isISODate, newId, nextCode, nowISO, requireText } from './core';
 import { categoryByName, cancelTitle, createTitlesFromTerms, settleTitle, titleOpen, titlePaid } from './finance';
@@ -19,7 +19,7 @@ import { compareOrder, finishedGoodBalance, markOrderDelivered } from './product
 import { quoteItem } from './quotes';
 import { addMovement } from './inventory';
 import { consumeKit } from './deliveryKits';
-import { provisionOrderReceivable, restoreOrderAdvance, takeOrderAdvance } from './orderReceivables';
+import { orderReceivable, provisionOrderReceivable, restoreOrderAdvance, takeOrderAdvance } from './orderReceivables';
 
 export interface SaleInput {
   date: ISODate;
@@ -281,30 +281,68 @@ export function downPaymentAmount(db: DB, s: Sale, pct: string): Decimal {
 export function receiveSaleDownPayment(db: DB, input: { saleId: ID; pct: string; date: ISODate; accountId: ID; method?: string }) {
   const s = byId(db.sales, input.saleId, 'Venda');
   assert(s.status === 'ativa', 'Venda cancelada não recebe sinal.');
+  const titles = db.titles.filter((t) => t.origin.kind === 'venda' && t.origin.id === s.id && t.direction === 'in' && t.status !== 'cancelado');
+  const amount = settleDownPayment(db, titles, input, 'venda');
+  audit(db, 'Sinal da venda', `${s.number}: ${D(input.pct).toString()}% = R$ ${amount.toFixed(2)} (R$ ${amount.div(s.qty).toFixed(3)} por peça, ${s.qty} peça(s))`);
+  return { amount, perPiece: amount.div(s.qty) };
+}
+
+/** Peças do pedido (as aprovadas, se já produzido; senão as planejadas). */
+const orderQty = (o: ProductionOrder) => Math.max(1, o.actual?.qtyApproved || o.qtyPlanned);
+
+/** Pedido enviado para produção (venda a entregar): quanto já foi recebido, em % e por peça (v1.28). */
+export function orderPaymentSplit(db: DB, o: ProductionOrder) {
+  const t = orderReceivable(db, o.id);
+  if (!t) return null;
+  const total = D(t.amount), received = titlePaid(t), open = titleOpen(t);
+  const pct = total.isZero() ? ZERO : received.div(total).times(100);
+  const qty = orderQty(o);
+  return { title: t, qty, total, received, open, receivedPct: pct, openPct: Decimal.max(ZERO, D(100).minus(pct)),
+    perPiece: { total: total.div(qty), received: received.div(qty), open: open.div(qty) } };
+}
+
+/**
+ * Sinal no pedido (antes da entrega), v1.28: recebe X% do valor do pedido. Fica como recebido na conta a receber
+ * do pedido; na entrega, a venda aproveita o que já foi pago e só o restante fica a receber.
+ */
+export function receiveOrderDownPayment(db: DB, input: { orderId: ID; pct: string; date: ISODate; accountId: ID; method?: string }) {
+  const o = byId(db.orders, input.orderId, 'Pedido');
+  const t = orderReceivable(db, o.id);
+  if (!t) throw new BusinessError(`O pedido ${o.number} não tem conta a receber (produção para estoque ou sem valor no orçamento).`);
+  const amount = settleDownPayment(db, [t], input, 'pedido');
+  const qty = orderQty(o);
+  audit(db, 'Sinal do pedido', `${o.number}: ${D(input.pct).toString()}% = R$ ${amount.toFixed(2)} (R$ ${amount.div(qty).toFixed(3)} por peça, ${qty} peça(s))`);
+  return { amount, perPiece: amount.div(qty) };
+}
+
+/**
+ * Recebe X% do total dos títulos (contas a receber de uma venda ou de um pedido) na data e conta informadas,
+ * baixando primeiro o que vence antes. Retorna o valor recebido. Usado pela venda e pelo pedido (v1.27/v1.28).
+ */
+export function settleDownPayment(db: DB, titles: FinTitle[], input: { pct: string; date: ISODate; accountId: ID; method?: string }, what: 'venda' | 'pedido'): Decimal {
   assert(isISODate(input.date), 'Informe a data em que o sinal foi recebido.');
   assert(input.accountId, 'Selecione a conta em que o dinheiro entrou.');
   byId(db.accounts, input.accountId, 'Conta financeira');
   const pct = D(input.pct || '0');
   assert(pct.gt(0) && pct.lte(100), 'O percentual do sinal deve ser maior que 0% e até 100%.');
-  const split = salePaymentSplit(db, s);
-  const amount = downPaymentAmount(db, s, input.pct);
-  assert(split.open.gt(0), 'Esta venda já está totalmente recebida.');
+  const total = sum(titles.map((t) => D(t.amount)));
+  const open = sum(titles.map((t) => titleOpen(t)));
+  const amount = cents(total.times(pct).div(100));
+  assert(open.gt(0), `Est${what === 'venda' ? 'a venda' : 'e pedido'} já está totalmente recebid${what === 'venda' ? 'a' : 'o'}.`);
   assert(amount.gt(0), 'O sinal ficou em R$ 0,00. Aumente o percentual.');
-  if (amount.gt(split.open)) {
-    throw new BusinessError(`${pct.toFixed(2).replace('.', ',')}% da venda (R$ ${amount.toFixed(2)}) é mais do que falta receber: ${split.openPct.toFixed(2).replace('.', ',')}% (R$ ${split.open.toFixed(2)}).`);
+  if (amount.gt(open)) {
+    const openPct = total.isZero() ? ZERO : open.div(total).times(100);
+    throw new BusinessError(`${pct.toFixed(2).replace('.', ',')}% d${what === 'venda' ? 'a venda' : 'o pedido'} (R$ ${amount.toFixed(2)}) é mais do que falta receber: ${openPct.toFixed(2).replace('.', ',')}% (R$ ${open.toFixed(2)}).`);
   }
-  const titles = db.titles.filter((t) => t.origin.kind === 'venda' && t.origin.id === s.id && t.direction === 'in' && t.status === 'aberto')
-    .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
   let left = amount;
-  for (const t of titles) {
+  for (const t of titles.filter((x) => x.status === 'aberto').sort((a, b) => a.dueDate.localeCompare(b.dueDate))) {
     if (left.isZero()) break;
     const part = Decimal.min(left, titleOpen(t));
     if (part.lte(0)) continue;
     settleTitle(db, { titleId: t.id, date: input.date, amount: part.toString(), accountId: input.accountId, method: input.method?.trim() ? `Sinal · ${input.method.trim()}` : 'Sinal' });
     left = left.minus(part);
   }
-  audit(db, 'Sinal da venda', `${s.number}: ${pct.toString()}% = R$ ${amount.toFixed(2)} (R$ ${amount.div(s.qty).toFixed(3)} por peça, ${s.qty} peça(s))`);
-  return { amount, perPiece: amount.div(s.qty) };
+  return amount;
 }
 
 export function saleEconomics(s: Sale): SaleEconomics {

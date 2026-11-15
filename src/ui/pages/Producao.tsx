@@ -522,15 +522,18 @@ function OrderModal({ order, onClose }: { order: ProductionOrder; onClose: () =>
 
 function PlanningForm({ order: o, onClose }: { order: ProductionOrder; onClose: () => void }) {
   const { db, run } = useStore();
-  const [f, set] = useForm({ dueDate: o.dueDate ?? '', printerId: o.printerId ?? '', notes: o.notes ?? '' });
+  const [f, set] = useForm({ dueDate: o.dueDate ?? '', printerId: o.printerId ?? '', notes: o.notes ?? '', purpose: purposeOf(o) as string });
+  const quoteCustomer = o.quoteId ? db.quotes.find((q) => q.id === o.quoteId)?.customerId : undefined;
   const submit = () => {
     if (o.quoteId && !f.dueDate) return void run(() => { throw new BusinessError('Pedido a partir de orçamento precisa de data de entrega.'); });
-    run((d) => updateOrderPlanning(d, o.id, { purpose: purposeOf(o), customerId: o.customerId, dueDate: f.dueDate, printerId: f.printerId || undefined, notes: f.notes }), 'Atualizado. O quadro se reorganiza pela nova data.').then((r) => r.ok && onClose());
+    run((d) => updateOrderPlanning(d, o.id, { purpose: f.purpose as 'pedido' | 'estoque', customerId: o.customerId ?? quoteCustomer, dueDate: f.dueDate, printerId: f.printerId || undefined, notes: f.notes }), 'Atualizado. O quadro se reorganiza pela nova data.').then((r) => r.ok && onClose());
   };
   return (
     <Modal title={`Planejamento de ${o.number}`} onClose={onClose}
       footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={submit}>Salvar</button></>}>
       <div className="grid g2">
+        {o.quoteId && <SelectField label="Destino da produção" value={f.purpose} onChange={set('purpose')} options={[{ value: 'pedido', label: 'Venda (pedido do cliente)' }, { value: 'estoque', label: 'Estoque (pronta-entrega)' }]}
+          hint={f.purpose === 'pedido' ? 'Vai para Vendas e Contas a receber (dá para registrar sinal).' : 'Sem conta a receber; ao concluir, as peças vão para o estoque.'} />}
         <DateField label="Data de entrega" required={!!o.quoteId} value={f.dueDate} onChange={set('dueDate')} />
         <SelectField label="Impressora" value={f.printerId} onChange={set('printerId')} placeholder="—" options={db.printers.map((p) => ({ value: p.id, label: p.name }))} />
       </div>

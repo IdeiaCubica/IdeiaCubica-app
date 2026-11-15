@@ -1,16 +1,16 @@
 import { useMemo, useState } from 'react';
 import { useStore } from '../store';
 import { navigate } from '../App';
-import type { FinTitle, PaymentTerms, Quote, Sale } from '../../domain/types';
+import type { FinTitle, PaymentTerms, ProductionOrder, Quote, Sale } from '../../domain/types';
 import { accountBalance, cancelTitle, cashBalance, cashFlowByMonth, cashNeed, createManualTitle, expensesByCategory, investedCapital, openTotals, reverseSettlement, settleTitle, titleOpen, titlePaid, updateTitle } from '../../domain/finance';
 import { finishedGoodBalance } from '../../domain/production';
-import { breakEven, cancelSale, downPaymentAmount, managementResult, receiveSaleDownPayment, registerSale, resolveSaleCost, resultByProject, saleEconomics, saleEditBlock, salePaymentSplit, saleStatus, updateSale } from '../../domain/sales';
+import { breakEven, cancelSale, managementResult, orderPaymentSplit, receiveOrderDownPayment, receiveSaleDownPayment, registerSale, resolveSaleCost, resultByProject, saleEconomics, saleEditBlock, salePaymentSplit, saleStatus, updateSale } from '../../domain/sales';
 import { channelRates } from '../../domain/pricing';
 import { itemState, latestVersion, quoteItem, quoteItemAt, quoteItems } from '../../domain/quotes';
 import { kitUnitCost } from '../../domain/deliveryKits';
 import { addDays, fmtDate, todayISO } from '../../domain/core';
 import { D, Decimal, ZERO, cents, fmtBRL, fmtPct, parseBR, sum } from '../../domain/money';
-import { orderReceivable, pendingOrderReceivables, provisionOrderReceivables } from '../../domain/orderReceivables';
+import { orderOnTrack, orderReceivable, pendingOrderReceivables, provisionOrderReceivables } from '../../domain/orderReceivables';
 import { Alert, Badge, Check, Combobox, DataTable, DateField, Empty, Field, Kpi, Modal, NumField, PageHead, SelectField, Tabs, TextArea, TextField, dec, num, useConfirm, useForm, type Tone } from '../components/ui';
 import { NATURE_LABEL } from './Configuracoes';
 import { Extrato, ExtratoTotal, Fechamento } from './RelatoriosFinanceiros';
@@ -365,40 +365,81 @@ export function SalesList({ onNew }: { onNew: () => void }) {
 const fmtPctNum = (d: Decimal) => `${d.toDecimalPlaces(2).toString().replace('.', ',')}%`;
 const fmtPiece = (d: Decimal) => (d.toDecimalPlaces(2).eq(d) ? fmtBRL(d) : `R$ ${d.toDecimalPlaces(3).toFixed(3).replace('.', ',')}`);
 
-/** Sinal: o cliente pagou um % da venda. Rateado por peça; vira recebimento no financeiro e no extrato (v1.27). */
-function DownPaymentModal({ sale, onClose }: { sale: Sale; onClose: () => void }) {
+/** Sinal: o cliente pagou um % da venda (ou do pedido em produção). Rateado por peça; vira recebimento no financeiro e no extrato (v1.27/v1.28). */
+function DownPaymentModal({ sale, order, onClose }: { sale?: Sale; order?: ProductionOrder; onClose: () => void }) {
   const { db, run } = useStore();
-  const s = db.sales.find((x) => x.id === sale.id) ?? sale;
-  const split = salePaymentSplit(db, s);
-  const [f, set] = useForm({ pct: '50', date: todayISO(), accountId: db.accounts.find((a) => a.active)?.id ?? '', method: s.payment.method ?? 'PIX' });
+  const s = sale ? db.sales.find((x) => x.id === sale.id) ?? sale : undefined;
+  const o = order ? db.orders.find((x) => x.id === order.id) ?? order : undefined;
+  const os = o ? orderPaymentSplit(db, o) : null;
+  const split = s ? { ...salePaymentSplit(db, s), qty: s.qty } : os ?? { qty: 1, total: ZERO, received: ZERO, open: ZERO, receivedPct: ZERO, openPct: ZERO, perPiece: { total: ZERO, received: ZERO, open: ZERO } };
+  const qty = split.qty;
+  const what = s ? 'venda' : 'pedido';
+  const [f, set] = useForm({ pct: '50', date: todayISO(), accountId: db.accounts.find((a) => a.active)?.id ?? '', method: s?.payment.method ?? 'PIX' });
   const pct = num(f.pct) ?? 0;
-  const amount = pct > 0 ? downPaymentAmount(db, s, String(pct)) : ZERO;
-  const piece = amount.div(s.qty);
+  const amount = pct > 0 ? cents(split.total.times(pct).div(100)) : ZERO;
+  const piece = amount.div(qty);
   const after = split.open.minus(amount);
   const tooMuch = amount.gt(split.open);
-  const submit = () => run((d) => receiveSaleDownPayment(d, { saleId: s.id, pct: String(pct), date: f.date, accountId: f.accountId, method: f.method }),
+  const submit = () => run((d) => s
+    ? receiveSaleDownPayment(d, { saleId: s.id, pct: String(pct), date: f.date, accountId: f.accountId, method: f.method })
+    : receiveOrderDownPayment(d, { orderId: o!.id, pct: String(pct), date: f.date, accountId: f.accountId, method: f.method }),
     `Sinal de ${fmtBRL(amount)} recebido.`).then((r) => r.ok && onClose());
   return (
-    <Modal title={`Sinal da venda ${s.number}`} subtitle={`${s.description} · ${s.qty} peça(s) · ${fmtBRL(split.total)}`} onClose={onClose}
+    <Modal title={s ? `Sinal da venda ${s.number}` : `Sinal do pedido ${o?.number ?? ''}`} subtitle={`${s?.description ?? o?.description ?? ''} · ${qty} peça(s) · ${fmtBRL(split.total)}`} onClose={onClose}
       footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={submit} disabled={!(amount.gt(0)) || tooMuch || !f.accountId}>Registrar sinal</button></>}>
       <div className="stack">
         {split.received.gt(0) && <Alert tone="info">Já recebido: {fmtBRL(split.received)} ({fmtPctNum(split.receivedPct)}). Falta receber {fmtBRL(split.open)} ({fmtPctNum(split.openPct)}).</Alert>}
         <div className="grid g2">
-          <NumField label="Percentual recebido" suffix="%" required value={f.pct} onChange={set('pct')} hint={`do total da venda (${fmtBRL(split.total)})`} />
+          <NumField label="Percentual recebido" suffix="%" required value={f.pct} onChange={set('pct')} hint={`do total d${what === 'venda' ? 'a venda' : 'o pedido'} (${fmtBRL(split.total)})`} />
           <DateField label="Data do recebimento" value={f.date} onChange={set('date')} />
           <SelectField label="Conta" required value={f.accountId} onChange={set('accountId')} placeholder="— selecione —" options={db.accounts.filter((a) => a.active).map((a) => ({ value: a.id, label: a.name }))} hint="Onde o dinheiro entrou (aparece no extrato)" />
           <TextField label="Forma" value={f.method} onChange={set('method')} placeholder="PIX, cartão, dinheiro…" />
         </div>
-        <div className="card"><table className="tbl"><thead><tr><th></th><th className="num">Por peça</th><th className="num">{s.qty} peça(s)</th></tr></thead><tbody>
-          <tr><td>Valor da venda</td><td className="num">{fmtPiece(split.perPiece.total)}</td><td className="num">{fmtBRL(split.total)}</td></tr>
+        <div className="card"><table className="tbl"><thead><tr><th></th><th className="num">Por peça</th><th className="num">{qty} peça(s)</th></tr></thead><tbody>
+          <tr><td>Valor d{what === 'venda' ? 'a venda' : 'o pedido'}</td><td className="num">{fmtPiece(split.perPiece.total)}</td><td className="num">{fmtBRL(split.total)}</td></tr>
           {split.received.gt(0) && <tr><td>Já recebido</td><td className="num">{fmtPiece(split.perPiece.received)}</td><td className="num">{fmtBRL(split.received)}</td></tr>}
           <tr><td><b>Sinal agora ({fmtPctNum(D(pct))})</b></td><td className="num"><b>{fmtPiece(piece)}</b></td><td className="num"><b>{fmtBRL(amount)}</b></td></tr>
-          <tr><td>Fica a receber</td><td className="num">{fmtPiece(Decimal.max(ZERO, after).div(s.qty))}</td><td className="num">{fmtBRL(Decimal.max(ZERO, after))}</td></tr>
+          <tr><td>Fica a receber</td><td className="num">{fmtPiece(Decimal.max(ZERO, after).div(qty))}</td><td className="num">{fmtBRL(Decimal.max(ZERO, after))}</td></tr>
         </tbody></table></div>
         {tooMuch && <Alert tone="error">O sinal é maior do que falta receber ({fmtPctNum(split.openPct)}).</Alert>}
-        <p className="small muted" style={{ margin: 0 }}>O sinal é rateado entre as peças: {fmtPctNum(D(pct))} de cada peça fica recebido e o restante de cada uma continua a receber. Entra no financeiro como recebimento da venda (no extrato da conta, na data informada).</p>
+        <p className="small muted" style={{ margin: 0 }}>O sinal é rateado entre as peças: {fmtPctNum(D(pct))} de cada peça fica recebido e o restante de cada uma continua a receber. Entra no financeiro como recebimento (no extrato da conta, na data informada).{o ? ' Na entrega, a venda aproveita o que já foi recebido e só o restante fica a receber.' : ''}</p>
       </div>
     </Modal>
+  );
+}
+
+const orderStage = (o: ProductionOrder) => (o.status === 'concluida' ? 'Produzido · aguardando entrega' : o.status === 'em_producao' ? 'Produzindo' : 'Na fila de produção');
+
+/** Pedidos de venda enviados para produção e ainda não entregues: já cobráveis (sinal) antes da entrega (v1.28). */
+export function OrdersInProduction() {
+  const { db } = useStore();
+  const [downPayment, setDownPayment] = useState<ProductionOrder | null>(null);
+  const [receiving, setReceiving] = useState<FinTitle | null>(null);
+  const customer = (id?: string) => db.parties.find((p) => p.id === id)?.name ?? '';
+  type Row = { o: ProductionOrder; sp: NonNullable<ReturnType<typeof orderPaymentSplit>> };
+  const rows: Row[] = db.orders.filter((o) => orderOnTrack(db, o)).map((o) => ({ o, sp: orderPaymentSplit(db, o) }))
+    .filter((r): r is Row => !!r.sp).sort((a, b) => (a.o.dueDate ?? '').localeCompare(b.o.dueDate ?? ''));
+  if (!rows.length) return null;
+  return (
+    <div className="card">
+      <div className="card-body" style={{ paddingBottom: 0 }}>
+        <h3 style={{ margin: 0 }}>Pedidos em produção (vendas a entregar)</h3>
+        <p className="small muted" style={{ margin: '4px 0 0' }}>{rows.length} pedido(s) · {fmtBRL(sum(rows.map((r) => r.sp.total)))} vendido · {fmtBRL(sum(rows.map((r) => r.sp.received)))} recebido · {fmtBRL(sum(rows.map((r) => r.sp.open)))} a receber. Na entrega, viram venda (o que já foi pago entra como recebido).</p>
+      </div>
+      <DataTable rows={rows} rowKey={(r) => r.o.id} empty={null}
+        columns={[
+          { key: 'n', header: 'Pedido', render: (r) => <span className="mono">{r.o.number}</span>, sort: (r) => r.o.number },
+          { key: 'd', header: 'Entrega', render: (r) => (r.o.dueDate ? fmtDate(r.o.dueDate) : '—'), sort: (r) => r.o.dueDate ?? '' },
+          { key: 'p', header: 'Peça / cliente', render: (r) => <><b>{r.o.description}</b><div className="muted small">{r.sp.qty} un · {customer(r.o.customerId) || 'sem cliente'} · {orderStage(r.o)}</div></> },
+          { key: 't', header: 'Valor', num: true, render: (r) => fmtBRL(r.sp.total), sort: (r) => r.sp.total.toNumber() },
+          { key: 'st', header: 'Pagamento', render: (r) => (r.sp.open.isZero() ? <Badge tone="success">Pago</Badge> : <><Badge tone={r.sp.received.gt(0) ? 'warning' : 'neutral'}>{r.sp.received.gt(0) ? `Sinal ${fmtPctNum(r.sp.receivedPct)}` : 'A receber'}</Badge><div className="muted small">{fmtBRL(r.sp.open)} a receber</div></>) },
+          { key: 'a', header: '', render: (r) => (r.sp.open.isZero() ? null : <span className="row" style={{ gap: 4, flexWrap: 'nowrap', justifyContent: 'flex-end' }}>
+            <button className="btn secondary sm" title="Registrar o recebimento de um % do pedido (rateado por peça)" onClick={() => setDownPayment(r.o)}>Sinal</button>
+            <button className="btn secondary sm" onClick={() => setReceiving(r.sp.title)}>Receber</button></span>) },
+        ]} />
+      {downPayment && <DownPaymentModal order={downPayment} onClose={() => setDownPayment(null)} />}
+      {receiving && <TitleModal title={receiving} onClose={() => setReceiving(null)} />}
+    </div>
   );
 }
 

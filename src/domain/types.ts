@@ -750,14 +750,16 @@ export interface FinTitle {
   partyId?: ID;
   projectId?: ID;
   /** pedido = conta a receber provisionada quando a peça vai para produção (vira venda na entrega). */
-  origin: { kind: 'compra' | 'venda' | 'manual' | 'pedido' | 'separacao'; id?: ID };
+  origin: { kind: 'compra' | 'venda' | 'manual' | 'pedido' | 'separacao' | 'aprovacao'; id?: ID };
   /**
    * Recebimento antecipado de um pedido que passou para a venda na entrega. Guarda a conta original
    * do pedido para voltar a ela se a venda for cancelada.
    */
   advance?: { orderId: ID; amount: DecStr; description: string; dueDate: ISODate; competenceDate: ISODate;
     /** v1.30: veio de uma peça do estoque separada para o pedido (orderId = id da separação). */
-    allocation?: { finishedGoodId: ID; quoteId: ID; itemId: ID; qty: number; customerId?: ID; dueDate?: ISODate; createdAt: string } };
+    allocation?: { finishedGoodId: ID; quoteId: ID; itemId: ID; qty: number; customerId?: ID; dueDate?: ISODate; createdAt: string };
+    /** v1.31: veio da conta da peça aprovada (vendida sem produção). */
+    approval?: { quoteId: ID; itemId: ID } };
   installment?: { n: number; of: number };
   method?: string;
   status: 'aberto' | 'liquidado' | 'cancelado';

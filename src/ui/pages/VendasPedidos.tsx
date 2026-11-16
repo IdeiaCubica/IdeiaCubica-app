@@ -95,6 +95,8 @@ function PedidoModal({ pedido: p, onClose }: { pedido: Pedido; onClose: () => vo
   };
   const lineStatus = (l: PedidoLine) => l.cancelled ? <Badge tone="neutral">Cancelada</Badge>
     : l.delivered ? <Badge tone="success">Entregue</Badge>
+    : l.approvedOnly ? <Badge tone="info">Aprovada · enviar para produção</Badge>
+    : l.key.startsWith('s:') ? <Badge tone="info">Separada do estoque</Badge>
     : <Badge tone="warning">{l.order?.status === 'concluida' ? 'Produzido · a entregar' : l.order?.status === 'em_producao' ? 'Produzindo' : 'Em produção'}</Badge>;
   const planFor = (l: PedidoLine) => plan.lines.find((x) => x.line.key === l.key)?.amount ?? ZERO;
   return (

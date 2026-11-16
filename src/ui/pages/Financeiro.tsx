@@ -10,7 +10,7 @@ import { itemState, latestVersion, quoteItem, quoteItemAt, quoteItems } from '..
 import { kitUnitCost } from '../../domain/deliveryKits';
 import { addDays, fmtDate, todayISO } from '../../domain/core';
 import { D, Decimal, ZERO, cents, fmtBRL, fmtPct, parseBR, sum } from '../../domain/money';
-import { orderReceivable, pendingAllocationReceivables, pendingOrderReceivables, provisionOrderReceivables, saleFreightDefault } from '../../domain/orderReceivables';
+import { orderReceivable, pendingAllocationReceivables, pendingApprovalReceivables, pendingOrderReceivables, provisionOrderReceivables, saleFreightDefault } from '../../domain/orderReceivables';
 /** Frete para o campo do formulário (vazio = sem frete). */
 const brFreight = (d: Decimal) => (d.isZero() ? '' : d.toFixed(2).replace('.', ','));
 import { Alert, Badge, Check, Combobox, DataTable, DateField, Empty, Field, Kpi, Modal, NumField, PageHead, SelectField, Tabs, TextArea, TextField, dec, num, useConfirm, useForm, type Tone } from '../components/ui';
@@ -154,7 +154,7 @@ function Painel() {
 function Titulos() {
   const { db, run } = useStore();
   const pendingOrders = pendingOrderReceivables(db);
-  const pendingCount = pendingOrders.length + pendingAllocationReceivables(db);
+  const pendingCount = pendingOrders.length + pendingAllocationReceivables(db) + pendingApprovalReceivables(db);
   const today = todayISO();
   const [dir, setDir] = useState<'' | 'in' | 'out'>('');
   const [status, setStatus] = useState('aberto');
@@ -214,7 +214,7 @@ export function TitleModal({ title, onClose }: { title: FinTitle; onClose: () =>
     ...(coreEditable ? { amount: dec(e.amount) ?? '0', competenceDate: e.competenceDate, categoryId: e.categoryId } : {}) }), 'Título corrigido.').then((r) => r.ok && setEditing(false));
   return (
     <Modal wide title={t.description} subtitle={`${t.direction === 'in' ? 'Conta a receber' : 'Conta a pagar'} · ${cat?.name} (${cat ? NATURE_LABEL[cat.nature] : ''})`} onClose={onClose}
-      footer={<><button className="btn ghost" onClick={onClose}>Fechar</button>{t.status !== 'cancelado' && titlePaid(t).isZero() && t.origin.kind !== 'pedido' && t.origin.kind !== 'separacao' && <button className="btn danger" onClick={cancel}>Cancelar título</button>}
+      footer={<><button className="btn ghost" onClick={onClose}>Fechar</button>{t.status !== 'cancelado' && titlePaid(t).isZero() && t.origin.kind !== 'pedido' && t.origin.kind !== 'separacao' && t.origin.kind !== 'aprovacao' && <button className="btn danger" onClick={cancel}>Cancelar título</button>}
         {t.status !== 'cancelado' && !editing && <button className="btn secondary" onClick={() => setEditing(true)}>Editar</button>}</>}>
       <div className="stack">
         {t.status === 'cancelado' && <Alert tone="error" title="Cancelado">{t.cancelReason}</Alert>}
@@ -239,7 +239,7 @@ export function TitleModal({ title, onClose }: { title: FinTitle; onClose: () =>
           <dt>Valor</dt><dd>{fmtBRL(t.amount)}</dd><dt>Competência</dt><dd>{fmtDate(t.competenceDate)}</dd><dt>Vencimento</dt><dd>{fmtDate(t.dueDate)}</dd>
           <dt>Pago/recebido</dt><dd>{fmtBRL(titlePaid(t))}</dd><dt>Em aberto</dt><dd><b>{fmtBRL(open)}</b></dd>
           {t.partyId && <><dt>{t.direction === 'in' ? 'Cliente' : 'Fornecedor'}</dt><dd>{db.parties.find((p) => p.id === t.partyId)?.name}</dd></>}
-          <dt>Origem</dt><dd>{t.origin.kind === 'compra' ? `Compra ${db.purchases.find((p) => p.id === t.origin.id)?.number}` : t.origin.kind === 'venda' ? `Venda ${db.sales.find((s) => s.id === t.origin.id)?.number}${t.advance ? ' (pago antes da entrega)' : ''}` : t.origin.kind === 'pedido' ? `Pedido ${db.orders.find((o) => o.id === t.origin.id)?.number ?? ''} (em produção; vira venda na entrega)` : t.origin.kind === 'separacao' ? 'Peças do estoque separadas para o pedido (vira venda na entrega)' : 'Lançamento manual'}</dd>
+          <dt>Origem</dt><dd>{t.origin.kind === 'compra' ? `Compra ${db.purchases.find((p) => p.id === t.origin.id)?.number}` : t.origin.kind === 'venda' ? `Venda ${db.sales.find((s) => s.id === t.origin.id)?.number}${t.advance ? ' (pago antes da entrega)' : ''}` : t.origin.kind === 'pedido' ? `Pedido ${db.orders.find((o) => o.id === t.origin.id)?.number ?? ''} (em produção; vira venda na entrega)` : t.origin.kind === 'separacao' ? 'Peças do estoque separadas para o pedido (vira venda na entrega)' : t.origin.kind === 'aprovacao' ? 'Peça aprovada pelo cliente (ao enviar para produção, passa para o pedido)' : 'Lançamento manual'}</dd>
         </dl>
         {t.settlements.length > 0 && <div className="card"><table className="tbl"><thead><tr><th>Data</th><th>Conta</th><th className="num">Valor</th><th /></tr></thead><tbody>
           {t.settlements.map((s) => <tr key={s.id} className={s.reversed ? 'muted' : ''}><td>{fmtDate(s.date)}</td><td>{db.accounts.find((a) => a.id === s.accountId)?.name} {s.method && <span className="muted small">· {s.method}</span>}</td>

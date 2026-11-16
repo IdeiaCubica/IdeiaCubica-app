@@ -15,7 +15,8 @@ import { depreciationPerHour, overheadRate } from './catalog';
 import { lotLabel } from './inventory';
 import { shippingDefaults } from './shipping';
 import { unusualUnitCost } from './costSanity';
-import { dropAllocationReceivable, provisionAllocationReceivable } from './orderReceivables';
+import { approvalReceivable, dropAllocationReceivable, provisionAllocationReceivable, syncQuoteApprovalReceivables } from './orderReceivables';
+import { titlePaid as titlePaidOf } from './finance';
 
 /** Novo orçamento já preenchido com os padrões de Parâmetros de Custos (todos alteráveis no orçamento). */
 export function emptyQuoteInput(settings: Settings): QuoteInput {
@@ -267,6 +268,8 @@ export function saveQuote(db: DB, meta: { quoteId?: ID; name?: string; projectId
     const keep = new Set(items.map((x) => x.itemId));
     prev.itemStatus = Object.fromEntries(Object.entries(prev.itemStatus ?? {}).filter(([k]) => keep.has(k)));
     refreshQuoteStatus(db, prev);
+    // v1.31: peça aprovada mudou de preço (ou saiu do orçamento): a conta a receber acompanha.
+    syncQuoteApprovalReceivables(db, prev);
     audit(db, 'Orçamento revisado', `${prev.number} v${version.version} (${items.length} peça(s))`);
     return prev;
   }
@@ -394,6 +397,8 @@ export function setItemStatus(db: DB, quoteId: ID, itemId: ID, status: QuoteItem
   }
   q.itemStatus = { ...q.itemStatus, [itemId]: status };
   refreshQuoteStatus(db, q);
+  // v1.31: aprovada pelo cliente = entra em Contas a receber e em Vendas; reaberta/recusada = sai.
+  syncQuoteApprovalReceivables(db, q);
   audit(db, 'Situação da peça', `${q.number} · ${it.name}: ${status}`);
 }
 
@@ -435,6 +440,13 @@ export function deleteQuote(db: DB, quoteId: ID, reason: string) {
   assert(!db.orders.some((o) => o.quoteId === q.id && o.status !== 'cancelada'), 'Há pedidos ativos deste orçamento. Retorne-os para o orçamento (ou cancele) antes de excluir.');
   assert(!db.sales.some((s) => s.quoteId === q.id && s.status === 'ativa'), 'Há vendas registradas a partir deste orçamento. Cancele-as antes de excluir.');
   assert(!db.finishedGoods.some((fg) => fg.allocations?.some((a) => a.quoteId === q.id)), 'Há peças do estoque separadas para este orçamento. Reabra as peças antes de excluir.');
+  // v1.31: contas das peças aprovadas saem junto (bloqueia se o cliente já pagou).
+  for (const it of quoteItems(q)) {
+    const t = approvalReceivable(db, it.itemId);
+    if (!t) continue;
+    assert(titlePaidOf(t).isZero(), `O cliente já pagou parte de "${it.name}". Estorne o recebimento antes de excluir o orçamento.`);
+    db.titles = db.titles.filter((x) => x.id !== t.id);
+  }
   db.quotes = db.quotes.filter((x) => x.id !== q.id);
   audit(db, 'Orçamento excluído', `${q.number} ${q.name} — ${why}`);
 }

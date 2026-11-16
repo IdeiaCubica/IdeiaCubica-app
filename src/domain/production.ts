@@ -15,7 +15,7 @@ import { addMovement, lotBalance, releaseAll, reserve } from './inventory';
 import { materialLabel } from './catalog';
 import { MAX_IMAGE_CHARS, emptyQuoteInput, quoteItemImage, evaluateQuote, isItemLocked, itemState, latestVersion, quoteItem, quoteItemAt, quoteItems, refreshQuoteStatus, resolveParams, saveQuote, summarize, type QuoteItemDraft } from './quotes';
 import { computeCosts, laborTotals, type CostResult } from './costing';
-import { dropOrderReceivable, orderOnTrack, orderReceivable, provisionOrderReceivable } from './orderReceivables';
+import { approvalReceivable, dropOrderReceivable, moveApprovalToOrder, orderOnTrack, orderReceivable, provisionOrderReceivable, syncQuoteApprovalReceivables } from './orderReceivables';
 import { dropOrderPurges } from './purges';
 import { categoryByName, createTitlesFromTerms, titlePaid } from './finance';
 import { SYS_FIN } from './schema';
@@ -95,6 +95,13 @@ export function createOrdersFromQuote(db: DB, quoteId: ID, itemIds: ID[], opts: 
   assert(itemIds.length > 0, 'Escolha ao menos uma peça para produzir.');
   // v1.28: o usuário define se a produção é VENDA (pedido do cliente: vai para Vendas e Contas a receber) ou ESTOQUE.
   const purpose = opts.purpose ?? 'pedido';
+  if (purpose === 'estoque') {
+    // Peça aprovada com pagamento do cliente não pode virar estoque sem estornar antes (v1.31).
+    for (const id of itemIds) {
+      const t = approvalReceivable(db, id);
+      if (t && titlePaid(t).gt(0)) throw new BusinessError(`O cliente já pagou R$ ${titlePaid(t).toFixed(2)} de "${quoteItem(q, id).name}". Para produzir para estoque, estorne o recebimento antes (ou envie como Venda).`);
+    }
+  }
   assert(/^\d{4}-\d{2}-\d{2}$/.test(opts.dueDate ?? ''), purpose === 'pedido' ? 'Informe a data de entrega do pedido.' : 'Informe a data prevista da produção.');
   const v = latestVersion(q);
   const orders = itemIds.map((itemId) => {
@@ -115,6 +122,8 @@ export function createOrdersFromQuote(db: DB, quoteId: ID, itemIds: ID[], opts: 
     db.orders.push(order);
     if (purpose === 'pedido') {
       // Venda: conta a receber do pedido (aparece em Vendas), vencimento na entrega; o cliente pode pagar antes (sinal).
+      // v1.31: se a peça já estava aprovada (com conta e talvez sinal), a conta passa para o pedido.
+      moveApprovalToOrder(db, order);
       provisionOrderReceivable(db, order);
       q.itemStatus = { ...q.itemStatus, [itemId]: 'aprovado' };
       audit(db, 'Pedido criado', `${order.number}: ${it.name} (${q.number} v${v.version}), entrega ${opts.dueDate}`);
@@ -124,6 +133,8 @@ export function createOrdersFromQuote(db: DB, quoteId: ID, itemIds: ID[], opts: 
     return order;
   });
   refreshQuoteStatus(db, q);
+  // Estoque: a conta da peça aprovada sai (bloqueia se já houve pagamento). Frete passa para o 1º pedido.
+  syncQuoteApprovalReceivables(db, q);
   return orders;
 }
 
@@ -164,6 +175,8 @@ export function returnOrderToQuote(db: DB, orderId: ID, reason: string) {
   if (q) {
     if (o.quoteItemId) q.itemStatus = { ...q.itemStatus, [o.quoteItemId]: 'aprovado' };
     refreshQuoteStatus(db, q);
+    // v1.31: a peça volta a ficar "Aprovada" → volta a ter conta a receber (e a aparecer em Vendas).
+    syncQuoteApprovalReceivables(db, q);
   }
   audit(db, 'Pedido retornado para o orçamento', `${o.number} — ${why}`);
 }
@@ -747,6 +760,7 @@ export function deleteOrder(db: DB, orderId: ID, reason: string) {
   if (q && o.status !== 'cancelada') {
     if (o.quoteItemId) q.itemStatus = { ...q.itemStatus, [o.quoteItemId]: 'aprovado' };
     refreshQuoteStatus(db, q);
+    syncQuoteApprovalReceivables(db, q);
   }
   audit(db, 'Pedido/produção excluído', `${o.number} ${o.description} — ${why}`);
 }

@@ -2,6 +2,21 @@
 
 Formato: [versionamento semântico](docs/VERSIONAMENTO.md). Datas no padrão DD/MM/AAAA.
 
+## v1.31.0 — 16/11/2026
+
+### Peça aprovada pelo cliente já entra no “a receber”
+- Ao marcar **Cliente aprovou** numa peça do orçamento, o valor entra em **Contas a receber** e no pedido em
+  **Vendas** na hora (situação “Aprovada · enviar para produção”), antes de ir para produção — dá para registrar sinal.
+  Caso que motivou: o pedido da Stefany mostrava R$ 278,36 a receber (orçamento R$ 314,16) porque a peça
+  “Enfeite Bolo de Aniversário HP” estava aprovada, mas não enviada para produção.
+- **Enviar para produção como Venda**: a conta passa para o pedido, com o que já foi pago.
+- **Enviar como Estoque, reabrir, recusar, excluir a peça ou o orçamento**: a conta sai. Se o cliente já pagou,
+  o sistema bloqueia e pede o estorno antes.
+- **Pedido retornado para o orçamento**: a peça volta a “Aprovada” e a conta volta junto.
+- Preço da peça aprovada mudou no orçamento: o valor da conta acompanha. Venda direta da peça aprovada aproveita o
+  que já foi pago; cancelar a venda devolve.
+- Peças já aprovadas antes desta versão entram em Contas a receber ao abrir o sistema.
+
 ## v1.30.0 — 15/11/2026
 
 ### Correções de vendas e extrato (conferência orçamento × pedido × venda)

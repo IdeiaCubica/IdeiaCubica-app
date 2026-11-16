@@ -30,6 +30,9 @@ export interface PedidoLine {
   titles: FinTitle[];
   sale?: Sale;
   order?: ProductionOrder;
+  /** Peça só aprovada (ainda não foi para produção). */
+  approvedOnly?: boolean;
+  itemId?: ID;
   nextDue: ISODate | null;
 }
 
@@ -69,7 +72,7 @@ export function salesPedidos(db: DB, today: ISODate): Pedido[] {
     const items = quoteItems(q).filter((it) => {
       const st = itemState(db, q, it.itemId);
       if (st === 'recusado') return false;
-      const inLines = lines.some((l) => !l.cancelled && ((l.order?.quoteItemId === it.itemId) || l.sale?.quoteItemId === it.itemId || (l.sale?.orderId && db.orders.find((o) => o.id === l.sale!.orderId)?.quoteItemId === it.itemId)
+      const inLines = lines.some((l) => !l.cancelled && (l.itemId === it.itemId || (l.order?.quoteItemId === it.itemId) || l.sale?.quoteItemId === it.itemId || (l.sale?.orderId && db.orders.find((o) => o.id === l.sale!.orderId)?.quoteItemId === it.itemId)
         || (l.key.startsWith('s:') && db.finishedGoods.some((g) => g.allocations?.some((a) => `s:${a.id}` === l.key && a.itemId === it.itemId)))));
       return !inLines;
     });
@@ -109,6 +112,15 @@ export function salesPedidos(db: DB, today: ISODate): Pedido[] {
     const it = q?.versions.length ? q.versions[q.versions.length - 1].items.find((x) => x.itemId === found!.a.itemId) : undefined;
     put(`q:${found.a.quoteId}`, { quoteId: found.a.quoteId, customerId: found.a.customerId ?? q?.customerId, date: t.competenceDate },
       lineFromTitles({ key: `s:${found.a.id}`, kind: 'pedido', label: it?.name ?? found.fg.description, number: found.fg.code, qty: found.a.qty, delivered: false, cancelled: false, titles: [t] }));
+  }
+  // v1.31: peças aprovadas pelo cliente, ainda sem produção (conta da aprovação).
+  for (const t of db.titles) {
+    if (t.origin.kind !== 'aprovacao' || t.status === 'cancelado') continue;
+    const q = db.quotes.find((x) => quoteItems(x).some((it) => it.itemId === t.origin.id));
+    const it = q ? quoteItems(q).find((x) => x.itemId === t.origin.id) : undefined;
+    if (!q || !it) continue;
+    put(`q:${q.id}`, { quoteId: q.id, customerId: q.customerId, date: t.competenceDate },
+      lineFromTitles({ key: `a:${it.itemId}`, kind: 'pedido', label: it.name, number: q.number, qty: it.input.quantity, delivered: false, cancelled: false, titles: [t], approvedOnly: true, itemId: it.itemId }));
   }
   const out: Pedido[] = [];
   for (const [key, g] of groups) {

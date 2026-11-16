@@ -19,7 +19,7 @@ import { compareOrder, finishedGoodBalance, markOrderDelivered } from './product
 import { quoteItem } from './quotes';
 import { addMovement } from './inventory';
 import { consumeKit } from './deliveryKits';
-import { orderReceivable, provisionOrderReceivable, restoreOrderAdvance, takeAllocationAdvance, takeOrderAdvance } from './orderReceivables';
+import { orderReceivable, provisionOrderReceivable, restoreOrderAdvance, syncQuoteApprovalReceivables, takeAllocationAdvance, takeApprovalAdvance, takeOrderAdvance } from './orderReceivables';
 
 export interface SaleInput {
   date: ISODate;
@@ -171,7 +171,9 @@ function applySale(db: DB, inputIn: SaleInput, existing?: Sale): Sale {
   // O que o cliente já pagou no pedido (antes da entrega) entra como parte recebida desta venda.
   // Peça do estoque separada para o pedido (v1.30): o que o cliente pagou na separação também entra como recebido.
   const advance = existing ? ZERO : takeOrderAdvance(db, input.orderId ?? fgItem?.orderId, sale, receivable)
-    .plus(!existing && alloc && fgItem ? takeAllocationAdvance(db, alloc, fgItem.id, sale, receivable) : ZERO);
+    .plus(!existing && alloc && fgItem ? takeAllocationAdvance(db, alloc, fgItem.id, sale, receivable) : ZERO)
+    // v1.31: peça aprovada vendida direto (sem pedido de produção nem estoque): aproveita a conta da aprovação.
+    .plus(!existing && !input.orderId && !fgItem ? takeApprovalAdvance(db, input.quoteId, input.quoteItemId, sale, receivable) : ZERO);
   if (receivable.gt(advance)) {
     createTitlesFromTerms(db, {
       direction: 'in', description: `Venda ${sale.number} — ${description}${customer ? ' — ' + customer.name : ''}${advance.gt(0) ? ' (restante)' : ''}`,
@@ -225,6 +227,11 @@ export function cancelSale(db: DB, saleId: ID, reason: string) {
     const o = db.orders.find((x) => x.id === oid);
     if (o?.destination === 'entregue' && !db.sales.some((x) => x.status === 'ativa' && x.orderId === o.id)) { delete o.destination; delete o.destinationAt; }
     if (o) provisionOrderReceivable(db, o);
+  }
+  // v1.31: venda direta de peça aprovada cancelada: a peça volta a ter a conta da aprovação.
+  if (s.quoteId && !s.orderId && !s.finishedGoodId) {
+    const q = db.quotes.find((x) => x.id === s.quoteId);
+    if (q) syncQuoteApprovalReceivables(db, q);
   }
   audit(db, 'Venda cancelada', `${s.number} — ${why}`);
 }
